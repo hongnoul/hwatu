@@ -11,6 +11,7 @@ mod bar;
 mod downloads;
 mod ipc_server;
 mod prompts;
+mod session;
 mod window;
 
 use gtk::prelude::*;
@@ -36,6 +37,8 @@ pub struct Daemon {
     pub adblock: adblock::Adblock,
     /// Remembered permission decisions (host+kind), daemon lifetime.
     pub prompt_memory: prompts::Memory,
+    /// Debounce timer for crash-resilience session snapshots.
+    session_save_timer: RefCell<Option<glib::SourceId>>,
 }
 
 impl Daemon {
@@ -47,6 +50,7 @@ impl Daemon {
             prewarmed: RefCell::new(None),
             adblock: adblock::Adblock::default(),
             prompt_memory: prompts::Memory::default(),
+            session_save_timer: RefCell::new(None),
         })
     }
 
@@ -84,6 +88,39 @@ impl Daemon {
         *n += 1;
         id
     }
+
+    /// Snapshot the window set for crash recovery, debounced (2 s) so
+    /// bursty navigation doesn't thrash the disk. The trailing save
+    /// always runs, so the file converges on the true state.
+    pub fn schedule_session_save(self: &Rc<Self>) {
+        if self.session_save_timer.borrow().is_some() {
+            return;
+        }
+        let daemon = self.clone();
+        let source = glib::timeout_add_local_once(std::time::Duration::from_secs(2), move || {
+            daemon.session_save_timer.replace(None);
+            daemon.save_session_now();
+        });
+        self.session_save_timer.replace(Some(source));
+    }
+
+    pub fn save_session_now(&self) {
+        let entries: Vec<session::SessionEntry> = {
+            let windows = self.windows.borrow();
+            let mut infos: Vec<_> = windows.values().map(|w| w.info()).collect();
+            infos.sort_by_key(|w| w.id);
+            infos
+                .into_iter()
+                .filter(|w| !w.url.is_empty())
+                .map(|w| session::SessionEntry {
+                    url: w.url,
+                    title: w.title,
+                    app_id: w.app_id,
+                })
+                .collect()
+        };
+        session::save(&entries);
+    }
 }
 
 fn main() -> glib::ExitCode {
@@ -102,9 +139,22 @@ fn main() -> glib::ExitCode {
         let daemon = Daemon::new(app.clone());
         adblock::Adblock::init(&daemon);
         daemon.schedule_prewarm();
-        if let Err(e) = ipc_server::start(daemon) {
+        if let Err(e) = ipc_server::start(daemon.clone()) {
             eprintln!("hwatud: failed to start IPC server: {e}");
             std::process::exit(1);
+        }
+        // Crash resilience: a leftover session file means the previous
+        // daemon died uncleanly (clean quits delete it); reopen its
+        // windows. After the socket is up so spawn timing stays honest.
+        let leftovers = session::take();
+        if !leftovers.is_empty() {
+            println!(
+                "hwatud: restoring {} window(s) from a previous session",
+                leftovers.len()
+            );
+            for entry in leftovers {
+                BrowserWindow::open(&daemon, Some(entry.url), entry.app_id);
+            }
         }
         println!(
             "hwatud: listening on {}",

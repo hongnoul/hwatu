@@ -106,6 +106,8 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request) -> Response {
             // Reply first, then exit from an idle callback so the response
             // actually reaches the client before the process dies.
             glib::timeout_add_local_once(std::time::Duration::from_millis(50), || {
+                // Clean quit: do not resurrect these windows next start.
+                crate::session::clear();
                 let _ = std::fs::remove_file(hwatu_ipc::socket_path());
                 std::process::exit(0);
             });
@@ -116,8 +118,9 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request) -> Response {
 
 /// `example.com` -> `https://example.com`; keep schemes and about: intact.
 /// Loopback hosts (`localhost`, `*.localhost`, `127.*`, `[::1]`) get `http://`
-/// since local dev servers rarely speak TLS.
-fn normalize_url(input: String) -> String {
+/// since local dev servers rarely speak TLS. Shared with the in-window
+/// URL bar so both entry points resolve input identically.
+pub fn normalize_url(input: String) -> String {
     if input.contains("://") || input.starts_with("about:") {
         input
     } else if is_loopback_host(&input) {

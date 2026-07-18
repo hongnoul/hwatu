@@ -17,6 +17,8 @@ pub enum BarMode {
     Find {
         backwards: bool,
     },
+    /// URL entry: Enter navigates the window, Esc cancels.
+    Url,
     /// A yes/no question, e.g. permission or TLS prompts. `tag`
     /// identifies the pending request to the owner.
     Confirm {
@@ -85,6 +87,20 @@ impl Bar {
         self.entry.grab_focus();
     }
 
+    /// Open the URL prompt, prefilled (and selected) with `current` so
+    /// typing replaces it and editing is one keystroke away.
+    pub fn open_url(&self, current: &str) {
+        self.cancel_hide_timer();
+        self.mode.replace(BarMode::Url);
+        self.prefix.set_label("open");
+        self.entry.set_text(current);
+        self.entry.set_visible(true);
+        self.status.set_label("");
+        self.root.set_visible(true);
+        self.entry.grab_focus();
+        self.entry.select_region(0, -1);
+    }
+
     /// Open a yes/no prompt. No entry; the owner answers on y/n keys.
     pub fn open_confirm(&self, tag: &str, question: &str) {
         self.cancel_hide_timer();
@@ -100,7 +116,7 @@ impl Bar {
         // Never clobber an interactive mode with a passive message.
         if matches!(
             *self.mode.borrow(),
-            BarMode::Find { .. } | BarMode::Confirm { .. }
+            BarMode::Find { .. } | BarMode::Url | BarMode::Confirm { .. }
         ) {
             return;
         }

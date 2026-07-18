@@ -233,9 +233,17 @@ impl BrowserWindow {
             ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
             let this2 = this.clone();
             ctrl.connect_key_pressed(move |_, key, _, state| {
-                if state.contains(gtk::gdk::ModifierType::CONTROL_MASK)
-                    && state.contains(gtk::gdk::ModifierType::SHIFT_MASK)
+                let ctrl_held = state.contains(gtk::gdk::ModifierType::CONTROL_MASK);
+                // Ctrl+L: URL bar. Capture phase because the page holds
+                // focus and address-bar muscle memory must always win.
+                if ctrl_held
+                    && !state.contains(gtk::gdk::ModifierType::SHIFT_MASK)
+                    && matches!(key, gtk::gdk::Key::l | gtk::gdk::Key::L)
                 {
+                    this2.open_url_bar();
+                    return glib::Propagation::Stop;
+                }
+                if ctrl_held && state.contains(gtk::gdk::ModifierType::SHIFT_MASK) {
                     // With Shift held the keyval arrives uppercased.
                     match key {
                         gtk::gdk::Key::J | gtk::gdk::Key::j => {
@@ -296,6 +304,7 @@ impl BrowserWindow {
                     }
                 }
                 daemon.windows.borrow_mut().remove(&id);
+                daemon.schedule_session_save();
                 glib::Propagation::Proceed
             });
         }
@@ -310,6 +319,7 @@ impl BrowserWindow {
             app_id,
         };
         daemon.windows.borrow_mut().insert(id, this);
+        daemon.schedule_session_save();
         info
     }
 
@@ -324,6 +334,12 @@ impl BrowserWindow {
                 title.as_str()
             }));
         });
+        // Every navigation refreshes the crash-recovery snapshot
+        // (debounced in the daemon).
+        {
+            let daemon = self.daemon.clone();
+            webview.connect_uri_notify(move |_| daemon.schedule_session_save());
+        }
         crate::downloads::wire_session(&self.daemon, &webview);
         // Permission requests (mic/cam/location/...) become bar
         // prompts; remembered decisions answer silently.
@@ -577,6 +593,17 @@ impl BrowserWindow {
                     self.bar.open_find(false);
                     glib::Propagation::Stop
                 }
+                // vim's `o`: open a URL. Bubble phase, so an `o` typed
+                // into a page's text box still goes to the page.
+                gtk::gdk::Key::o => {
+                    self.bar.open_url("");
+                    glib::Propagation::Stop
+                }
+                // `O`: edit the current URL (like vim's O vs o).
+                gtk::gdk::Key::O => {
+                    self.open_url_bar();
+                    glib::Propagation::Stop
+                }
                 gtk::gdk::Key::question => {
                     self.bar.open_find(true);
                     glib::Propagation::Stop
@@ -598,7 +625,7 @@ impl BrowserWindow {
             // only see what bubbles past it (Escape/Enter handled in
             // wire_bar on the entry itself). Swallow the rest so keys
             // don't leak into the page under the bar.
-            BarMode::Find { .. } => glib::Propagation::Proceed,
+            BarMode::Find { .. } | BarMode::Url => glib::Propagation::Proceed,
             BarMode::Confirm { tag } => {
                 match key {
                     gtk::gdk::Key::y | gtk::gdk::Key::Y => self.answer_confirm(&tag, true),
@@ -624,17 +651,29 @@ impl BrowserWindow {
                 }
             });
         }
-        // Enter: keep highlights, return focus to the page.
+        // Enter: find keeps highlights and returns focus to the page;
+        // URL mode navigates.
         {
             let this = self.clone();
-            self.bar.entry.connect_activate(move |_| {
-                if matches!(this.bar.mode(), BarMode::Find { .. }) {
-                    this.bar.close();
-                    this.focus_webview();
-                }
-            });
+            self.bar
+                .entry
+                .connect_activate(move |entry| match this.bar.mode() {
+                    BarMode::Find { .. } => {
+                        this.bar.close();
+                        this.focus_webview();
+                    }
+                    BarMode::Url => {
+                        let text = entry.text().trim().to_string();
+                        this.bar.close();
+                        if !text.is_empty() {
+                            this.navigate(&text);
+                        }
+                        this.focus_webview();
+                    }
+                    _ => {}
+                });
         }
-        // Escape inside the entry: cancel the search entirely.
+        // Escape inside the entry: cancel find/URL entry entirely.
         {
             let this = self.clone();
             let ctrl = gtk::EventControllerKey::new();
@@ -648,6 +687,30 @@ impl BrowserWindow {
                 glib::Propagation::Proceed
             });
             self.bar.entry.add_controller(ctrl);
+        }
+    }
+
+    /// Open the URL prompt prefilled with the current page's URL.
+    fn open_url_bar(self: &Rc<Self>) {
+        // A discarded window revives on focus before anyone can type,
+        // but restore() explicitly for the WM-rule corner cases.
+        self.restore();
+        let current = self
+            .webview
+            .borrow()
+            .as_ref()
+            .and_then(|wv| wv.uri())
+            .map(|u| u.to_string())
+            .unwrap_or_default();
+        self.bar.open_url(&current);
+    }
+
+    /// Navigate this window, normalizing bare hosts the same way the
+    /// CLI does (`example.com` -> `https://example.com`).
+    fn navigate(self: &Rc<Self>, input: &str) {
+        self.restore();
+        if let Some(webview) = self.live_webview() {
+            webview.load_uri(&crate::ipc_server::normalize_url(input.to_string()));
         }
     }
 
