@@ -69,6 +69,7 @@ hwatu close 2              # close window 2
 hwatu adblock              # content-blocker status (rule count, source)
 hwatu adblock off          # disable blocking (persisted; `on` re-enables)
 hwatu adblock update       # fetch EasyList + EasyPrivacy, recompile
+hwatu update               # self-update to the latest release
 hwatu quit                 # stop the daemon
 ```
 

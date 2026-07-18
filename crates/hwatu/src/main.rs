@@ -3,6 +3,8 @@
 //! `hana <url>` opens a window in ~1 IPC roundtrip. If no daemon is
 //! running, it spawns one and waits for the socket.
 
+mod update;
+
 use hwatu_ipc::{AdblockCmd, Request, Response};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -11,6 +13,9 @@ use std::time::{Duration, Instant};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("update") {
+        std::process::exit(update::run());
+    }
     let request = match parse(&args) {
         Ok(r) => r,
         Err(msg) => {
@@ -71,10 +76,7 @@ fn main() {
                 if a.updating {
                     extra.push_str(", updating lists");
                 }
-                println!(
-                    "adblock {state}: {} rules ({}{extra})",
-                    a.rules, a.source
-                );
+                println!("adblock {state}: {} rules ({}{extra})", a.rules, a.source);
             }
         }
         Ok(Response::Err { message }) => {
@@ -112,8 +114,8 @@ fn parse(args: &[String]) -> Result<Request, String> {
                 Some("update") => AdblockCmd::Update,
                 Some(other) => {
                     return Err(format!(
-                        "unknown adblock action {other:?}; usage: hwatu adblock [on|off|status|update]"
-                    ))
+                    "unknown adblock action {other:?}; usage: hwatu adblock [on|off|status|update]"
+                ))
                 }
             };
             Ok(Request::Adblock { action })
@@ -127,7 +129,7 @@ fn parse(args: &[String]) -> Result<Request, String> {
 }
 
 const USAGE: &str =
-    "usage: hwatu [url | list | close <id> | adblock [on|off|status|update] | ping | quit]";
+    "usage: hwatu [url | list | close <id> | adblock [on|off|status|update] | update | ping | quit]";
 
 fn connect_or_spawn() -> std::io::Result<UnixStream> {
     let path = hwatu_ipc::socket_path();
