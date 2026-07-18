@@ -8,6 +8,7 @@
 //! On focus, a prewarmed WebView is adopted and the state restored, so
 //! resume feels instant.
 
+use crate::bar::{Bar, BarMode};
 use crate::Daemon;
 use gtk::prelude::*;
 use hwatu_ipc::WindowInfo;
@@ -44,6 +45,9 @@ pub struct BrowserWindow {
     pub id: u64,
     pub window: gtk::Window,
     daemon: Rc<Daemon>,
+    /// The webview sits inside this overlay; the bar floats above it.
+    overlay: gtk::Overlay,
+    bar: Bar,
     webview: RefCell<Option<webkit6::WebView>>,
     saved: RefCell<Option<SavedState>>,
     discard_timer: RefCell<Option<glib::SourceId>>,
@@ -138,10 +142,17 @@ impl BrowserWindow {
 
         let target = url.unwrap_or_else(home_page);
 
+        let overlay = gtk::Overlay::new();
+        let bar = Bar::new();
+        overlay.add_overlay(&bar.root);
+        window.set_child(Some(&overlay));
+
         let this = Rc::new(BrowserWindow {
             id,
             window: window.clone(),
             daemon: daemon.clone(),
+            overlay,
+            bar,
             webview: RefCell::new(None),
             saved: RefCell::new(None),
             discard_timer: RefCell::new(None),
@@ -149,17 +160,14 @@ impl BrowserWindow {
 
         this.attach_webview(webview.clone());
         webview.load_uri(&target);
+        this.wire_bar();
 
         // Ctrl+q closes the window; the daemon (and engine) stay warm.
         {
             let ctrl = gtk::EventControllerKey::new();
-            let win = window.clone();
+            let this2 = this.clone();
             ctrl.connect_key_pressed(move |_, key, _, state| {
-                if state.contains(gtk::gdk::ModifierType::CONTROL_MASK) && key == gtk::gdk::Key::q {
-                    win.close();
-                    return glib::Propagation::Stop;
-                }
-                glib::Propagation::Proceed
+                this2.on_window_key(key, state)
             });
             window.add_controller(ctrl);
         }
@@ -212,7 +220,7 @@ impl BrowserWindow {
                 title.as_str()
             }));
         });
-        self.window.set_child(Some(&webview));
+        self.overlay.set_child(Some(&webview));
         self.webview.replace(Some(webview));
     }
 
@@ -239,8 +247,9 @@ impl BrowserWindow {
 
     /// Serialize state, destroy the WebView, show a placeholder.
     fn discard(self: &Rc<Self>) {
-        // Never discard a focused or loading window.
-        if self.window.is_active() {
+        // Never discard a focused window or one awaiting bar input
+        // (find in progress, pending permission/TLS prompt).
+        if self.window.is_active() || self.bar.is_open() {
             return;
         }
         let Some(webview) = self.webview.borrow_mut().take() else {
@@ -268,7 +277,7 @@ impl BrowserWindow {
                 &title
             })
             .build();
-        self.window.set_child(Some(&placeholder));
+        self.overlay.set_child(Some(&placeholder));
         // Dropping the WebView alone is not enough: WebKit keeps the web
         // process cached for reuse. State is already serialized, so kill
         // the process outright; that is where the RAM comes back.
@@ -329,6 +338,179 @@ impl BrowserWindow {
 
     pub fn close(&self) {
         self.window.close();
+    }
+
+    // ---- bar & keyboard UX ----------------------------------------
+
+    /// Window-level keys. This controller is on the toplevel in the
+    /// default (bubble) phase, so it only sees keys the WebView did
+    /// not consume: `/` in a page's text box stays in the page, `/`
+    /// anywhere else opens find.
+    fn on_window_key(
+        self: &Rc<Self>,
+        key: gtk::gdk::Key,
+        state: gtk::gdk::ModifierType,
+    ) -> glib::Propagation {
+        let ctrl = state.contains(gtk::gdk::ModifierType::CONTROL_MASK);
+        if ctrl && key == gtk::gdk::Key::q {
+            self.window.close();
+            return glib::Propagation::Stop;
+        }
+
+        match self.bar.mode() {
+            BarMode::Hidden | BarMode::Status => match key {
+                gtk::gdk::Key::slash => {
+                    self.bar.open_find(false);
+                    glib::Propagation::Stop
+                }
+                gtk::gdk::Key::question => {
+                    self.bar.open_find(true);
+                    glib::Propagation::Stop
+                }
+                // n/N repeat the last committed search even after the
+                // bar is closed, like vim.
+                gtk::gdk::Key::n => self.find_next(!state.contains(gtk::gdk::ModifierType::SHIFT_MASK)),
+                gtk::gdk::Key::N => self.find_next(false),
+                gtk::gdk::Key::Escape => {
+                    self.stop_find();
+                    self.bar.close();
+                    glib::Propagation::Proceed
+                }
+                _ => glib::Propagation::Proceed,
+            },
+            // Find mode: entry has focus and eats printable keys; we
+            // only see what bubbles past it (Escape/Enter handled in
+            // wire_bar on the entry itself). Swallow the rest so keys
+            // don't leak into the page under the bar.
+            BarMode::Find { .. } => glib::Propagation::Proceed,
+            BarMode::Confirm { tag } => {
+                match key {
+                    gtk::gdk::Key::y | gtk::gdk::Key::Y => self.answer_confirm(&tag, true),
+                    gtk::gdk::Key::n | gtk::gdk::Key::N | gtk::gdk::Key::Escape => {
+                        self.answer_confirm(&tag, false)
+                    }
+                    _ => {}
+                }
+                glib::Propagation::Stop
+            }
+        }
+    }
+
+    /// Hook the bar's entry: incremental find while typing, Enter
+    /// commits (focus returns to page, n/N work), Escape cancels.
+    fn wire_bar(self: &Rc<Self>) {
+        // Incremental search on every keystroke.
+        {
+            let this = self.clone();
+            self.bar.entry.connect_changed(move |entry| {
+                if let BarMode::Find { backwards } = this.bar.mode() {
+                    this.run_find(&entry.text(), backwards);
+                }
+            });
+        }
+        // Enter: keep highlights, return focus to the page.
+        {
+            let this = self.clone();
+            self.bar.entry.connect_activate(move |_| {
+                if matches!(this.bar.mode(), BarMode::Find { .. }) {
+                    this.bar.close();
+                    this.focus_webview();
+                }
+            });
+        }
+        // Escape inside the entry: cancel the search entirely.
+        {
+            let this = self.clone();
+            let ctrl = gtk::EventControllerKey::new();
+            ctrl.connect_key_pressed(move |_, key, _, _| {
+                if key == gtk::gdk::Key::Escape {
+                    this.stop_find();
+                    this.bar.close();
+                    this.focus_webview();
+                    return glib::Propagation::Stop;
+                }
+                glib::Propagation::Proceed
+            });
+            self.bar.entry.add_controller(ctrl);
+        }
+    }
+
+    fn find_controller(&self) -> Option<webkit6::FindController> {
+        self.webview.borrow().as_ref().and_then(|wv| wv.find_controller())
+    }
+
+    fn run_find(self: &Rc<Self>, text: &str, backwards: bool) {
+        let Some(fc) = self.find_controller() else { return };
+        if text.is_empty() {
+            fc.search_finish();
+            self.bar.set_status("");
+            return;
+        }
+        let mut opts = webkit6::FindOptions::CASE_INSENSITIVE | webkit6::FindOptions::WRAP_AROUND;
+        if backwards {
+            opts |= webkit6::FindOptions::BACKWARDS;
+        }
+        // Wire match-count feedback once per controller instance.
+        self.wire_find_signals(&fc);
+        fc.count_matches(text, opts.bits(), u32::MAX);
+        fc.search(text, opts.bits(), u32::MAX);
+    }
+
+    fn wire_find_signals(self: &Rc<Self>, fc: &webkit6::FindController) {
+        // Idempotence: tag the controller so signals connect once even
+        // though run_find fires per keystroke.
+        unsafe {
+            if fc.data::<bool>("hwatu-wired").is_some() {
+                return;
+            }
+            fc.set_data("hwatu-wired", true);
+        }
+        let bar = self.bar.clone();
+        fc.connect_counted_matches(move |_, n| {
+            bar.set_status(&format!("{n} match{}", if n == 1 { "" } else { "es" }));
+        });
+        let bar = self.bar.clone();
+        fc.connect_failed_to_find_text(move |_| {
+            bar.set_status("no matches");
+        });
+    }
+
+    fn find_next(self: &Rc<Self>, forward: bool) -> glib::Propagation {
+        let Some(fc) = self.find_controller() else {
+            return glib::Propagation::Proceed;
+        };
+        // No committed search: let n/N through to the page.
+        if fc.search_text().map_or(true, |t| t.is_empty()) {
+            return glib::Propagation::Proceed;
+        }
+        if forward {
+            fc.search_next();
+        } else {
+            fc.search_previous();
+        }
+        glib::Propagation::Stop
+    }
+
+    fn stop_find(&self) {
+        if let Some(fc) = self.find_controller() {
+            fc.search_finish();
+        }
+    }
+
+    fn focus_webview(&self) {
+        if let Some(wv) = self.webview.borrow().as_ref() {
+            wv.grab_focus();
+        }
+    }
+
+    /// Resolve a pending y/n prompt. Dispatch on `tag`; find/permission
+    /// /TLS handlers register their pending state under a tag.
+    fn answer_confirm(self: &Rc<Self>, tag: &str, yes: bool) {
+        self.bar.close();
+        self.focus_webview();
+        // Tags are wired by the features that create prompts
+        // (permissions, TLS). Nothing else to do yet.
+        let _ = (tag, yes);
     }
 }
 

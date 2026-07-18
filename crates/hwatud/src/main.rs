@@ -6,6 +6,7 @@
 //! an engine cold start.
 
 mod ipc_server;
+mod bar;
 mod window;
 
 use gtk::prelude::*;
@@ -84,6 +85,7 @@ fn main() -> glib::ExitCode {
 
     app.connect_activate(|_| {});
     app.connect_startup(move |app| {
+        bar::install_css();
         let daemon = Daemon::new(app.clone());
         daemon.schedule_prewarm();
         if let Err(e) = ipc_server::start(daemon) {
