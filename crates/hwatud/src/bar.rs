@@ -14,10 +14,14 @@ use gtk::prelude::*;
 pub enum BarMode {
     Hidden,
     /// Incremental find. `backwards` mirrors vim's `?`.
-    Find { backwards: bool },
+    Find {
+        backwards: bool,
+    },
     /// A yes/no question, e.g. permission or TLS prompts. `tag`
     /// identifies the pending request to the owner.
-    Confirm { tag: String },
+    Confirm {
+        tag: String,
+    },
     /// Passive one-shot message (e.g. "saved foo.pdf"), auto-hides.
     Status,
 }
@@ -94,7 +98,10 @@ impl Bar {
     /// Show a transient message for `secs` seconds.
     pub fn flash(&self, message: &str, secs: u64) {
         // Never clobber an interactive mode with a passive message.
-        if matches!(*self.mode.borrow(), BarMode::Find { .. } | BarMode::Confirm { .. }) {
+        if matches!(
+            *self.mode.borrow(),
+            BarMode::Find { .. } | BarMode::Confirm { .. }
+        ) {
             return;
         }
         self.cancel_hide_timer();
@@ -105,12 +112,13 @@ impl Bar {
         self.root.set_visible(true);
 
         let bar = self.clone();
-        let source = glib::timeout_add_local_once(std::time::Duration::from_secs(secs), move || {
-            bar.hide_timer.replace(None);
-            if *bar.mode.borrow() == BarMode::Status {
-                bar.close();
-            }
-        });
+        let source =
+            glib::timeout_add_local_once(std::time::Duration::from_secs(secs), move || {
+                bar.hide_timer.replace(None);
+                if *bar.mode.borrow() == BarMode::Status {
+                    bar.close();
+                }
+            });
         self.hide_timer.replace(Some(source));
     }
 

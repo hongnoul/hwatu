@@ -28,7 +28,9 @@ pub fn download_dir() -> PathBuf {
 }
 
 fn home() -> PathBuf {
-    std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/tmp"))
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("/tmp"))
 }
 
 fn expand_home(raw: &str) -> PathBuf {
@@ -110,7 +112,11 @@ fn wire_download(daemon: &Rc<Daemon>, download: &webkit6::Download) {
             download.cancel();
             return true;
         }
-        let name = if suggested.is_empty() { "download" } else { suggested };
+        let name = if suggested.is_empty() {
+            "download"
+        } else {
+            suggested
+        };
         let dest = unique_path(&dir, name);
         download.set_destination(&dest.display().to_string());
         true

@@ -7,9 +7,10 @@
 
 mod abp;
 mod adblock;
-mod ipc_server;
 mod bar;
 mod downloads;
+mod ipc_server;
+mod prompts;
 mod window;
 
 use gtk::prelude::*;
@@ -33,6 +34,8 @@ pub struct Daemon {
     pub prewarmed: RefCell<Option<webkit6::WebView>>,
     /// Built-in content blocker (on by default).
     pub adblock: adblock::Adblock,
+    /// Remembered permission decisions (host+kind), daemon lifetime.
+    pub prompt_memory: prompts::Memory,
 }
 
 impl Daemon {
@@ -43,20 +46,17 @@ impl Daemon {
             next_id: RefCell::new(1),
             prewarmed: RefCell::new(None),
             adblock: adblock::Adblock::default(),
+            prompt_memory: prompts::Memory::default(),
         })
     }
 
     /// Take the warm WebView (or build one) and immediately warm the next.
     pub fn take_webview(self: &Rc<Self>) -> webkit6::WebView {
-        let view = self
-            .prewarmed
-            .borrow_mut()
-            .take()
-            .unwrap_or_else(|| {
-                let view = window::build_webview();
-                self.adblock.apply_to(&view);
-                view
-            });
+        let view = self.prewarmed.borrow_mut().take().unwrap_or_else(|| {
+            let view = window::build_webview();
+            self.adblock.apply_to(&view);
+            view
+        });
         self.schedule_prewarm();
         view
     }

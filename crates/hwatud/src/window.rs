@@ -9,6 +9,7 @@
 //! resume feels instant.
 
 use crate::bar::{Bar, BarMode};
+use crate::prompts::{self, Prompt, Prompts};
 use crate::Daemon;
 use gtk::prelude::*;
 use hwatu_ipc::WindowInfo;
@@ -48,6 +49,7 @@ pub struct BrowserWindow {
     /// The webview sits inside this overlay; the bar floats above it.
     overlay: gtk::Overlay,
     bar: Bar,
+    prompts: Prompts,
     webview: RefCell<Option<webkit6::WebView>>,
     saved: RefCell<Option<SavedState>>,
     discard_timer: RefCell<Option<glib::SourceId>>,
@@ -153,6 +155,7 @@ impl BrowserWindow {
             daemon: daemon.clone(),
             overlay,
             bar,
+            prompts: Prompts::new(daemon.prompt_memory.clone()),
             webview: RefCell::new(None),
             saved: RefCell::new(None),
             discard_timer: RefCell::new(None),
@@ -166,8 +169,29 @@ impl BrowserWindow {
         {
             let ctrl = gtk::EventControllerKey::new();
             let this2 = this.clone();
-            ctrl.connect_key_pressed(move |_, key, _, state| {
-                this2.on_window_key(key, state)
+            ctrl.connect_key_pressed(move |_, key, _, state| this2.on_window_key(key, state));
+            window.add_controller(ctrl);
+        }
+
+        // Confirm prompts must win over the page: while the bar is in
+        // confirm mode, grab y/n/Esc in the capture phase before the
+        // WebView (which keeps focus and would swallow them).
+        {
+            let ctrl = gtk::EventControllerKey::new();
+            ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
+            let this2 = this.clone();
+            ctrl.connect_key_pressed(move |_, key, _, _| {
+                let BarMode::Confirm { tag } = this2.bar.mode() else {
+                    return glib::Propagation::Proceed;
+                };
+                match key {
+                    gtk::gdk::Key::y | gtk::gdk::Key::Y => this2.answer_confirm(&tag, true),
+                    gtk::gdk::Key::n | gtk::gdk::Key::N | gtk::gdk::Key::Escape => {
+                        this2.answer_confirm(&tag, false)
+                    }
+                    _ => {}
+                }
+                glib::Propagation::Stop
             });
             window.add_controller(ctrl);
         }
@@ -221,6 +245,35 @@ impl BrowserWindow {
             }));
         });
         crate::downloads::wire_session(&self.daemon, &webview);
+        // Permission requests (mic/cam/location/...) become bar
+        // prompts; remembered decisions answer silently.
+        {
+            let this = self.clone();
+            webview.connect_permission_request(move |wv, request| {
+                let host = prompts::host_of(&wv.uri().unwrap_or_default());
+                let kind = prompts::permission_kind(request);
+                this.push_prompt(Prompt::Permission {
+                    host,
+                    kind,
+                    request: request.clone(),
+                });
+                true // handled; do not fall back to default deny-now
+            });
+        }
+        // TLS failures: explain in the bar, y adds a per-host
+        // exception for this session and reloads.
+        {
+            let this = self.clone();
+            webview.connect_load_failed_with_tls_errors(move |_, failing_uri, cert, flags| {
+                this.push_prompt(Prompt::Tls {
+                    host: prompts::host_of(failing_uri),
+                    failing_uri: failing_uri.to_string(),
+                    certificate: cert.clone(),
+                    reason: prompts::tls_reason(flags).to_string(),
+                });
+                true // stop the default error page; the bar owns this
+            });
+        }
         // Non-displayable responses (Content-Disposition: attachment,
         // MIME types WebKit can't render) become downloads instead of
         // dead ends.
@@ -267,7 +320,7 @@ impl BrowserWindow {
     fn discard(self: &Rc<Self>) {
         // Never discard a focused window or one awaiting bar input
         // (find in progress, pending permission/TLS prompt).
-        if self.window.is_active() || self.bar.is_open() {
+        if self.window.is_active() || self.bar.is_open() || self.prompts.has_pending() {
             return;
         }
         let Some(webview) = self.webview.borrow_mut().take() else {
@@ -399,7 +452,9 @@ impl BrowserWindow {
                 }
                 // n/N repeat the last committed search even after the
                 // bar is closed, like vim.
-                gtk::gdk::Key::n => self.find_next(!state.contains(gtk::gdk::ModifierType::SHIFT_MASK)),
+                gtk::gdk::Key::n => {
+                    self.find_next(!state.contains(gtk::gdk::ModifierType::SHIFT_MASK))
+                }
                 gtk::gdk::Key::N => self.find_next(false),
                 gtk::gdk::Key::Escape => {
                     self.stop_find();
@@ -466,11 +521,16 @@ impl BrowserWindow {
     }
 
     fn find_controller(&self) -> Option<webkit6::FindController> {
-        self.webview.borrow().as_ref().and_then(|wv| wv.find_controller())
+        self.webview
+            .borrow()
+            .as_ref()
+            .and_then(|wv| wv.find_controller())
     }
 
     fn run_find(self: &Rc<Self>, text: &str, backwards: bool) {
-        let Some(fc) = self.find_controller() else { return };
+        let Some(fc) = self.find_controller() else {
+            return;
+        };
         if text.is_empty() {
             fc.search_finish();
             self.bar.set_status("");
@@ -510,7 +570,7 @@ impl BrowserWindow {
             return glib::Propagation::Proceed;
         };
         // No committed search: let n/N through to the page.
-        if fc.search_text().map_or(true, |t| t.is_empty()) {
+        if fc.search_text().is_none_or(|t| t.is_empty()) {
             return glib::Propagation::Proceed;
         }
         if forward {
@@ -533,14 +593,33 @@ impl BrowserWindow {
         }
     }
 
-    /// Resolve a pending y/n prompt. Dispatch on `tag`; find/permission
-    /// /TLS handlers register their pending state under a tag.
-    fn answer_confirm(self: &Rc<Self>, tag: &str, yes: bool) {
-        self.bar.close();
-        self.focus_webview();
-        // Tags are wired by the features that create prompts
-        // (permissions, TLS). Nothing else to do yet.
-        let _ = (tag, yes);
+    /// Queue a permission/TLS question; open the bar if it is next.
+    fn push_prompt(self: &Rc<Self>, prompt: Prompt) {
+        if let Some(question) = self.prompts.push(prompt) {
+            self.bar.open_confirm("prompt", &question);
+            // Test hook: HWATU_TEST_CONFIRM=allow|deny auto-answers
+            // prompts, for headless/scripted verification only.
+            if let Ok(answer) = std::env::var("HWATU_TEST_CONFIRM") {
+                let this = self.clone();
+                glib::timeout_add_local_once(std::time::Duration::from_millis(300), move || {
+                    this.answer_confirm("prompt", answer == "allow");
+                });
+            }
+        }
+    }
+
+    /// Resolve the pending y/n prompt, then show the next queued one.
+    fn answer_confirm(self: &Rc<Self>, _tag: &str, yes: bool) {
+        let next = self
+            .prompts
+            .answer_front(yes, self.webview.borrow().as_ref());
+        match next {
+            Some(question) => self.bar.open_confirm("prompt", &question),
+            None => {
+                self.bar.close();
+                self.focus_webview();
+            }
+        }
     }
 }
 
