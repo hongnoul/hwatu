@@ -87,8 +87,7 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request) -> Response {
             let win = daemon.windows.borrow_mut().remove(&id);
             match win {
                 Some(w) => {
-                    use gtk::prelude::GtkWindowExt;
-                    w.window.close();
+                    w.close();
                     Response::ok()
                 }
                 None => Response::err(format!("no window {id}")),

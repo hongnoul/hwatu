@@ -54,7 +54,8 @@ fn main() {
             }
             if let Some(ws) = windows {
                 for w in ws {
-                    println!("{}\t{}\t{}", w.id, w.url, w.title);
+                    let flag = if w.suspended { "suspended" } else { "live" };
+                    println!("{}\t{}\t{}\t{}", w.id, flag, w.url, w.title);
                 }
             }
         }

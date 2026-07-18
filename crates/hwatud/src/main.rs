@@ -21,7 +21,7 @@ pub const APP_ID: &str = "dev.hwatu.hwatud";
 /// Shared daemon state, single-threaded (GTK main thread only).
 pub struct Daemon {
     pub app: gtk::Application,
-    pub windows: RefCell<HashMap<u64, BrowserWindow>>,
+    pub windows: RefCell<HashMap<u64, Rc<BrowserWindow>>>,
     pub next_id: RefCell<u64>,
     /// One blank, fully initialized WebView kept warm so window
     /// creation never pays engine setup cost.

@@ -89,4 +89,8 @@ pub struct WindowInfo {
     pub id: u64,
     pub url: String,
     pub title: String,
+    /// True when the window's WebView has been discarded to save RAM;
+    /// it restores automatically on focus.
+    #[serde(default)]
+    pub suspended: bool,
 }
