@@ -8,6 +8,8 @@ repository.workspace = true
 [dependencies]
 hwatu-ipc = { path = "../ipc" }
 gtk = { package = "gtk4", version = "0.9" }
+# Per-window Wayland app_id (xdg_toplevel), for tiling-WM window rules.
+gdk-wayland = { package = "gdk4-wayland", version = "0.9" }
 # v2_42 for the WebKitFeature API (enable-what-exists scroll features);
 # sets the runtime floor at webkitgtk 2.42 (GNOME 45, Sep 2023).
 webkit6 = { version = "0.4", features = ["v2_42"] }

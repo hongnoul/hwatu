@@ -134,4 +134,7 @@ pub struct WindowInfo {
     /// it restores automatically on focus.
     #[serde(default)]
     pub suspended: bool,
+    /// Wayland app_id the window was opened with (`--app-id`), if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
 }

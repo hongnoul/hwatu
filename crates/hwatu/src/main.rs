@@ -12,10 +12,17 @@ use std::process::Command;
 use std::time::{Duration, Instant};
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("update") {
         std::process::exit(update::run());
     }
+    // `--json` is a client-side output flag (machine-readable `list`
+    // for wofi/rofi/fuzzel pipelines), not part of the wire protocol.
+    let json = {
+        let before = args.len();
+        args.retain(|a| a != "--json");
+        args.len() != before
+    };
     let request = match parse(&args) {
         Ok(r) => r,
         Err(msg) => {
@@ -54,17 +61,25 @@ fn main() {
             adblock,
         }) => {
             if let Some(w) = window {
-                println!(
-                    "window {} -> {} ({} ms)",
-                    w.id,
-                    w.url,
-                    started.elapsed().as_millis()
-                );
+                if json {
+                    println!("{}", serde_json::to_string(&w).expect("serialize window"));
+                } else {
+                    println!(
+                        "window {} -> {} ({} ms)",
+                        w.id,
+                        w.url,
+                        started.elapsed().as_millis()
+                    );
+                }
             }
             if let Some(ws) = windows {
-                for w in ws {
-                    let flag = if w.suspended { "suspended" } else { "live" };
-                    println!("{}\t{}\t{}\t{}", w.id, flag, w.url, w.title);
+                if json {
+                    println!("{}", serde_json::to_string(&ws).expect("serialize windows"));
+                } else {
+                    for w in ws {
+                        let flag = if w.suspended { "suspended" } else { "live" };
+                        println!("{}\t{}\t{}\t{}", w.id, flag, w.url, w.title);
+                    }
                 }
             }
             if let Some(a) = adblock {
@@ -91,23 +106,42 @@ fn main() {
 }
 
 fn parse(args: &[String]) -> Result<Request, String> {
-    match args.first().map(String::as_str) {
-        None => Ok(Request::Open {
-            url: None,
-            app_id: None,
-        }),
+    // `--app-id <id>` may appear anywhere before/after the URL.
+    let mut app_id: Option<String> = None;
+    let mut rest: Vec<&String> = Vec::new();
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if arg == "--app-id" {
+            app_id = Some(
+                it.next()
+                    .filter(|v| !v.trim().is_empty())
+                    .ok_or("usage: hwatu --app-id <id> [url]")?
+                    .clone(),
+            );
+        } else if let Some(v) = arg.strip_prefix("--app-id=") {
+            if v.trim().is_empty() {
+                return Err("usage: hwatu --app-id=<id> [url]".into());
+            }
+            app_id = Some(v.to_string());
+        } else {
+            rest.push(arg);
+        }
+    }
+
+    match rest.first().map(|s| s.as_str()) {
+        None => Ok(Request::Open { url: None, app_id }),
         Some("list") => Ok(Request::List),
         Some("ping") => Ok(Request::Ping),
         Some("quit") => Ok(Request::Quit),
         Some("close") => {
-            let id = args
+            let id = rest
                 .get(1)
                 .and_then(|s| s.parse().ok())
                 .ok_or("usage: hwatu close <id>")?;
             Ok(Request::Close { id })
         }
         Some("adblock") => {
-            let action = match args.get(1).map(String::as_str) {
+            let action = match rest.get(1).map(|s| s.as_str()) {
                 Some("on") => AdblockCmd::On,
                 Some("off") => AdblockCmd::Off,
                 None | Some("status") => AdblockCmd::Status,
@@ -123,13 +157,12 @@ fn parse(args: &[String]) -> Result<Request, String> {
         Some("-h") | Some("--help") => Err(USAGE.to_string()),
         Some(url) => Ok(Request::Open {
             url: Some(url.to_string()),
-            app_id: None,
+            app_id,
         }),
     }
 }
 
-const USAGE: &str =
-    "usage: hwatu [url | list | close <id> | adblock [on|off|status|update] | update | ping | quit]";
+const USAGE: &str = "usage: hwatu [--app-id <id>] [url] | list [--json] | close <id> | adblock [on|off|status|update] | update | ping | quit";
 
 fn connect_or_spawn() -> std::io::Result<UnixStream> {
     let path = hwatu_ipc::socket_path();
@@ -160,5 +193,71 @@ fn connect_or_spawn() -> std::io::Result<UnixStream> {
             ));
         }
         std::thread::sleep(Duration::from_millis(15));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse;
+    use hwatu_ipc::Request;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn bare_open_has_no_app_id() {
+        assert!(matches!(
+            parse(&args(&[])),
+            Ok(Request::Open {
+                url: None,
+                app_id: None
+            })
+        ));
+    }
+
+    #[test]
+    fn app_id_before_url() {
+        let Ok(Request::Open { url, app_id }) = parse(&args(&["--app-id", "mail", "gmail.com"]))
+        else {
+            panic!("expected Open");
+        };
+        assert_eq!(url.as_deref(), Some("gmail.com"));
+        assert_eq!(app_id.as_deref(), Some("mail"));
+    }
+
+    #[test]
+    fn app_id_after_url_and_equals_form() {
+        let Ok(Request::Open { url, app_id }) = parse(&args(&["gmail.com", "--app-id=mail"]))
+        else {
+            panic!("expected Open");
+        };
+        assert_eq!(url.as_deref(), Some("gmail.com"));
+        assert_eq!(app_id.as_deref(), Some("mail"));
+    }
+
+    #[test]
+    fn app_id_without_url_opens_home() {
+        let Ok(Request::Open { url, app_id }) = parse(&args(&["--app-id", "scratch"])) else {
+            panic!("expected Open");
+        };
+        assert!(url.is_none());
+        assert_eq!(app_id.as_deref(), Some("scratch"));
+    }
+
+    #[test]
+    fn app_id_missing_value_errors() {
+        assert!(parse(&args(&["--app-id"])).is_err());
+        assert!(parse(&args(&["--app-id="])).is_err());
+    }
+
+    #[test]
+    fn subcommands_still_parse() {
+        assert!(matches!(parse(&args(&["list"])), Ok(Request::List)));
+        assert!(matches!(parse(&args(&["ping"])), Ok(Request::Ping)));
+        assert!(matches!(
+            parse(&args(&["close", "3"])),
+            Ok(Request::Close { id: 3 })
+        ));
     }
 }

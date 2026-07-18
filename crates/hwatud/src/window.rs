@@ -35,11 +35,46 @@ fn home_page() -> String {
         .unwrap_or_else(|| "https://hongnoul.github.io/hwatu/".into())
 }
 
-/// State saved across a discard.
+/// State saved across a discard. The session blob itself lives on disk
+/// (see [`discard_dir`]): keeping it in RAM would leak per-window
+/// memory exactly when the point of discarding is to reclaim it, and
+/// heavy pages can serialize surprisingly large histories.
 struct SavedState {
-    session: Option<webkit6::WebViewSessionState>,
+    /// Path of the serialized `WebViewSessionState`, if writing it out
+    /// succeeded. `None` falls back to a plain URL reload on restore.
+    session_file: Option<std::path::PathBuf>,
     url: String,
     title: String,
+}
+
+/// Where discarded session blobs live: `~/.cache/hwatu/discard`.
+/// Deliberately NOT `$XDG_RUNTIME_DIR`, which is tmpfs (RAM-backed) on
+/// every mainstream distro and would defeat the reclaim. Files are
+/// removed on restore, on window close, and swept at daemon startup.
+fn discard_dir() -> Option<std::path::PathBuf> {
+    let base = std::env::var("XDG_CACHE_HOME")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| std::path::PathBuf::from(h).join(".cache"))
+        })?;
+    let dir = base.join("hwatu").join("discard");
+    std::fs::create_dir_all(&dir).ok()?;
+    Some(dir)
+}
+
+/// Remove blobs orphaned by a previous daemon (crash, SIGKILL). Call
+/// once at startup, before any window can discard.
+pub fn sweep_discard_dir() {
+    let Some(dir) = discard_dir() else { return };
+    if let Ok(entries) = std::fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 pub struct BrowserWindow {
@@ -53,6 +88,8 @@ pub struct BrowserWindow {
     webview: RefCell<Option<webkit6::WebView>>,
     saved: RefCell<Option<SavedState>>,
     discard_timer: RefCell<Option<glib::SourceId>>,
+    /// Wayland app_id this window was opened with, echoed by `hwatu list`.
+    app_id: Option<String>,
 }
 
 /// Scroll-critical engine features, enabled if this WebKit build has
@@ -87,6 +124,19 @@ fn parse_feature_overrides(raw: &str) -> Vec<(String, bool)> {
             Some((ident.trim().to_string(), on))
         })
         .collect()
+}
+
+/// Set the Wayland xdg_toplevel app_id for one window, overriding the
+/// GTK-derived application id. No-op on X11 (WM_CLASS stays global to
+/// the GTK app; per-window class on X11 is not worth the unsafe Xlib).
+fn set_wayland_app_id(window: &gtk::Window, app_id: &str) {
+    use gtk::prelude::*;
+    let Some(surface) = window.surface() else {
+        return;
+    };
+    if let Some(toplevel) = surface.dynamic_cast_ref::<gdk_wayland::WaylandToplevel>() {
+        toplevel.set_application_id(app_id);
+    }
 }
 
 /// Build a fully configured WebView. Called for the prewarm pool and as
@@ -138,9 +188,19 @@ impl BrowserWindow {
             .build();
 
         // Tiling WMs key window rules off app_id / WM_CLASS. GTK derives
-        // it from the application id; per-window app_id overrides are
-        // post-MVP. Recorded for `hwatu list` semantics later.
-        let _ = &app_id;
+        // the default from the application id; a per-window override
+        // lets rules target windows individually (`hwatu --app-id mail
+        // gmail.com` + `windowrule = workspace 3, class:mail`).
+        // gdk_wayland_toplevel_set_application_id is a silent no-op
+        // until the xdg_toplevel exists, which happens at map (inside
+        // present), so set it from an idle callback queued on map.
+        if let Some(app_id) = app_id.clone() {
+            window.connect_map(move |win| {
+                let win = win.clone();
+                let app_id = app_id.clone();
+                glib::idle_add_local_once(move || set_wayland_app_id(&win, &app_id));
+            });
+        }
 
         let target = url.unwrap_or_else(home_page);
 
@@ -159,6 +219,7 @@ impl BrowserWindow {
             webview: RefCell::new(None),
             saved: RefCell::new(None),
             discard_timer: RefCell::new(None),
+            app_id: app_id.clone(),
         });
 
         this.attach_webview(webview.clone());
@@ -209,6 +270,11 @@ impl BrowserWindow {
                 }
             });
         }
+        // A window that opens in the background (WM rule, focus
+        // elsewhere) never fires the active->inactive transition; arm
+        // the timer at birth. discard() rechecks is_active, and gaining
+        // focus cancels it, so a focused window is never affected.
+        this.schedule_discard();
 
         // Drop from the registry when the WM closes us.
         {
@@ -216,6 +282,12 @@ impl BrowserWindow {
             let this = this.clone();
             window.connect_close_request(move |_| {
                 this.cancel_discard_timer();
+                // A discarded window closed for good: its blob is dead.
+                if let Some(saved) = this.saved.borrow_mut().take() {
+                    if let Some(path) = saved.session_file {
+                        let _ = std::fs::remove_file(path);
+                    }
+                }
                 daemon.windows.borrow_mut().remove(&id);
                 glib::Propagation::Proceed
             });
@@ -228,6 +300,7 @@ impl BrowserWindow {
             url: target.clone(),
             title: String::new(),
             suspended: false,
+            app_id,
         };
         daemon.windows.borrow_mut().insert(id, this);
         info
@@ -272,6 +345,28 @@ impl BrowserWindow {
                     reason: prompts::tls_reason(flags).to_string(),
                 });
                 true // stop the default error page; the bar owns this
+            });
+        }
+        // Crash containment: a dead web process (segfault, kernel OOM
+        // kill) otherwise leaves a silent white window. Surface it in
+        // the bar with a reload offer instead.
+        {
+            let this = self.clone();
+            webview.connect_web_process_terminated(move |wv, reason| {
+                // discard() terminates the web process on purpose after
+                // detaching the view; only report views we still own.
+                if this.webview.borrow().as_ref() != Some(wv) {
+                    return;
+                }
+                let reason = match reason {
+                    webkit6::WebProcessTerminationReason::Crashed => "crashed",
+                    webkit6::WebProcessTerminationReason::ExceededMemoryLimit => {
+                        "was killed (out of memory)"
+                    }
+                    _ => "terminated unexpectedly",
+                };
+                eprintln!("hwatud: web process for window {} {reason}", this.id);
+                this.push_prompt(Prompt::Crash { reason });
             });
         }
         // Non-displayable responses (Content-Disposition: attachment,
@@ -335,8 +430,18 @@ impl BrowserWindow {
 
         let url = webview.uri().map(|u| u.to_string()).unwrap_or_default();
         let title = webview.title().map(|t| t.to_string()).unwrap_or_default();
+        // Serialize history to disk, not RAM: the whole point is to
+        // give memory back. Write failures degrade to a URL reload.
+        let session_file = webview
+            .session_state()
+            .and_then(|state| state.serialize())
+            .and_then(|bytes| {
+                let path = discard_dir()?.join(format!("window-{}.session", self.id));
+                std::fs::write(&path, bytes).ok()?;
+                Some(path)
+            });
         self.saved.replace(Some(SavedState {
-            session: webview.session_state(),
+            session_file,
             url,
             title: title.clone(),
         }));
@@ -365,8 +470,14 @@ impl BrowserWindow {
             return;
         };
         let webview = self.daemon.take_webview();
-        if let Some(state) = &saved.session {
-            webview.restore_session_state(state);
+        // Read the session blob back and delete it; a missing/corrupt
+        // file (or a state WebKit rejects) falls back to the raw URL.
+        if let Some(path) = &saved.session_file {
+            if let Ok(bytes) = std::fs::read(path) {
+                let state = webkit6::WebViewSessionState::new(&glib::Bytes::from_owned(bytes));
+                webview.restore_session_state(&state);
+            }
+            let _ = std::fs::remove_file(path);
         }
         // restore_session_state rebuilds history but does not navigate;
         // drive it to the current item (or fall back to the raw URL).
@@ -390,6 +501,7 @@ impl BrowserWindow {
                 url: wv.uri().map(|u| u.to_string()).unwrap_or_default(),
                 title: wv.title().map(|t| t.to_string()).unwrap_or_default(),
                 suspended: false,
+                app_id: self.app_id.clone(),
             },
             None => {
                 let saved = self.saved.borrow();
@@ -402,6 +514,7 @@ impl BrowserWindow {
                     url,
                     title,
                     suspended: true,
+                    app_id: self.app_id.clone(),
                 }
             }
         }
