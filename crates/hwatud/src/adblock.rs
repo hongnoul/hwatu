@@ -37,6 +37,10 @@ const LIST_URLS: &[(&str, &str)] = &[
     ),
 ];
 
+/// Downloaded lists older than this are refreshed automatically at
+/// daemon startup (idle time; failures are silent and non-fatal).
+const LIST_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(7 * 24 * 60 * 60);
+
 pub struct Adblock {
     enabled: Cell<bool>,
     filter: RefCell<Option<webkit6::UserContentFilter>>,
@@ -182,6 +186,36 @@ impl Adblock {
     pub fn init(daemon: &Rc<Daemon>) {
         daemon.adblock.enabled.set(initial_enabled());
         Self::rebuild(daemon);
+        // Stale downloaded lists refresh themselves; the current
+        // (cached) ruleset serves until the new one is compiled, so
+        // this never blocks startup or page loads.
+        if daemon.adblock.enabled.get() && Self::lists_stale() {
+            let daemon = daemon.clone();
+            glib::timeout_add_local_once(std::time::Duration::from_secs(10), move || {
+                Self::update(&daemon);
+            });
+        }
+    }
+
+    /// True when downloaded lists exist but are past LIST_MAX_AGE.
+    /// No downloaded lists (embedded baseline only) is not stale:
+    /// auto-downloading megabytes the user never asked for is rude.
+    fn lists_stale() -> bool {
+        let dir = filters_dir();
+        for (name, _) in LIST_URLS {
+            let Ok(meta) = std::fs::metadata(dir.join(name)) else {
+                continue;
+            };
+            let age = meta
+                .modified()
+                .ok()
+                .and_then(|m| m.elapsed().ok())
+                .unwrap_or_default();
+            if age > LIST_MAX_AGE {
+                return true;
+            }
+        }
+        false
     }
 
     pub fn status(&self) -> hwatu_ipc::AdblockStatus {
