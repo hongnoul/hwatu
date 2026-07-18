@@ -220,6 +220,24 @@ impl BrowserWindow {
                 title.as_str()
             }));
         });
+        crate::downloads::wire_session(&self.daemon, &webview);
+        // Non-displayable responses (Content-Disposition: attachment,
+        // MIME types WebKit can't render) become downloads instead of
+        // dead ends.
+        webview.connect_decide_policy(|_, decision, decision_type| {
+            if decision_type != webkit6::PolicyDecisionType::Response {
+                return false; // default handling
+            }
+            let Some(response) = decision.dynamic_cast_ref::<webkit6::ResponsePolicyDecision>()
+            else {
+                return false;
+            };
+            if response.is_mime_type_supported() {
+                return false;
+            }
+            decision.download();
+            true
+        });
         self.overlay.set_child(Some(&webview));
         self.webview.replace(Some(webview));
     }
@@ -338,6 +356,12 @@ impl BrowserWindow {
 
     pub fn close(&self) {
         self.window.close();
+    }
+
+    /// Passive bar message (downloads etc.). No-op if the bar is busy
+    /// with an interactive prompt.
+    pub fn flash_bar(&self, message: &str, secs: u64) {
+        self.bar.flash(message, secs);
     }
 
     /// The live WebView, if this window is not discarded. Used by the

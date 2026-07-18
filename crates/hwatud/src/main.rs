@@ -9,6 +9,7 @@ mod abp;
 mod adblock;
 mod ipc_server;
 mod bar;
+mod downloads;
 mod window;
 
 use gtk::prelude::*;
