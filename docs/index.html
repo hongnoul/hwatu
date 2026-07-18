@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="hwatu is a daemon-based web browser for tiling window managers. Real WebKit rendering, terminal-emulator spawn times."
+    />
+    <link rel="canonical" href="https://hongnoul.github.io/hwatu/" />
+    <meta property="og:title" content="hwatu 화투" />
+    <meta
+      property="og:description"
+      content="A daemon-based web browser for tiling window managers."
+    />
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://hongnoul.github.io/hwatu/" />
+    <title>hwatu 화투</title>
+    <style>
+      /* Mono, monochrome, minimal. */
+      :root {
+        --ink: #111;
+        --muted: #666;
+        --faint: #999;
+        --rule: #ccc;
+        --wash: #f4f4f4;
+        --bg: #fff;
+        --radius: 8px;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        font-family: ui-monospace, "JetBrains Mono", SFMono-Regular, Menlo,
+          Consolas, monospace;
+        color: var(--ink);
+        background: var(--bg);
+        line-height: 1.65;
+        font-size: 16px;
+        -webkit-font-smoothing: antialiased;
+      }
+      main {
+        max-width: 860px;
+        margin: 0 auto;
+        padding: 0 1.5rem 6rem;
+      }
+      a {
+        color: var(--ink);
+      }
+      a:hover {
+        color: var(--muted);
+      }
+
+      /* Hero */
+      .hero {
+        min-height: 88vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        text-align: center;
+      }
+      .hero h1 {
+        font-size: 2.5rem;
+        font-weight: 700;
+        margin: 0;
+        letter-spacing: -0.02em;
+      }
+      .hero .tagline {
+        color: var(--muted);
+        margin: 0.75rem 0 2rem;
+      }
+      .install {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.75rem;
+        background: var(--wash);
+        border: 1px solid var(--rule);
+        border-radius: var(--radius);
+        padding: 0.7rem 1rem;
+        font-size: 0.9rem;
+      }
+      .install code {
+        white-space: nowrap;
+        overflow-x: auto;
+      }
+      .install button {
+        font: inherit;
+        font-size: 0.8rem;
+        color: var(--muted);
+        background: none;
+        border: 1px solid var(--rule);
+        border-radius: 4px;
+        padding: 0.1rem 0.5rem;
+        cursor: pointer;
+      }
+      .install button:hover {
+        color: var(--ink);
+      }
+      .hero .links {
+        margin-top: 1.5rem;
+        font-size: 0.9rem;
+        color: var(--faint);
+      }
+
+      /* Sections */
+      section {
+        margin-top: 4rem;
+      }
+      h2 {
+        font-size: 1.15rem;
+        border-bottom: 1px solid var(--rule);
+        padding-bottom: 0.4rem;
+      }
+      pre {
+        background: var(--wash);
+        border: 1px solid var(--rule);
+        border-radius: var(--radius);
+        padding: 1rem;
+        overflow-x: auto;
+        font-size: 0.85rem;
+        line-height: 1.6;
+      }
+      code {
+        font-family: inherit;
+      }
+      p code,
+      li code,
+      td code {
+        background: var(--wash);
+        border-radius: 4px;
+        padding: 0.05rem 0.35rem;
+        font-size: 0.9em;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 0.85rem;
+      }
+      th,
+      td {
+        text-align: left;
+        padding: 0.45rem 0.6rem;
+        border-bottom: 1px solid var(--rule);
+        vertical-align: top;
+      }
+      th {
+        color: var(--muted);
+        font-weight: 400;
+      }
+      .muted {
+        color: var(--muted);
+      }
+      footer {
+        margin-top: 5rem;
+        padding-top: 1rem;
+        border-top: 1px solid var(--rule);
+        color: var(--faint);
+        font-size: 0.85rem;
+        text-align: center;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="hero">
+        <h1>hwatu 화투</h1>
+        <p class="tagline">
+          A daemon-based web browser for tiling window managers.<br />
+          Real WebKit rendering, terminal-emulator spawn times.
+        </p>
+        <div class="install">
+          <code id="install-cmd"
+            >curl -fsSL
+            https://raw.githubusercontent.com/hongnoul/hwatu/main/scripts/install.sh
+            | bash</code
+          >
+          <button
+            onclick="navigator.clipboard.writeText(document.getElementById('install-cmd').textContent.replace(/\s+/g,' ').trim());this.textContent='copied';setTimeout(()=>this.textContent='copy',1200)"
+          >
+            copy
+          </button>
+        </div>
+        <p class="links">
+          <a href="https://github.com/hongnoul/hwatu">GitHub</a> ·
+          <a href="https://github.com/hongnoul/hwatu/releases/latest"
+            >Releases</a
+          >
+          · MIT · Linux
+        </p>
+      </section>
+
+      <section>
+        <h2>Why</h2>
+        <p>
+          Browsers conflate two things: the engine (slow to start, RAM-hungry)
+          and the window (what you actually ask for). hwatu splits them, the
+          same way <code>emacsclient</code> and <code>wezterm</code> do:
+        </p>
+        <ul>
+          <li>
+            <strong><code>hwatud</code></strong> owns WebKitGTK 6, a prewarmed
+            WebView pool, and all windows.
+          </li>
+          <li>
+            <strong><code>hwatu</code></strong> is a thin client: one
+            Unix-socket roundtrip to open a window.
+          </li>
+        </ul>
+        <p>
+          Measured: <strong>~10 ms</strong> from <code>hwatu &lt;url&gt;</code>
+          to a mapped, loading window on a warm daemon (the first-ever window
+          pays a one-time engine/GPU init).
+        </p>
+      </section>
+
+      <section>
+        <h2>Philosophy</h2>
+        <ul>
+          <li>
+            <strong>No tabs.</strong> A tab is a window. Your tiling WM is the
+            tab manager.
+          </li>
+          <li><strong>No chrome.</strong> The WebView is the whole window.</li>
+          <li>
+            <strong>Real rendering.</strong> Full WebKit: JS, CSS, media,
+            WebGL, as the frontend intended. No custom half-engine.
+          </li>
+          <li>
+            <strong>Spawn speed precedes everything.</strong> Every engine knob
+            is paid on the daemon's idle path, never at window open. A
+            spawn-latency benchmark gates every change.
+          </li>
+        </ul>
+      </section>
+
+      <section>
+        <h2>Usage</h2>
+        <pre><code>hwatu                      # open your home page (autostarts hwatud)
+hwatu example.com          # open a URL (https:// implied)
+hwatu list                 # id, url, title of every window
+hwatu close 2              # close window 2
+hwatu quit                 # stop the daemon</code></pre>
+        <p>
+          <code>Ctrl+q</code> closes the focused window. The daemon and engine
+          stay warm.
+        </p>
+      </section>
+
+      <section>
+        <h2>Tuning</h2>
+        <p>
+          No config file. Engine knobs are set to their correct values in code
+          (GPU compositing always on, async and threaded scrolling pinned).
+          The only surface is environment variables:
+        </p>
+        <table>
+          <tr>
+            <th>Variable</th>
+            <th>Meaning</th>
+          </tr>
+          <tr>
+            <td><code>HWATU_HOME</code></td>
+            <td>
+              Page opened by a bare <code>hwatu</code>. Defaults to this site.
+            </td>
+          </tr>
+          <tr>
+            <td><code>HWATU_DISCARD_SECS</code></td>
+            <td>
+              Seconds an unfocused window keeps its live WebView before being
+              suspended to save RAM (default 120, 0 disables).
+            </td>
+          </tr>
+          <tr>
+            <td><code>HWATU_WEBKIT_FEATURES</code></td>
+            <td>
+              <code>Ident:on,Other:off</code> — flip individual WebKit runtime
+              features on odd hardware. Unknown identifiers are ignored.
+            </td>
+          </tr>
+        </table>
+        <p class="muted">
+          Standard <code>WEBKIT_*</code> and <code>GSK_RENDERER</code>
+          variables pass through untouched. Scrolling smoothness scales with
+          your distro's WebKitGTK: 2.46+ paints with Skia on the GPU.
+        </p>
+      </section>
+
+      <section>
+        <h2>Architecture</h2>
+        <pre><code>hwatu &lt;url&gt;  --unix socket--&gt;  hwatud (GTK main loop)
+                                 ├── prewarmed WebView (adopted instantly,
+                                 │   next one warmed in idle time)
+                                 ├── window registry (id -&gt; WebView)
+                                 └── WebKit: shared network process,
+                                     per-site web processes</code></pre>
+        <p>
+          Unfocused windows are suspended after a timeout: history is
+          serialized, the web process is killed, and RAM comes back. Focus
+          restores them instantly from the prewarm pool.
+        </p>
+      </section>
+
+      <footer>
+        <a href="https://github.com/hongnoul/hwatu">github.com/hongnoul/hwatu</a>
+        · MIT license · 화투: the game is played with what's in your hand
+      </footer>
+    </main>
+  </body>
+</html>
