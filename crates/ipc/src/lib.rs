@@ -1,4 +1,4 @@
-//! Wire protocol between the `hana` client and the `hanad` daemon.
+//! Wire protocol between the `hana` client and the `hwatud` daemon.
 //!
 //! Newline-delimited JSON over a Unix domain socket. One request per
 //! connection for the MVP: connect, send a [`Request`], read a
@@ -7,14 +7,14 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-/// Resolve the daemon socket path: `$XDG_RUNTIME_DIR/hana-fuda.sock`,
-/// falling back to `/tmp/hana-fuda-$UID.sock`.
+/// Resolve the daemon socket path: `$XDG_RUNTIME_DIR/hwatu.sock`,
+/// falling back to `/tmp/hwatu-$UID.sock`.
 pub fn socket_path() -> PathBuf {
     if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
-        return PathBuf::from(dir).join("hana-fuda.sock");
+        return PathBuf::from(dir).join("hwatu.sock");
     }
     let uid = unsafe { libc_geteuid() };
-    PathBuf::from(format!("/tmp/hana-fuda-{uid}.sock"))
+    PathBuf::from(format!("/tmp/hwatu-{uid}.sock"))
 }
 
 // Tiny FFI shim so the client stays dependency-free.
@@ -53,21 +53,34 @@ pub enum Response {
         #[serde(skip_serializing_if = "Option::is_none")]
         windows: Option<Vec<WindowInfo>>,
     },
-    Err { message: String },
+    Err {
+        message: String,
+    },
 }
 
 impl Response {
     pub fn ok() -> Self {
-        Response::Ok { window: None, windows: None }
+        Response::Ok {
+            window: None,
+            windows: None,
+        }
     }
     pub fn window(w: WindowInfo) -> Self {
-        Response::Ok { window: Some(w), windows: None }
+        Response::Ok {
+            window: Some(w),
+            windows: None,
+        }
     }
     pub fn windows(ws: Vec<WindowInfo>) -> Self {
-        Response::Ok { window: None, windows: Some(ws) }
+        Response::Ok {
+            window: None,
+            windows: Some(ws),
+        }
     }
     pub fn err(message: impl Into<String>) -> Self {
-        Response::Err { message: message.into() }
+        Response::Err {
+            message: message.into(),
+        }
     }
 }
 

@@ -1,18 +1,35 @@
-# hana-fuda 🎴
+# hwatu 화투
+
+[![Latest Release](https://badgen.net/github/release/hongnoul/hwatu?icon=github)](https://github.com/hongnoul/hwatu/releases)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
+[![CI](https://github.com/hongnoul/hwatu/actions/workflows/ci.yml/badge.svg)](https://github.com/hongnoul/hwatu/actions/workflows/ci.yml)
 
 A daemon-based web browser for tiling window managers. Real WebKit rendering,
 terminal-emulator spawn times.
 
+## Installation
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/hongnoul/hwatu/main/scripts/install.sh | bash
+```
+
+Requires `webkitgtk-6.0` at runtime (the installer checks and tells you the
+package for your distro). Or build from source:
+
+```sh
+cargo build --release   # needs rust + webkitgtk-6.0 dev headers
+```
+
 ## Why
 
 Browsers conflate two things: the engine (slow to start, RAM-hungry) and the
-window (what you actually ask for). hana-fuda splits them, the same way
+window (what you actually ask for). hwatu splits them, the same way
 `emacsclient`/`wezterm` do:
 
-- **`hanad`** owns WebKitGTK 6, a prewarmed WebView pool, and all windows.
-- **`hana`** is a thin client: one Unix-socket roundtrip to open a window.
+- **`hwatud`** owns WebKitGTK 6, a prewarmed WebView pool, and all windows.
+- **`hwatu`** is a thin client: one Unix-socket roundtrip to open a window.
 
-Measured on the MVP: **~45 ms** from `hana <url>` to a mapped, loading window
+Measured on the MVP: **~45 ms** from `hwatu <url>` to a mapped, loading window
 (first-ever window pays a one-time engine/GPU init).
 
 ## Philosophy
@@ -25,41 +42,31 @@ Measured on the MVP: **~45 ms** from `hana <url>` to a mapped, loading window
 ## Usage
 
 ```sh
-hana                      # open a blank window (autostarts hanad)
-hana example.com          # open a URL (https:// implied)
-hana list                 # id, url, title of every window
-hana close 2              # close window 2
-hana quit                 # stop the daemon
+hwatu                      # open a blank window (autostarts hwatud)
+hwatu example.com          # open a URL (https:// implied)
+hwatu list                 # id, url, title of every window
+hwatu close 2              # close window 2
+hwatu quit                 # stop the daemon
 ```
 
 `Ctrl+q` closes the focused window. The daemon and engine stay warm.
 
-## Build
-
-Requires Rust and webkitgtk-6.0 (`pacman -S webkitgtk-6.0`,
-`apt install libwebkitgtk-6.0-dev`).
-
-```sh
-cargo build --release
-./target/release/hana example.com
-```
-
 ## Architecture
 
 ```
-hana <url>  --unix socket-->  hanad (GTK main loop)
-                                ├── prewarmed WebView (adopted instantly,
-                                │   next one warmed in idle time)
-                                ├── window registry (id -> WebView)
-                                └── WebKit: shared network process,
-                                    per-site web processes
+hwatu <url>  --unix socket-->  hwatud (GTK main loop)
+                                 ├── prewarmed WebView (adopted instantly,
+                                 │   next one warmed in idle time)
+                                 ├── window registry (id -> WebView)
+                                 └── WebKit: shared network process,
+                                     per-site web processes
 ```
 
 Crates:
 
 - `crates/ipc` – newline-delimited JSON protocol (`Request`/`Response`)
-- `crates/hanad` – daemon: GTK4 + webkit6, socket server on the GLib loop
-- `crates/hana` – client: no GTK linkage, connects or spawns the daemon
+- `crates/hwatud` – daemon: GTK4 + webkit6, socket server on the GLib loop
+- `crates/hwatu` – client: no GTK linkage, connects or spawns the daemon
 
 ## Roadmap
 
@@ -68,9 +75,9 @@ Crates:
 - [ ] Keyboard-first UX: URL overlay bar, link hints
 - [ ] Session persistence and restore
 - [ ] Profiles (separate cookie jars / web contexts)
-- [ ] `hana ipc js ...` scripting
+- [ ] `hwatu ipc js ...` scripting
 
 ## Name
 
-Hanafuda (花札) are Japanese flower cards: many small cards, one deck. Many
-small windows, one engine.
+Hwatu (화투) are Korean flower cards: many small cards, one deck. Many small
+windows, one engine.

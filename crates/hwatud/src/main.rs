@@ -1,4 +1,4 @@
-//! hanad: the hana-fuda browser daemon.
+//! hwatud: the hwatu browser daemon.
 //!
 //! Owns the WebKit engine, a prewarmed WebView pool, and all browser
 //! windows. Clients (`hana`) talk to it over a Unix socket, so opening
@@ -16,7 +16,7 @@ use std::rc::Rc;
 
 use window::BrowserWindow;
 
-pub const APP_ID: &str = "dev.hanafuda.hanad";
+pub const APP_ID: &str = "dev.hwatu.hwatud";
 
 /// Shared daemon state, single-threaded (GTK main thread only).
 pub struct Daemon {
@@ -79,10 +79,13 @@ fn main() -> glib::ExitCode {
         let daemon = Daemon::new(app.clone());
         daemon.schedule_prewarm();
         if let Err(e) = ipc_server::start(daemon) {
-            eprintln!("hanad: failed to start IPC server: {e}");
+            eprintln!("hwatud: failed to start IPC server: {e}");
             std::process::exit(1);
         }
-        println!("hanad: listening on {}", hana_ipc::socket_path().display());
+        println!(
+            "hwatud: listening on {}",
+            hwatu_ipc::socket_path().display()
+        );
     });
 
     app.run_with_args::<&str>(&[])

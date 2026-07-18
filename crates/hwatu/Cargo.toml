@@ -1,10 +1,10 @@
 [package]
-name = "hana"
+name = "hwatu"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
 [dependencies]
-hana-ipc = { path = "../ipc" }
+hwatu-ipc = { path = "../ipc" }
 serde_json = "1"

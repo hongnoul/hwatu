@@ -3,7 +3,7 @@
 
 use crate::Daemon;
 use gtk::prelude::*;
-use hana_ipc::WindowInfo;
+use hwatu_ipc::WindowInfo;
 use std::rc::Rc;
 use webkit6::prelude::*;
 
@@ -34,7 +34,7 @@ impl BrowserWindow {
             .application(&daemon.app)
             .default_width(1024)
             .default_height(768)
-            .title("hana-fuda")
+            .title("hwatu")
             .child(&webview)
             .build();
 
@@ -54,7 +54,7 @@ impl BrowserWindow {
             webview.connect_title_notify(move |wv| {
                 let title = wv.title().unwrap_or_default();
                 win.set_title(Some(if title.is_empty() {
-                    "hana-fuda"
+                    "hwatu"
                 } else {
                     title.as_str()
                 }));
@@ -66,9 +66,7 @@ impl BrowserWindow {
             let ctrl = gtk::EventControllerKey::new();
             let win = window.clone();
             ctrl.connect_key_pressed(move |_, key, _, state| {
-                if state.contains(gtk::gdk::ModifierType::CONTROL_MASK)
-                    && key == gtk::gdk::Key::q
-                {
+                if state.contains(gtk::gdk::ModifierType::CONTROL_MASK) && key == gtk::gdk::Key::q {
                     win.close();
                     return glib::Propagation::Stop;
                 }
@@ -93,10 +91,14 @@ impl BrowserWindow {
             url: target.clone(),
             title: String::new(),
         };
-        daemon
-            .windows
-            .borrow_mut()
-            .insert(id, BrowserWindow { id, window, webview });
+        daemon.windows.borrow_mut().insert(
+            id,
+            BrowserWindow {
+                id,
+                window,
+                webview,
+            },
+        );
         info
     }
 

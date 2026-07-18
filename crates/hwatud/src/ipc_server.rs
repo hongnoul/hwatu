@@ -5,11 +5,11 @@ use crate::{window::BrowserWindow, Daemon};
 use gtk::gio;
 use gtk::gio::prelude::*;
 use gtk::glib;
-use hana_ipc::{Request, Response};
+use hwatu_ipc::{Request, Response};
 use std::rc::Rc;
 
 pub fn start(daemon: Rc<Daemon>) -> std::io::Result<()> {
-    let path = hana_ipc::socket_path();
+    let path = hwatu_ipc::socket_path();
     // Stale socket from a dead daemon: remove and rebind.
     let _ = std::fs::remove_file(&path);
 
@@ -29,15 +29,14 @@ pub fn start(daemon: Rc<Daemon>) -> std::io::Result<()> {
 }
 
 fn accept_next(listener: gio::SocketListener, daemon: Rc<Daemon>) {
-    listener.clone().accept_async(
-        gio::Cancellable::NONE,
-        move |res| {
+    listener
+        .clone()
+        .accept_async(gio::Cancellable::NONE, move |res| {
             if let Ok((conn, _)) = res {
                 handle_conn(conn, daemon.clone());
             }
             accept_next(listener, daemon);
-        },
-    );
+        });
 }
 
 fn handle_conn(conn: gio::SocketConnection, daemon: Rc<Daemon>) {
@@ -96,9 +95,13 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request) -> Response {
             }
         }
         Request::Quit => {
-            let path = hana_ipc::socket_path();
-            let _ = std::fs::remove_file(path);
-            std::process::exit(0);
+            // Reply first, then exit from an idle callback so the response
+            // actually reaches the client before the process dies.
+            glib::timeout_add_local_once(std::time::Duration::from_millis(50), || {
+                let _ = std::fs::remove_file(hwatu_ipc::socket_path());
+                std::process::exit(0);
+            });
+            Response::ok()
         }
     }
 }

@@ -374,33 +374,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "hana"
-version = "0.1.0"
-dependencies = [
- "hana-ipc",
- "serde_json",
-]
-
-[[package]]
-name = "hana-ipc"
-version = "0.1.0"
-dependencies = [
- "serde",
- "serde_json",
-]
-
-[[package]]
-name = "hanad"
-version = "0.1.0"
-dependencies = [
- "glib",
- "gtk4",
- "hana-ipc",
- "serde_json",
- "webkit6",
-]
-
-[[package]]
 name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -411,6 +384,33 @@ name = "heck"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
+
+[[package]]
+name = "hwatu"
+version = "0.1.0"
+dependencies = [
+ "hwatu-ipc",
+ "serde_json",
+]
+
+[[package]]
+name = "hwatu-ipc"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "hwatud"
+version = "0.1.0"
+dependencies = [
+ "glib",
+ "gtk4",
+ "hwatu-ipc",
+ "serde_json",
+ "webkit6",
+]
 
 [[package]]
 name = "indexmap"

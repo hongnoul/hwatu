@@ -1,12 +1,12 @@
 [workspace]
 resolver = "2"
-members = ["crates/ipc", "crates/hanad", "crates/hana"]
+members = ["crates/ipc", "crates/hwatud", "crates/hwatu"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/hongnoul/hana-fuda"
+repository = "https://github.com/hongnoul/hwatu"
 
 [profile.release]
 lto = "thin"
