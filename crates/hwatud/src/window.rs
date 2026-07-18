@@ -24,6 +24,15 @@ fn discard_timeout_secs() -> u64 {
         .unwrap_or(120)
 }
 
+/// Page a bare `hwatu` opens. Override with HWATU_HOME (any URL, or
+/// `about:blank`); defaults to the hwatu site.
+fn home_page() -> String {
+    std::env::var("HWATU_HOME")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| "https://hongnoul.github.io/hwatu/".into())
+}
+
 /// State saved across a discard.
 struct SavedState {
     session: Option<webkit6::WebViewSessionState>,
@@ -127,7 +136,7 @@ impl BrowserWindow {
         // post-MVP. Recorded for `hwatu list` semantics later.
         let _ = &app_id;
 
-        let target = url.unwrap_or_else(|| "about:blank".into());
+        let target = url.unwrap_or_else(home_page);
 
         let this = Rc::new(BrowserWindow {
             id,

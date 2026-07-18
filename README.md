@@ -60,7 +60,7 @@ adds the warm daemon and a current engine.
 ## Usage
 
 ```sh
-hwatu                      # open a blank window (autostarts hwatud)
+hwatu                      # open your home page (autostarts hwatud)
 hwatu example.com          # open a URL (https:// implied)
 hwatu list                 # id, url, title of every window
 hwatu close 2              # close window 2
@@ -75,6 +75,8 @@ No config file. Engine knobs are set to their correct values in code
 (GPU compositing always on, async/threaded scrolling pinned), and the
 only surface is environment variables read by `hwatud`:
 
+- `HWATU_HOME` – page opened by a bare `hwatu`
+  (default <https://hongnoul.github.io/hwatu/>, use `about:blank` for none).
 - `HWATU_DISCARD_SECS` – seconds an unfocused window keeps its live
   WebView before being suspended to save RAM (default 120, 0 disables).
 - `HWATU_WEBKIT_FEATURES=Ident:on,Other:off` – flip individual WebKit
