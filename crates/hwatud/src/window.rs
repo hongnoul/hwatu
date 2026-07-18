@@ -55,9 +55,12 @@ const SCROLL_FEATURES: &[&str] = &[
 /// `HWATU_WEBKIT_FEATURES=Ident:on,Other:off` — escape hatch for odd
 /// hardware. Applied last, so it can override anything above.
 fn feature_overrides() -> Vec<(String, bool)> {
-    let Ok(raw) = std::env::var("HWATU_WEBKIT_FEATURES") else {
-        return Vec::new();
-    };
+    std::env::var("HWATU_WEBKIT_FEATURES")
+        .map(|raw| parse_feature_overrides(&raw))
+        .unwrap_or_default()
+}
+
+fn parse_feature_overrides(raw: &str) -> Vec<(String, bool)> {
     raw.split(',')
         .filter_map(|entry| {
             let (ident, val) = entry.split_once(':')?;
@@ -83,9 +86,7 @@ pub fn build_webview() -> webkit6::WebView {
         // Scrolling must hit the GPU compositor path. The default
         // ("on demand") drops simple pages to CPU raster, and CPU
         // raster is where scroll jank lives.
-        settings.set_hardware_acceleration_policy(
-            webkit6::HardwareAccelerationPolicy::Always,
-        );
+        settings.set_hardware_acceleration_policy(webkit6::HardwareAccelerationPolicy::Always);
         // Animate discrete wheel ticks; precise touchpad deltas are
         // unaffected.
         settings.set_enable_smooth_scrolling(true);
@@ -93,14 +94,14 @@ pub fn build_webview() -> webkit6::WebView {
         let overrides = feature_overrides();
         if let Some(features) = webkit6::Settings::all_features() {
             for i in 0..features.length() {
-                let Some(feature) = features.get(i) else { continue };
+                let Some(feature) = features.get(i) else {
+                    continue;
+                };
                 let ident = feature.identifier().unwrap_or_default();
                 if SCROLL_FEATURES.contains(&ident.as_str()) {
                     settings.set_feature_enabled(&feature, true);
                 }
-                if let Some((_, on)) =
-                    overrides.iter().find(|(name, _)| *name == ident)
-                {
+                if let Some((_, on)) = overrides.iter().find(|(name, _)| *name == ident) {
                     settings.set_feature_enabled(&feature, *on);
                 }
             }
@@ -319,5 +320,34 @@ impl BrowserWindow {
 
     pub fn close(&self) {
         self.window.close();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_feature_overrides;
+
+    #[test]
+    fn parses_on_off_pairs() {
+        assert_eq!(
+            parse_feature_overrides("ThreadedScrolling:off, AsyncFrameScrolling:on"),
+            vec![
+                ("ThreadedScrolling".to_string(), false),
+                ("AsyncFrameScrolling".to_string(), true),
+            ]
+        );
+    }
+
+    #[test]
+    fn skips_malformed_entries() {
+        assert_eq!(
+            parse_feature_overrides("NoColon,Bad:maybe,Good:1"),
+            vec![("Good".to_string(), true)]
+        );
+    }
+
+    #[test]
+    fn empty_input_is_empty() {
+        assert!(parse_feature_overrides("").is_empty());
     }
 }
