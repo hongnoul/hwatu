@@ -51,6 +51,23 @@ hwatu quit                 # stop the daemon
 
 `Ctrl+q` closes the focused window. The daemon and engine stay warm.
 
+## Tuning
+
+No config file. Engine knobs are set to their correct values in code
+(GPU compositing always on, async/threaded scrolling pinned), and the
+only surface is environment variables read by `hwatud`:
+
+- `HWATU_DISCARD_SECS` – seconds an unfocused window keeps its live
+  WebView before being suspended to save RAM (default 120, 0 disables).
+- `HWATU_WEBKIT_FEATURES=Ident:on,Other:off` – flip individual WebKit
+  runtime features on odd hardware. Unknown identifiers are ignored.
+- Standard `WEBKIT_*` / `GSK_RENDERER` vars pass through untouched.
+
+Scrolling smoothness scales with your distro's WebKitGTK: 2.46+ paints
+with Skia on the GPU and is markedly smoother. `hwatud` logs its
+WebKitGTK version, session type, and renderer at startup; include that
+line in any jank report.
+
 ## Architecture
 
 ```
