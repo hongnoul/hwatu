@@ -1,6 +1,6 @@
 # Maintainer: hongnoul <FIXME email before AUR push>
 pkgname=hwatu
-pkgver=0.2.0
+pkgver=0.3.0
 pkgrel=1
 pkgdesc="Daemon-based WebKitGTK browser for tiling WMs: real rendering, ~45ms window spawn"
 arch=('x86_64')
@@ -9,7 +9,7 @@ license=('MIT')
 depends=('webkitgtk-6.0' 'gtk4')
 makedepends=('cargo')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/hongnoul/hwatu/archive/v$pkgver.tar.gz")
-sha256sums=('SKIP') # run updpkgsums before publishing
+sha256sums=('c02cb5816016c41c0e6108420748979be9ae9302f41ac2f8d5920928f3dacbc1')
 
 build() {
   cd "$pkgname-$pkgver"
