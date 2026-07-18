@@ -77,8 +77,26 @@ hwatu quit                 # stop the daemon
 
 `Ctrl+q` closes the focused window. `Ctrl+l` (or `O`) opens the URL
 bar prefilled with the current address, `o` opens it blank; `Enter`
-navigates, `Esc` cancels. `Ctrl+Shift+j` / `Ctrl+Shift+k` scroll the
-page down/up by half a viewport. The daemon and engine stay warm.
+navigates, `Esc` cancels. `Ctrl+o` / `Ctrl+i` go back/forward in
+history (vim jumplist style). `Ctrl+Shift+j` / `Ctrl+Shift+k` scroll
+the page down/up by half a viewport. The daemon and engine stay warm.
+
+Every bind is remappable in `~/.config/hwatu/keys.conf`, one
+`action = chord[, chord...]` per line (`none` unbinds):
+
+```
+back     = ctrl+o, alt+Left
+forward  = ctrl+i, alt+Right
+url_edit = ctrl+l, O
+close    = none
+```
+
+Chords are `[ctrl+][alt+][shift+]key`; a key is a character (`o`, `/`)
+or a GDK key name (`slash`, `Left`, `Page_Down`). Uppercase implies
+shift. Actions: `close`, `url_open`, `url_edit`, `find`, `find_back`,
+`find_next`, `find_prev`, `scroll_down`, `scroll_up`, `back`,
+`forward`. Chords with ctrl/alt always win over the page; bare keys
+reach the page first (an `o` typed in a text box stays in the page).
 
 On Wayland, `--app-id` names the window for your compositor's rules:
 
@@ -153,9 +171,9 @@ so there is no JavaScript in the request path and no per-window cost.
 
 ## Tuning
 
-No config file. Engine knobs are set to their correct values in code
-(GPU compositing always on), and the only surface is environment
-variables read by `hwatud`:
+No config file for engine knobs. They are set to their correct values
+in code (GPU compositing always on), and the only surfaces are
+`keys.conf` (above) and environment variables read by `hwatud`:
 
 - `HWATU_HOME` – page opened by a bare `hwatu`
   (default <https://hongnoul.github.io/hwatu/>, use `about:blank` for none).

@@ -10,6 +10,7 @@ mod adblock;
 mod bar;
 mod downloads;
 mod ipc_server;
+mod keys;
 mod prompts;
 mod session;
 mod window;
@@ -37,6 +38,8 @@ pub struct Daemon {
     pub adblock: adblock::Adblock,
     /// Remembered permission decisions (host+kind), daemon lifetime.
     pub prompt_memory: prompts::Memory,
+    /// Resolved keybindings (defaults + ~/.config/hwatu/keys.conf).
+    pub keymap: keys::Keymap,
     /// Debounce timer for crash-resilience session snapshots.
     session_save_timer: RefCell<Option<glib::SourceId>>,
 }
@@ -50,6 +53,7 @@ impl Daemon {
             prewarmed: RefCell::new(None),
             adblock: adblock::Adblock::default(),
             prompt_memory: prompts::Memory::default(),
+            keymap: keys::Keymap::load(),
             session_save_timer: RefCell::new(None),
         })
     }

@@ -9,6 +9,7 @@
 //! resume feels instant.
 
 use crate::bar::{Bar, BarMode};
+use crate::keys;
 use crate::prompts::{self, Prompt, Prompts};
 use crate::Daemon;
 use gtk::prelude::*;
@@ -226,35 +227,22 @@ impl BrowserWindow {
 
         // Capture-phase keys: things that must win over the page, which
         // keeps focus and would otherwise swallow them before bubble.
-        // - Ctrl+Shift+J/K scroll bindings (work even in a text field).
-        // - y/n/Esc while the bar is in confirm mode.
+        // Modified chords (ctrl/alt) dispatch here via the keymap;
+        // y/n/Esc while the bar is in confirm mode are fixed keys.
         {
             let ctrl = gtk::EventControllerKey::new();
             ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
             let this2 = this.clone();
             ctrl.connect_key_pressed(move |_, key, _, state| {
-                let ctrl_held = state.contains(gtk::gdk::ModifierType::CONTROL_MASK);
-                // Ctrl+L: URL bar. Capture phase because the page holds
-                // focus and address-bar muscle memory must always win.
-                if ctrl_held
-                    && !state.contains(gtk::gdk::ModifierType::SHIFT_MASK)
-                    && matches!(key, gtk::gdk::Key::l | gtk::gdk::Key::L)
-                {
-                    this2.open_url_bar();
-                    return glib::Propagation::Stop;
-                }
-                if ctrl_held && state.contains(gtk::gdk::ModifierType::SHIFT_MASK) {
-                    // With Shift held the keyval arrives uppercased.
-                    match key {
-                        gtk::gdk::Key::J | gtk::gdk::Key::j => {
-                            this2.scroll_page(1.0);
-                            return glib::Propagation::Stop;
-                        }
-                        gtk::gdk::Key::K | gtk::gdk::Key::k => {
-                            this2.scroll_page(-1.0);
-                            return glib::Propagation::Stop;
-                        }
-                        _ => {}
+                // While the bar's entry owns focus (find/URL typing),
+                // global chords stay out of the way: Ctrl+o in a URL
+                // prompt must not navigate history under the bar.
+                let entry_open = matches!(this2.bar.mode(), BarMode::Find { .. } | BarMode::Url);
+                if !entry_open {
+                    if let Some(action) =
+                        this2.daemon.keymap.lookup(keys::Phase::Capture, key, state)
+                    {
+                        return this2.run_action(action);
                     }
                 }
                 let BarMode::Confirm { tag } = this2.bar.mode() else {
@@ -572,55 +560,62 @@ impl BrowserWindow {
 
     // ---- bar & keyboard UX ----------------------------------------
 
+    /// Run one keymap action. Returns Proceed only for actions that
+    /// decline (n/N with no committed search fall through to the page).
+    fn run_action(self: &Rc<Self>, action: keys::Action) -> glib::Propagation {
+        use keys::Action;
+        match action {
+            Action::Close => self.window.close(),
+            Action::UrlOpen => self.bar.open_url(""),
+            Action::UrlEdit => self.open_url_bar(),
+            Action::Find => self.bar.open_find(false),
+            Action::FindBack => self.bar.open_find(true),
+            Action::FindNext => return self.find_next(true),
+            Action::FindPrev => return self.find_next(false),
+            Action::ScrollDown => self.scroll_page(1.0),
+            Action::ScrollUp => self.scroll_page(-1.0),
+            Action::Back => self.history_go(false),
+            Action::Forward => self.history_go(true),
+        }
+        glib::Propagation::Stop
+    }
+
+    /// Back/forward through this window's history. Restores a
+    /// discarded window first (its history came back with the blob).
+    fn history_go(self: &Rc<Self>, forward: bool) {
+        self.restore();
+        let Some(webview) = self.live_webview() else {
+            return;
+        };
+        if forward {
+            webview.go_forward();
+        } else {
+            webview.go_back();
+        }
+    }
+
     /// Window-level keys. This controller is on the toplevel in the
     /// default (bubble) phase, so it only sees keys the WebView did
     /// not consume: `/` in a page's text box stays in the page, `/`
-    /// anywhere else opens find.
+    /// anywhere else opens find. Modified chords never reach here;
+    /// they are handled by the capture controller.
     fn on_window_key(
         self: &Rc<Self>,
         key: gtk::gdk::Key,
         state: gtk::gdk::ModifierType,
     ) -> glib::Propagation {
-        let ctrl = state.contains(gtk::gdk::ModifierType::CONTROL_MASK);
-        if ctrl && key == gtk::gdk::Key::q {
-            self.window.close();
-            return glib::Propagation::Stop;
-        }
-
         match self.bar.mode() {
-            BarMode::Hidden | BarMode::Status => match key {
-                gtk::gdk::Key::slash => {
-                    self.bar.open_find(false);
-                    glib::Propagation::Stop
+            BarMode::Hidden | BarMode::Status => {
+                match self.daemon.keymap.lookup(keys::Phase::Bubble, key, state) {
+                    Some(action) => self.run_action(action),
+                    None if key == gtk::gdk::Key::Escape => {
+                        self.stop_find();
+                        self.bar.close();
+                        glib::Propagation::Proceed
+                    }
+                    None => glib::Propagation::Proceed,
                 }
-                // vim's `o`: open a URL. Bubble phase, so an `o` typed
-                // into a page's text box still goes to the page.
-                gtk::gdk::Key::o => {
-                    self.bar.open_url("");
-                    glib::Propagation::Stop
-                }
-                // `O`: edit the current URL (like vim's O vs o).
-                gtk::gdk::Key::O => {
-                    self.open_url_bar();
-                    glib::Propagation::Stop
-                }
-                gtk::gdk::Key::question => {
-                    self.bar.open_find(true);
-                    glib::Propagation::Stop
-                }
-                // n/N repeat the last committed search even after the
-                // bar is closed, like vim.
-                gtk::gdk::Key::n => {
-                    self.find_next(!state.contains(gtk::gdk::ModifierType::SHIFT_MASK))
-                }
-                gtk::gdk::Key::N => self.find_next(false),
-                gtk::gdk::Key::Escape => {
-                    self.stop_find();
-                    self.bar.close();
-                    glib::Propagation::Proceed
-                }
-                _ => glib::Propagation::Proceed,
-            },
+            }
             // Find mode: entry has focus and eats printable keys; we
             // only see what bubbles past it (Escape/Enter handled in
             // wire_bar on the entry itself). Swallow the rest so keys
