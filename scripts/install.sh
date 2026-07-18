@@ -21,7 +21,19 @@ esac
 artifact="hwatu-linux-${arch}"
 
 # --- runtime dependency check ------------------------------------------------
-if ! ldconfig -p 2>/dev/null | grep -q libwebkitgtk-6.0; then
+has_webkit() {
+  # ldconfig may live in /usr/sbin, which is not always on PATH in
+  # non-login shells (curl | bash).
+  for lc in ldconfig /sbin/ldconfig /usr/sbin/ldconfig; do
+    if command -v "$lc" >/dev/null 2>&1; then
+      "$lc" -p 2>/dev/null | grep -q libwebkitgtk-6.0 && return 0
+      break
+    fi
+  done
+  ls /usr/lib/libwebkitgtk-6.0.so* /usr/lib/*/libwebkitgtk-6.0.so* >/dev/null 2>&1
+}
+
+if ! has_webkit; then
   say "runtime dependency libwebkitgtk-6.0 not found."
   if command -v pacman >/dev/null 2>&1; then
     say "install it with: sudo pacman -S webkitgtk-6.0"
