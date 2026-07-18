@@ -499,7 +499,10 @@ mod tests {
     #[test]
     fn start_and_end_anchors() {
         let r = one("|https://tracker.io/px|");
-        assert_eq!(r["trigger"]["url-filter"], "^https:\\/\\/tracker\\.io\\/px$");
+        assert_eq!(
+            r["trigger"]["url-filter"],
+            "^https:\\/\\/tracker\\.io\\/px$"
+        );
     }
 
     #[test]
@@ -515,7 +518,10 @@ mod tests {
         assert!(types.contains(&Value::from("script")));
         assert!(types.contains(&Value::from("image")));
         assert_eq!(types.len(), 2);
-        assert_eq!(r["trigger"]["load-type"], serde_json::json!(["third-party"]));
+        assert_eq!(
+            r["trigger"]["load-type"],
+            serde_json::json!(["third-party"])
+        );
     }
 
     #[test]
@@ -547,7 +553,10 @@ mod tests {
         let r = one("@@||trusted.org^$document");
         assert_eq!(r["action"]["type"], "ignore-previous-rules");
         assert_eq!(r["trigger"]["url-filter"], ".*");
-        assert_eq!(r["trigger"]["if-domain"], serde_json::json!(["*trusted.org"]));
+        assert_eq!(
+            r["trigger"]["if-domain"],
+            serde_json::json!(["*trusted.org"])
+        );
     }
 
     #[test]
@@ -556,9 +565,7 @@ mod tests {
         let r = rules(list);
         assert_eq!(r.len(), 2);
         // Generic (no domain scope) and scoped rule both css-display-none.
-        assert!(r
-            .iter()
-            .all(|v| v["action"]["type"] == "css-display-none"));
+        assert!(r.iter().all(|v| v["action"]["type"] == "css-display-none"));
         let scoped = r
             .iter()
             .find(|v| v["trigger"].get("if-domain").is_some())

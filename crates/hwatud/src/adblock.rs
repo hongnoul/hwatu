@@ -287,8 +287,7 @@ impl Adblock {
 
             let dir = store_dir();
             let _ = std::fs::create_dir_all(&dir);
-            let store =
-                webkit6::UserContentFilterStore::new(&dir.to_string_lossy());
+            let store = webkit6::UserContentFilterStore::new(&dir.to_string_lossy());
 
             let hash = fnv1a(converted.json.as_bytes());
             let cached = std::fs::read_to_string(meta_path())
