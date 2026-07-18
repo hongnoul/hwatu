@@ -64,7 +64,9 @@ adds the warm daemon and a current engine.
 ```sh
 hwatu                      # open your home page (autostarts hwatud)
 hwatu example.com          # open a URL (https:// implied)
+hwatu --app-id mail url    # per-window app_id for WM window rules
 hwatu list                 # id, url, title of every window
+hwatu list --json          # same, as JSON (for wofi/rofi pipelines)
 hwatu close 2              # close window 2
 hwatu adblock              # content-blocker status (rule count, source)
 hwatu adblock off          # disable blocking (persisted; `on` re-enables)
@@ -74,6 +76,22 @@ hwatu quit                 # stop the daemon
 ```
 
 `Ctrl+q` closes the focused window. The daemon and engine stay warm.
+
+On Wayland, `--app-id` names the window for your compositor's rules:
+
+```
+# hyprland
+windowrule = workspace 3, class:mail
+# sway
+assign [app_id="mail"] workspace 3
+```
+
+Unfocused windows are suspended after `HWATU_DISCARD_SECS` (default
+120): navigation history is serialized to `~/.cache/hwatu/discard/`,
+the web process is killed, and the RAM comes back. Focusing the window
+restores it from the prewarm pool, so resume feels instant. If a page's
+web process crashes or is OOM-killed, the bar offers
+`page crashed, reload? [y/n]` instead of leaving a white window.
 
 ## The bar
 
@@ -161,8 +179,8 @@ Crates:
 
 ## Roadmap
 
-- [ ] Background window suspension + discard-to-disk (RAM reclaim)
-- [ ] Per-window `app_id` for WM window rules
+- [x] Background window suspension + discard-to-disk (RAM reclaim)
+- [x] Per-window `app_id` for WM window rules
 - [ ] Keyboard-first UX: URL overlay bar, link hints
 - [ ] Session persistence and restore
 - [ ] Profiles (separate cookie jars / web contexts)
