@@ -89,6 +89,12 @@ pub struct BrowserWindow {
     webview: RefCell<Option<webkit6::WebView>>,
     saved: RefCell<Option<SavedState>>,
     discard_timer: RefCell<Option<glib::SourceId>>,
+    /// Marker shared between windows whose WebViews share one web
+    /// process (popup ↔ opener, via `related_view`). `discard` must
+    /// not terminate a process another live window still uses;
+    /// `Rc::strong_count > 1` is that test. Cleared on discard: a
+    /// restored view comes from the pool and is no longer related.
+    process_group: RefCell<Option<Rc<()>>>,
     /// Wayland app_id this window was opened with, echoed by `hwatu list`.
     app_id: Option<String>,
 }
@@ -135,7 +141,14 @@ fn set_wayland_app_id(window: &gtk::Window, app_id: &str) {
 /// a fallback; all engine knobs live here — never on the spawn path.
 pub fn build_webview() -> webkit6::WebView {
     let view = webkit6::WebView::new();
-    if let Some(settings) = webkit6::prelude::WebViewExt::settings(&view) {
+    apply_view_settings(&view);
+    view
+}
+
+/// Shared engine settings, applied to prewarmed views and to popup
+/// views built with `related_view` (which bypass `build_webview`).
+fn apply_view_settings(view: &webkit6::WebView) {
+    if let Some(settings) = webkit6::prelude::WebViewExt::settings(view) {
         settings.set_enable_developer_extras(true);
         // Render as intended: leave JS, media, canvas, webgl at defaults.
         settings.set_enable_page_cache(true); // bfcache
@@ -163,13 +176,61 @@ pub fn build_webview() -> webkit6::WebView {
             }
         }
     }
-    view
 }
 
 impl BrowserWindow {
     pub fn open(daemon: &Rc<Daemon>, url: Option<String>, app_id: Option<String>) -> WindowInfo {
-        let id = daemon.alloc_id();
         let webview = daemon.take_webview();
+        let target = url.unwrap_or_else(home_page);
+        let this = Self::build(daemon, webview.clone(), app_id.clone());
+        webview.load_uri(&target);
+        this.window.present();
+        WindowInfo {
+            id: this.id,
+            url: target,
+            title: String::new(),
+            suspended: false,
+            app_id,
+        }
+    }
+
+    /// Open a window for a popup requested by the page (`window.open`,
+    /// `target=_blank`). The new WebView must be built with
+    /// `related_view` so it shares the opener's web process —
+    /// `window.opener` and postMessage (OAuth flows) depend on it. The
+    /// prewarmed pool can't serve this, so the view is built here.
+    /// WebKit drives the navigation itself; loading anything manually
+    /// would break the popup contract. The window is presented on
+    /// ready-to-show, once the engine has applied window features.
+    fn open_popup(self: &Rc<Self>, related: &webkit6::WebView) -> webkit6::WebView {
+        let webview = webkit6::WebView::builder().related_view(related).build();
+        apply_view_settings(&webview);
+        self.daemon.adblock.apply_to(&webview);
+        let popup = Self::build(&self.daemon, webview.clone(), self.app_id.clone());
+        // Mark both windows as sharing a web process so neither
+        // discard() terminates it while the other still needs it.
+        let group = self
+            .process_group
+            .borrow_mut()
+            .get_or_insert_with(|| Rc::new(()))
+            .clone();
+        popup.process_group.replace(Some(group));
+        {
+            let win = popup.window.clone();
+            webview.connect_ready_to_show(move |_| win.present());
+        }
+        webview
+    }
+
+    /// Shared window construction: chrome, keys, lifecycle, registry.
+    /// Callers decide how the WebView gets its content (load_uri for
+    /// normal opens, engine-driven for popups) and when to present.
+    fn build(
+        daemon: &Rc<Daemon>,
+        webview: webkit6::WebView,
+        app_id: Option<String>,
+    ) -> Rc<Self> {
+        let id = daemon.alloc_id();
 
         let window = gtk::Window::builder()
             .application(&daemon.app)
@@ -193,8 +254,6 @@ impl BrowserWindow {
             });
         }
 
-        let target = url.unwrap_or_else(home_page);
-
         let overlay = gtk::Overlay::new();
         let bar = Bar::new();
         overlay.add_overlay(&bar.root);
@@ -210,11 +269,11 @@ impl BrowserWindow {
             webview: RefCell::new(None),
             saved: RefCell::new(None),
             discard_timer: RefCell::new(None),
-            app_id: app_id.clone(),
+            process_group: RefCell::new(None),
+            app_id,
         });
 
-        this.attach_webview(webview.clone());
-        webview.load_uri(&target);
+        this.attach_webview(webview);
         this.wire_bar();
 
         // Ctrl+q closes the window; the daemon (and engine) stay warm.
@@ -297,18 +356,9 @@ impl BrowserWindow {
             });
         }
 
-        window.present();
-
-        let info = WindowInfo {
-            id,
-            url: target.clone(),
-            title: String::new(),
-            suspended: false,
-            app_id,
-        };
-        daemon.windows.borrow_mut().insert(id, this);
+        daemon.windows.borrow_mut().insert(id, this.clone());
         daemon.schedule_session_save();
-        info
+        this
     }
 
     /// Put a WebView into the window and wire its signals.
@@ -379,6 +429,20 @@ impl BrowserWindow {
                 eprintln!("hwatud: web process for window {} {reason}", this.id);
                 this.push_prompt(Prompt::Crash { reason });
             });
+        }
+        // Popups: window.open / target=_blank. WM-is-the-tab-bar means
+        // a popup is just another toplevel. The view must come from
+        // open_popup (related_view) or window.opener breaks.
+        {
+            let this = self.clone();
+            webview.connect_create(move |wv, _action| this.open_popup(wv).upcast());
+        }
+        // Pages may close windows they created (window.close after an
+        // OAuth handoff). WebKit only emits this where the web platform
+        // allows it, so honoring it unconditionally is safe.
+        {
+            let this = self.clone();
+            webview.connect_close(move |_| this.window.close());
         }
         // Non-displayable responses (Content-Disposition: attachment,
         // MIME types WebKit can't render) become downloads instead of
@@ -467,8 +531,16 @@ impl BrowserWindow {
         self.overlay.set_child(Some(&placeholder));
         // Dropping the WebView alone is not enough: WebKit keeps the web
         // process cached for reuse. State is already serialized, so kill
-        // the process outright; that is where the RAM comes back.
-        webview.terminate_web_process();
+        // the process outright; that is where the RAM comes back — unless
+        // a related window (popup ↔ opener) still runs in that process.
+        let shared = self
+            .process_group
+            .borrow_mut()
+            .take()
+            .is_some_and(|group| Rc::strong_count(&group) > 1);
+        if !shared {
+            webview.terminate_web_process();
+        }
         drop(webview);
     }
 
