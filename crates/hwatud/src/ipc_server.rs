@@ -115,10 +115,62 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request) -> Response {
 }
 
 /// `example.com` -> `https://example.com`; keep schemes and about: intact.
+/// Loopback hosts (`localhost`, `*.localhost`, `127.*`, `[::1]`) get `http://`
+/// since local dev servers rarely speak TLS.
 fn normalize_url(input: String) -> String {
     if input.contains("://") || input.starts_with("about:") {
         input
+    } else if is_loopback_host(&input) {
+        format!("http://{input}")
     } else {
         format!("https://{input}")
+    }
+}
+
+/// True if the host part of a scheme-less input is a loopback address.
+fn is_loopback_host(input: &str) -> bool {
+    let rest = input.split(['/', '?', '#']).next().unwrap_or(input);
+    if rest.starts_with("[::1]") {
+        return true;
+    }
+    let host = rest.split(':').next().unwrap_or(rest);
+    host.eq_ignore_ascii_case("localhost")
+        || host.to_ascii_lowercase().ends_with(".localhost")
+        || host.starts_with("127.")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_url;
+
+    #[test]
+    fn normalizes_urls() {
+        assert_eq!(normalize_url("example.com".into()), "https://example.com");
+        assert_eq!(
+            normalize_url("localhost:3000".into()),
+            "http://localhost:3000"
+        );
+        assert_eq!(
+            normalize_url("localhost:3000/path?q=1".into()),
+            "http://localhost:3000/path?q=1"
+        );
+        assert_eq!(
+            normalize_url("127.0.0.1:8080".into()),
+            "http://127.0.0.1:8080"
+        );
+        assert_eq!(normalize_url("[::1]:3000".into()), "http://[::1]:3000");
+        assert_eq!(
+            normalize_url("app.localhost:3000".into()),
+            "http://app.localhost:3000"
+        );
+        assert_eq!(
+            normalize_url("https://localhost:3000".into()),
+            "https://localhost:3000"
+        );
+        assert_eq!(normalize_url("about:blank".into()), "about:blank");
+        assert_eq!(
+            normalize_url("localhost.example.com".into()),
+            "https://localhost.example.com"
+        );
     }
 }
