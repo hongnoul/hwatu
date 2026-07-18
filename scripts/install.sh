@@ -50,18 +50,25 @@ if ! has_webkit; then
 fi
 
 # --- download ----------------------------------------------------------------
-tag=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
-  | grep -o '"tag_name": *"[^"]*"' | head -1 | cut -d'"' -f4)
-[ -n "$tag" ] || die "could not determine latest release tag"
-
-url="https://github.com/${REPO}/releases/download/${tag}/${artifact}.tar.gz"
+# Use the /releases/latest/download/ redirect instead of api.github.com:
+# the API is rate-limited per IP (60/hr unauthenticated) and fails on
+# shared networks, while the redirect endpoint is not rate-limited.
+url="https://github.com/${REPO}/releases/latest/download/${artifact}.tar.gz"
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
-say "downloading ${artifact} ${tag}..."
-curl -fsSL "$url" -o "$tmp/pkg.tar.gz" || die "download failed: $url"
+say "downloading ${artifact} (latest release)..."
+final_url=$(curl -fsSL -o "$tmp/pkg.tar.gz" -w '%{url_effective}' "$url") \
+  || die "download failed: $url"
 
-if curl -fsSL "${url}.sha256" -o "$tmp/pkg.sha256" 2>/dev/null; then
+# Recover the tag from the resolved asset URL for the install message.
+# The redirect may land on release-assets.githubusercontent.com, so fall
+# back gracefully when no tag segment is present.
+tag=$(printf '%s\n' "$final_url" | grep -o '/releases/download/[^/]*/' | cut -d/ -f4 || true)
+[ -n "$tag" ] || tag="latest"
+
+if curl -fsSL "https://github.com/${REPO}/releases/latest/download/${artifact}.tar.gz.sha256" \
+    -o "$tmp/pkg.sha256" 2>/dev/null; then
   (cd "$tmp" && sed "s|${artifact}.tar.gz|pkg.tar.gz|" pkg.sha256 | sha256sum -c --quiet -) \
     || die "checksum verification failed"
 fi
