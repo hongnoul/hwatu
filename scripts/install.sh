@@ -23,14 +23,16 @@ artifact="hwatu-linux-${arch}"
 # --- runtime dependency check ------------------------------------------------
 has_webkit() {
   # ldconfig may live in /usr/sbin, which is not always on PATH in
-  # non-login shells (curl | bash).
+  # non-login shells (curl | bash). Note: grep -q would SIGPIPE ldconfig
+  # under `set -o pipefail`, so read the full output instead.
   for lc in ldconfig /sbin/ldconfig /usr/sbin/ldconfig; do
     if command -v "$lc" >/dev/null 2>&1; then
-      "$lc" -p 2>/dev/null | grep -q libwebkitgtk-6.0 && return 0
+      "$lc" -p 2>/dev/null | grep libwebkitgtk-6.0 >/dev/null && return 0
       break
     fi
   done
-  ls /usr/lib/libwebkitgtk-6.0.so* /usr/lib/*/libwebkitgtk-6.0.so* >/dev/null 2>&1
+  compgen -G "/usr/lib/libwebkitgtk-6.0.so*" >/dev/null 2>&1 \
+    || compgen -G "/usr/lib/*/libwebkitgtk-6.0.so*" >/dev/null 2>&1
 }
 
 if ! has_webkit; then
