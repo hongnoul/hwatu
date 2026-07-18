@@ -3,7 +3,7 @@
 //! `hana <url>` opens a window in ~1 IPC roundtrip. If no daemon is
 //! running, it spawns one and waits for the socket.
 
-use hwatu_ipc::{Request, Response};
+use hwatu_ipc::{AdblockCmd, Request, Response};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::process::Command;
@@ -43,7 +43,11 @@ fn main() {
     }
 
     match serde_json::from_str::<Response>(line.trim()) {
-        Ok(Response::Ok { window, windows }) => {
+        Ok(Response::Ok {
+            window,
+            windows,
+            adblock,
+        }) => {
             if let Some(w) = window {
                 println!(
                     "window {} -> {} ({} ms)",
@@ -57,6 +61,20 @@ fn main() {
                     let flag = if w.suspended { "suspended" } else { "live" };
                     println!("{}\t{}\t{}\t{}", w.id, flag, w.url, w.title);
                 }
+            }
+            if let Some(a) = adblock {
+                let state = if a.enabled { "on" } else { "off" };
+                let mut extra = String::new();
+                if a.compiling {
+                    extra.push_str(", compiling");
+                }
+                if a.updating {
+                    extra.push_str(", updating lists");
+                }
+                println!(
+                    "adblock {state}: {} rules ({}{extra})",
+                    a.rules, a.source
+                );
             }
         }
         Ok(Response::Err { message }) => {
@@ -86,6 +104,20 @@ fn parse(args: &[String]) -> Result<Request, String> {
                 .ok_or("usage: hwatu close <id>")?;
             Ok(Request::Close { id })
         }
+        Some("adblock") => {
+            let action = match args.get(1).map(String::as_str) {
+                Some("on") => AdblockCmd::On,
+                Some("off") => AdblockCmd::Off,
+                None | Some("status") => AdblockCmd::Status,
+                Some("update") => AdblockCmd::Update,
+                Some(other) => {
+                    return Err(format!(
+                        "unknown adblock action {other:?}; usage: hwatu adblock [on|off|status|update]"
+                    ))
+                }
+            };
+            Ok(Request::Adblock { action })
+        }
         Some("-h") | Some("--help") => Err(USAGE.to_string()),
         Some(url) => Ok(Request::Open {
             url: Some(url.to_string()),
@@ -94,7 +126,8 @@ fn parse(args: &[String]) -> Result<Request, String> {
     }
 }
 
-const USAGE: &str = "usage: hwatu [url | list | close <id> | ping | quit]";
+const USAGE: &str =
+    "usage: hwatu [url | list | close <id> | adblock [on|off|status|update] | ping | quit]";
 
 fn connect_or_spawn() -> std::io::Result<UnixStream> {
     let path = hwatu_ipc::socket_path();

@@ -1,11 +1,11 @@
 //! Unix-socket IPC server, integrated with the GLib main loop so all
 //! window work happens on the GTK main thread.
 
-use crate::{window::BrowserWindow, Daemon};
+use crate::{adblock::Adblock, window::BrowserWindow, Daemon};
 use gtk::gio;
 use gtk::gio::prelude::*;
 use gtk::glib;
-use hwatu_ipc::{Request, Response};
+use hwatu_ipc::{AdblockCmd, Request, Response};
 use std::rc::Rc;
 
 pub fn start(daemon: Rc<Daemon>) -> std::io::Result<()> {
@@ -92,6 +92,15 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request) -> Response {
                 }
                 None => Response::err(format!("no window {id}")),
             }
+        }
+        Request::Adblock { action } => {
+            match action {
+                AdblockCmd::On => Adblock::set_enabled(daemon, true),
+                AdblockCmd::Off => Adblock::set_enabled(daemon, false),
+                AdblockCmd::Update => Adblock::update(daemon),
+                AdblockCmd::Status => {}
+            }
+            Response::adblock(daemon.adblock.status())
         }
         Request::Quit => {
             // Reply first, then exit from an idle callback so the response

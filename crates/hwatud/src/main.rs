@@ -5,6 +5,8 @@
 //! a "new browser" from the shell costs one IPC roundtrip instead of
 //! an engine cold start.
 
+mod abp;
+mod adblock;
 mod ipc_server;
 mod bar;
 mod window;
@@ -28,6 +30,8 @@ pub struct Daemon {
     /// One blank, fully initialized WebView kept warm so window
     /// creation never pays engine setup cost.
     pub prewarmed: RefCell<Option<webkit6::WebView>>,
+    /// Built-in content blocker (on by default).
+    pub adblock: adblock::Adblock,
 }
 
 impl Daemon {
@@ -37,6 +41,7 @@ impl Daemon {
             windows: RefCell::new(HashMap::new()),
             next_id: RefCell::new(1),
             prewarmed: RefCell::new(None),
+            adblock: adblock::Adblock::default(),
         })
     }
 
@@ -46,7 +51,11 @@ impl Daemon {
             .prewarmed
             .borrow_mut()
             .take()
-            .unwrap_or_else(window::build_webview);
+            .unwrap_or_else(|| {
+                let view = window::build_webview();
+                self.adblock.apply_to(&view);
+                view
+            });
         self.schedule_prewarm();
         view
     }
@@ -56,6 +65,7 @@ impl Daemon {
         glib::idle_add_local_once(move || {
             if daemon.prewarmed.borrow().is_none() {
                 let view = window::build_webview();
+                daemon.adblock.apply_to(&view);
                 // Deep warm: loading about:blank realizes the web
                 // process and the GPU compositor path while idle, so a
                 // spawned window adopts a view whose rendering pipeline
@@ -87,6 +97,7 @@ fn main() -> glib::ExitCode {
     app.connect_startup(move |app| {
         bar::install_css();
         let daemon = Daemon::new(app.clone());
+        adblock::Adblock::init(&daemon);
         daemon.schedule_prewarm();
         if let Err(e) = ipc_server::start(daemon) {
             eprintln!("hwatud: failed to start IPC server: {e}");

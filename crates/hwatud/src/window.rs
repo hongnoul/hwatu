@@ -340,6 +340,12 @@ impl BrowserWindow {
         self.window.close();
     }
 
+    /// The live WebView, if this window is not discarded. Used by the
+    /// adblock toggle to re-apply filters across all windows.
+    pub fn live_webview(&self) -> Option<webkit6::WebView> {
+        self.webview.borrow().clone()
+    }
+
     // ---- bar & keyboard UX ----------------------------------------
 
     /// Window-level keys. This controller is on the toplevel in the

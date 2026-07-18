@@ -38,10 +38,25 @@ pub enum Request {
     List,
     /// Close a window by id.
     Close { id: u64 },
+    /// Control the built-in content blocker.
+    Adblock { action: AdblockCmd },
     /// Ask the daemon to exit.
     Quit,
     /// Health check / used by the client to detect a live daemon.
     Ping,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdblockCmd {
+    /// Enable blocking (persisted to config).
+    On,
+    /// Disable blocking (persisted to config).
+    Off,
+    /// Report current state.
+    Status,
+    /// Re-download filter lists and recompile.
+    Update,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -52,6 +67,8 @@ pub enum Response {
         window: Option<WindowInfo>,
         #[serde(skip_serializing_if = "Option::is_none")]
         windows: Option<Vec<WindowInfo>>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        adblock: Option<AdblockStatus>,
     },
     Err {
         message: String,
@@ -63,18 +80,28 @@ impl Response {
         Response::Ok {
             window: None,
             windows: None,
+            adblock: None,
         }
     }
     pub fn window(w: WindowInfo) -> Self {
         Response::Ok {
             window: Some(w),
             windows: None,
+            adblock: None,
         }
     }
     pub fn windows(ws: Vec<WindowInfo>) -> Self {
         Response::Ok {
             window: None,
             windows: Some(ws),
+            adblock: None,
+        }
+    }
+    pub fn adblock(status: AdblockStatus) -> Self {
+        Response::Ok {
+            window: None,
+            windows: None,
+            adblock: Some(status),
         }
     }
     pub fn err(message: impl Into<String>) -> Self {
@@ -82,6 +109,20 @@ impl Response {
             message: message.into(),
         }
     }
+}
+
+/// State of the built-in content blocker, as reported by the daemon.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdblockStatus {
+    pub enabled: bool,
+    /// Compiled content-blocker rules currently active.
+    pub rules: usize,
+    /// Human-readable description of the filter source.
+    pub source: String,
+    /// True while WebKit is compiling a ruleset.
+    pub compiling: bool,
+    /// True while filter lists are being re-downloaded.
+    pub updating: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

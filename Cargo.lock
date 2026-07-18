@@ -408,6 +408,7 @@ dependencies = [
  "glib",
  "gtk4",
  "hwatu-ipc",
+ "serde",
  "serde_json",
  "webkit6",
 ]

@@ -56,6 +56,8 @@ adds the warm daemon and a current engine.
 - **No chrome.** The WebView is the whole window.
 - **Real rendering.** Full WebKit: JS, CSS, media, WebGL, as the frontend
   intended. No custom half-engine.
+- **No ads.** Content blocking is built in and on by default, evaluated
+  natively in WebKit's network process — zero JS, zero UI, zero spawn cost.
 
 ## Usage
 
@@ -64,10 +66,32 @@ hwatu                      # open your home page (autostarts hwatud)
 hwatu example.com          # open a URL (https:// implied)
 hwatu list                 # id, url, title of every window
 hwatu close 2              # close window 2
+hwatu adblock              # content-blocker status (rule count, source)
+hwatu adblock off          # disable blocking (persisted; `on` re-enables)
+hwatu adblock update       # fetch EasyList + EasyPrivacy, recompile
 hwatu quit                 # stop the daemon
 ```
 
 `Ctrl+q` closes the focused window. The daemon and engine stay warm.
+
+## Ad blocking
+
+A baseline filter list is embedded in the binary, so blocking works
+offline on first run. `hwatu adblock update` upgrades to full EasyList +
+EasyPrivacy (~117k compiled rules); compiled rulesets are cached, so
+only the first start after a list change pays compile cost (~5 s), warm
+starts load in ~0.4 s. Rules run in WebKit's content-extension engine in
+the network process — the same machinery as Safari content blockers —
+so there is no JavaScript in the request path and no per-window cost.
+
+- Toggle: `hwatu adblock on|off` applies live to every open window and
+  persists in `~/.config/hwatu/config.json`. `HWATU_ADBLOCK=off`
+  overrides at daemon startup.
+- Own filters: put ABP-syntax rules in `~/.config/hwatu/filters.txt`;
+  they are appended to whatever lists are active.
+- Filter kinds the engine cannot express declaratively ($csp,
+  $redirect, scriptlets, procedural cosmetics) are skipped, never
+  approximated, so a filter-list update can't break page loads.
 
 ## Tuning
 
