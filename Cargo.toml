@@ -1,0 +1,13 @@
+[workspace]
+resolver = "2"
+members = ["crates/ipc", "crates/hanad", "crates/hana"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/hongnoul/hana-fuda"
+
+[profile.release]
+lto = "thin"
+strip = true
