@@ -247,7 +247,9 @@ hwatu list                 # id, url, title of every window
 hwatu close 2              # close window 2
 hwatu quit                 # stop the daemon</code></pre>
         <p>
-          <code>Ctrl+q</code> closes the focused window. The daemon and engine
+          <code>Ctrl+q</code> closes the focused window.
+          <code>Ctrl+Shift+j</code> / <code>Ctrl+Shift+k</code> scroll the
+          page down/up by half a viewport. The daemon and engine
           stay warm.
         </p>
       </section>
@@ -256,7 +258,7 @@ hwatu quit                 # stop the daemon</code></pre>
         <h2>Tuning</h2>
         <p>
           No config file. Engine knobs are set to their correct values in code
-          (GPU compositing always on, async and threaded scrolling pinned).
+          (GPU compositing always on).
           The only surface is environment variables:
         </p>
         <table>

@@ -75,7 +75,9 @@ hwatu update               # self-update to the latest release
 hwatu quit                 # stop the daemon
 ```
 
-`Ctrl+q` closes the focused window. The daemon and engine stay warm.
+`Ctrl+q` closes the focused window. `Ctrl+Shift+j` / `Ctrl+Shift+k`
+scroll the page down/up by half a viewport. The daemon and engine stay
+warm.
 
 On Wayland, `--app-id` names the window for your compositor's rules:
 
@@ -142,8 +144,8 @@ so there is no JavaScript in the request path and no per-window cost.
 ## Tuning
 
 No config file. Engine knobs are set to their correct values in code
-(GPU compositing always on, async/threaded scrolling pinned), and the
-only surface is environment variables read by `hwatud`:
+(GPU compositing always on), and the only surface is environment
+variables read by `hwatud`:
 
 - `HWATU_HOME` – page opened by a bare `hwatu`
   (default <https://hongnoul.github.io/hwatu/>, use `about:blank` for none).

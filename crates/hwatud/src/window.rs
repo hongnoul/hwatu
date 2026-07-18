@@ -92,20 +92,11 @@ pub struct BrowserWindow {
     app_id: Option<String>,
 }
 
-/// Scroll-critical engine features, enabled if this WebKit build has
-/// them. All of these default on in current WebKit but are Embedder/
-/// Internal status, so distros can and do flip them; pinning them here
-/// makes smoothness a property of hwatu rather than of the distro.
-/// Unknown identifiers are skipped, so this degrades gracefully across
-/// WebKitGTK versions (enable-what-exists, never version-match).
-const SCROLL_FEATURES: &[&str] = &[
-    "AsyncFrameScrolling",    // main-frame scrolling off the main thread
-    "AsyncOverflowScrolling", // same for overflow: scroll subtrees
-    "ThreadedScrolling",      // compositor-thread scroll updates
-];
-
 /// `HWATU_WEBKIT_FEATURES=Ident:on,Other:off` — escape hatch for odd
-/// hardware. Applied last, so it can override anything above.
+/// hardware. hwatu used to force-enable the async/threaded scrolling
+/// features here, but forcing them breaks wheel scrolling outright on
+/// some driver stacks (notably NVIDIA + Wayland), so engine defaults
+/// now rule and this env var is the only way to flip features.
 fn feature_overrides() -> Vec<(String, bool)> {
     std::env::var("HWATU_WEBKIT_FEATURES")
         .map(|raw| parse_feature_overrides(&raw))
@@ -157,17 +148,16 @@ pub fn build_webview() -> webkit6::WebView {
         settings.set_enable_smooth_scrolling(true);
 
         let overrides = feature_overrides();
-        if let Some(features) = webkit6::Settings::all_features() {
-            for i in 0..features.length() {
-                let Some(feature) = features.get(i) else {
-                    continue;
-                };
-                let ident = feature.identifier().unwrap_or_default();
-                if SCROLL_FEATURES.contains(&ident.as_str()) {
-                    settings.set_feature_enabled(&feature, true);
-                }
-                if let Some((_, on)) = overrides.iter().find(|(name, _)| *name == ident) {
-                    settings.set_feature_enabled(&feature, *on);
+        if !overrides.is_empty() {
+            if let Some(features) = webkit6::Settings::all_features() {
+                for i in 0..features.length() {
+                    let Some(feature) = features.get(i) else {
+                        continue;
+                    };
+                    let ident = feature.identifier().unwrap_or_default();
+                    if let Some((_, on)) = overrides.iter().find(|(name, _)| *name == ident) {
+                        settings.set_feature_enabled(&feature, *on);
+                    }
                 }
             }
         }
@@ -234,14 +224,31 @@ impl BrowserWindow {
             window.add_controller(ctrl);
         }
 
-        // Confirm prompts must win over the page: while the bar is in
-        // confirm mode, grab y/n/Esc in the capture phase before the
-        // WebView (which keeps focus and would swallow them).
+        // Capture-phase keys: things that must win over the page, which
+        // keeps focus and would otherwise swallow them before bubble.
+        // - Ctrl+Shift+J/K scroll bindings (work even in a text field).
+        // - y/n/Esc while the bar is in confirm mode.
         {
             let ctrl = gtk::EventControllerKey::new();
             ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
             let this2 = this.clone();
-            ctrl.connect_key_pressed(move |_, key, _, _| {
+            ctrl.connect_key_pressed(move |_, key, _, state| {
+                if state.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+                    && state.contains(gtk::gdk::ModifierType::SHIFT_MASK)
+                {
+                    // With Shift held the keyval arrives uppercased.
+                    match key {
+                        gtk::gdk::Key::J | gtk::gdk::Key::j => {
+                            this2.scroll_page(1.0);
+                            return glib::Propagation::Stop;
+                        }
+                        gtk::gdk::Key::K | gtk::gdk::Key::k => {
+                            this2.scroll_page(-1.0);
+                            return glib::Propagation::Stop;
+                        }
+                        _ => {}
+                    }
+                }
                 let BarMode::Confirm { tag } = this2.bar.mode() else {
                     return glib::Propagation::Proceed;
                 };
@@ -534,6 +541,17 @@ impl BrowserWindow {
     /// adblock toggle to re-apply filters across all windows.
     pub fn live_webview(&self) -> Option<webkit6::WebView> {
         self.webview.borrow().clone()
+    }
+
+    /// Scroll the page by `pages` half-viewports (negative = up). Runs
+    /// in the page's JS world; a discarded window has no page and this
+    /// is a no-op.
+    fn scroll_page(&self, pages: f64) {
+        let Some(webview) = self.live_webview() else {
+            return;
+        };
+        let js = format!("window.scrollBy(0, window.innerHeight * 0.5 * {pages});");
+        webview.evaluate_javascript(&js, None, None, gtk::gio::Cancellable::NONE, |_| {});
     }
 
     // ---- bar & keyboard UX ----------------------------------------
