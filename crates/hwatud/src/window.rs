@@ -40,14 +40,71 @@ pub struct BrowserWindow {
     discard_timer: RefCell<Option<glib::SourceId>>,
 }
 
+/// Scroll-critical engine features, enabled if this WebKit build has
+/// them. All of these default on in current WebKit but are Embedder/
+/// Internal status, so distros can and do flip them; pinning them here
+/// makes smoothness a property of hwatu rather than of the distro.
+/// Unknown identifiers are skipped, so this degrades gracefully across
+/// WebKitGTK versions (enable-what-exists, never version-match).
+const SCROLL_FEATURES: &[&str] = &[
+    "AsyncFrameScrolling",    // main-frame scrolling off the main thread
+    "AsyncOverflowScrolling", // same for overflow: scroll subtrees
+    "ThreadedScrolling",      // compositor-thread scroll updates
+];
+
+/// `HWATU_WEBKIT_FEATURES=Ident:on,Other:off` — escape hatch for odd
+/// hardware. Applied last, so it can override anything above.
+fn feature_overrides() -> Vec<(String, bool)> {
+    let Ok(raw) = std::env::var("HWATU_WEBKIT_FEATURES") else {
+        return Vec::new();
+    };
+    raw.split(',')
+        .filter_map(|entry| {
+            let (ident, val) = entry.split_once(':')?;
+            let on = match val.trim() {
+                "on" | "true" | "1" => true,
+                "off" | "false" | "0" => false,
+                _ => return None,
+            };
+            Some((ident.trim().to_string(), on))
+        })
+        .collect()
+}
+
 /// Build a fully configured WebView. Called for the prewarm pool and as
-/// a fallback; all engine knobs live here.
+/// a fallback; all engine knobs live here — never on the spawn path.
 pub fn build_webview() -> webkit6::WebView {
     let view = webkit6::WebView::new();
     if let Some(settings) = webkit6::prelude::WebViewExt::settings(&view) {
         settings.set_enable_developer_extras(true);
         // Render as intended: leave JS, media, canvas, webgl at defaults.
         settings.set_enable_page_cache(true); // bfcache
+
+        // Scrolling must hit the GPU compositor path. The default
+        // ("on demand") drops simple pages to CPU raster, and CPU
+        // raster is where scroll jank lives.
+        settings.set_hardware_acceleration_policy(
+            webkit6::HardwareAccelerationPolicy::Always,
+        );
+        // Animate discrete wheel ticks; precise touchpad deltas are
+        // unaffected.
+        settings.set_enable_smooth_scrolling(true);
+
+        let overrides = feature_overrides();
+        if let Some(features) = webkit6::Settings::all_features() {
+            for i in 0..features.length() {
+                let Some(feature) = features.get(i) else { continue };
+                let ident = feature.identifier().unwrap_or_default();
+                if SCROLL_FEATURES.contains(&ident.as_str()) {
+                    settings.set_feature_enabled(&feature, true);
+                }
+                if let Some((_, on)) =
+                    overrides.iter().find(|(name, _)| *name == ident)
+                {
+                    settings.set_feature_enabled(&feature, *on);
+                }
+            }
+        }
     }
     view
 }

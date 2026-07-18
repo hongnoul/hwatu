@@ -13,6 +13,7 @@ use gtk::{gio, glib};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use webkit6::prelude::*;
 
 use window::BrowserWindow;
 
@@ -53,7 +54,14 @@ impl Daemon {
         let daemon = self.clone();
         glib::idle_add_local_once(move || {
             if daemon.prewarmed.borrow().is_none() {
-                daemon.prewarmed.replace(Some(window::build_webview()));
+                let view = window::build_webview();
+                // Deep warm: loading about:blank realizes the web
+                // process and the GPU compositor path while idle, so a
+                // spawned window adopts a view whose rendering pipeline
+                // is already hot (matters now that hardware
+                // acceleration is Always).
+                view.load_uri("about:blank");
+                daemon.prewarmed.replace(Some(view));
             }
         });
     }
@@ -85,6 +93,17 @@ fn main() -> glib::ExitCode {
         println!(
             "hwatud: listening on {}",
             hwatu_ipc::socket_path().display()
+        );
+        // One diagnostic line: answers most "scrolling is janky on my
+        // device" reports without a debug build. Smoothness scales
+        // with the distro's WebKitGTK (2.46+ = Skia GPU painting).
+        println!(
+            "hwatud: webkitgtk {}.{}.{}, session {}, renderer {}",
+            webkit6::functions::major_version(),
+            webkit6::functions::minor_version(),
+            webkit6::functions::micro_version(),
+            std::env::var("XDG_SESSION_TYPE").unwrap_or_else(|_| "unknown".into()),
+            std::env::var("GSK_RENDERER").unwrap_or_else(|_| "auto".into()),
         );
     });
 
