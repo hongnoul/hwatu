@@ -74,6 +74,33 @@ hwatu quit                 # stop the daemon
 
 `Ctrl+q` closes the focused window. The daemon and engine stay warm.
 
+## The bar
+
+hwatu's one piece of chrome: a single-line vim-style bar at the bottom
+of the window, hidden until summoned. Everything interactive lives
+there, so the resting state stays chromeless.
+
+- **Find in page**: `/` opens forward search, `?` backward. Matches
+  highlight incrementally with a live count. `Enter` commits (focus
+  returns to the page, `n`/`N` jump next/previous), `Esc` cancels.
+  A `/` typed into a page's text box still goes to the page.
+- **Permission prompts**: mic, camera, location, notifications,
+  clipboard and friends appear as `example.com wants microphone
+  [y/n]`. Decisions are remembered per site for the daemon's
+  lifetime and apply across windows. Nothing is written to disk.
+- **TLS errors**: failed certificate loads show the reason (expired,
+  unknown issuer, hostname mismatch, ...). `y` adds a session
+  exception for that host and reloads; `n`/`Esc` leaves the load
+  stopped. Exceptions reset when the daemon exits.
+- **Download status**: saved/failed notices flash briefly.
+
+## Downloads
+
+No dialogs, no download manager. Attachments and unrenderable MIME
+types save straight to `HWATU_DOWNLOAD_DIR`, or your xdg-user-dirs
+download folder, or `~/Downloads`. Name collisions get a ` (n)`
+suffix. The bar flashes the destination when a download finishes.
+
 ## Ad blocking
 
 A baseline filter list is embedded in the binary, so blocking works
@@ -103,6 +130,8 @@ only surface is environment variables read by `hwatud`:
   (default <https://hongnoul.github.io/hwatu/>, use `about:blank` for none).
 - `HWATU_DISCARD_SECS` – seconds an unfocused window keeps its live
   WebView before being suspended to save RAM (default 120, 0 disables).
+- `HWATU_DOWNLOAD_DIR` – where downloads land (default: xdg-user-dirs
+  download folder, falling back to `~/Downloads`).
 - `HWATU_WEBKIT_FEATURES=Ident:on,Other:off` – flip individual WebKit
   runtime features on odd hardware. Unknown identifiers are ignored.
 - Standard `WEBKIT_*` / `GSK_RENDERER` vars pass through untouched.
