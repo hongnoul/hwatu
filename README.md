@@ -32,6 +32,24 @@ window (what you actually ask for). hwatu splits them, the same way
 Measured on the MVP: **~45 ms** from `hwatu <url>` to a mapped, loading window
 (first-ever window pays a one-time engine/GPU init).
 
+## hwatu vs surf, qutebrowser, luakit
+
+If you want a minimal browser for a tiling window manager (Hyprland, sway, i3,
+river), the usual suspects trade differently:
+
+| | hwatu | surf | qutebrowser | luakit |
+|---|---|---|---|---|
+| Window spawn | ~45 ms (warm daemon) | full engine start per window | full engine start | full engine start |
+| Engine | WebKitGTK 6 | WebKitGTK 2 | QtWebEngine (Chromium) | WebKitGTK 2 |
+| Tabs | none, WM tiles are tabs | none | built-in | built-in |
+| Keyboard-driven UI | your WM's binds | patches | first-class vim binds | lua config |
+| Memory model | one shared engine, N views | one process per window | one big process | one process |
+
+Honest take: if you want vim keybindings *inside* the browser, use qutebrowser.
+If you want windows that appear as fast as terminals and a WM that does the
+window management, that's what hwatu is for. surf pioneered this shape; hwatu
+adds the warm daemon and a current engine.
+
 ## Philosophy
 
 - **No tabs.** A tab is a window. Your tiling WM is the tab manager.

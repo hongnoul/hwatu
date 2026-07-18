@@ -1,0 +1,11 @@
+# hwatu
+
+> Daemon-based WebKitGTK browser for tiling WMs: real rendering, ~45ms window spawn
+
+A daemon-based web browser for tiling window managers. Real WebKit rendering,
+terminal-emulator spawn times.
+
+## Links
+
+- [Repository](https://github.com/hongnoul/hwatu): source code, issues, releases
+- [README](https://github.com/hongnoul/hwatu/blob/main/README.md): install and usage
