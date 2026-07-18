@@ -97,6 +97,8 @@ fn main() -> glib::ExitCode {
     app.connect_activate(|_| {});
     app.connect_startup(move |app| {
         bar::install_css();
+        // Reclaim session blobs orphaned by a crashed/killed daemon.
+        window::sweep_discard_dir();
         let daemon = Daemon::new(app.clone());
         adblock::Adblock::init(&daemon);
         daemon.schedule_prewarm();
