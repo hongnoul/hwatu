@@ -2,8 +2,11 @@
 name = "hwatu-ipc"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+# Distributed as release tarballs, not on crates.io.
+publish = false
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

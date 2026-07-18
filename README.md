@@ -75,9 +75,10 @@ hwatu update               # self-update to the latest release
 hwatu quit                 # stop the daemon
 ```
 
-`Ctrl+q` closes the focused window. `Ctrl+Shift+j` / `Ctrl+Shift+k`
-scroll the page down/up by half a viewport. The daemon and engine stay
-warm.
+`Ctrl+q` closes the focused window. `Ctrl+l` (or `O`) opens the URL
+bar prefilled with the current address, `o` opens it blank; `Enter`
+navigates, `Esc` cancels. `Ctrl+Shift+j` / `Ctrl+Shift+k` scroll the
+page down/up by half a viewport. The daemon and engine stay warm.
 
 On Wayland, `--app-id` names the window for your compositor's rules:
 
@@ -95,12 +96,21 @@ restores it from the prewarm pool, so resume feels instant. If a page's
 web process crashes or is OOM-killed, the bar offers
 `page crashed, reload? [y/n]` instead of leaving a white window.
 
+If the *daemon* dies uncleanly (crash, OOM kill, logout), the next
+`hwatud` reopens every window at its last URL: the open-window set is
+snapshotted to `~/.local/state/hwatu/session.json` as you browse. A
+clean `hwatu quit` removes the snapshot, so intentional exits stay
+exits.
+
 ## The bar
 
 hwatu's one piece of chrome: a single-line vim-style bar at the bottom
 of the window, hidden until summoned. Everything interactive lives
 there, so the resting state stays chromeless.
 
+- **Open a URL**: `Ctrl+l`/`O` edit the current address, `o` starts
+  blank. Input is normalized like the CLI (`example.com` gets
+  `https://`, loopback hosts get `http://`).
 - **Find in page**: `/` opens forward search, `?` backward. Matches
   highlight incrementally with a live count. `Enter` commits (focus
   returns to the page, `n`/`N` jump next/previous), `Esc` cancels.
@@ -183,8 +193,9 @@ Crates:
 
 - [x] Background window suspension + discard-to-disk (RAM reclaim)
 - [x] Per-window `app_id` for WM window rules
-- [ ] Keyboard-first UX: URL overlay bar, link hints
-- [ ] Session persistence and restore
+- [x] URL bar (`Ctrl+l`, `o`, `O`)
+- [x] Crash resilience: reopen windows after an unclean daemon death
+- [ ] Link hints
 - [ ] Profiles (separate cookie jars / web contexts)
 - [ ] `hwatu ipc js ...` scripting
 
