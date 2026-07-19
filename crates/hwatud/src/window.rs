@@ -487,18 +487,52 @@ impl BrowserWindow {
         }
     }
 
+    /// True while any of the discard guards forbid tearing down the
+    /// WebView: focused window, open bar, pending prompt.
+    fn discard_blocked(&self) -> bool {
+        self.window.is_active() || self.bar.is_open() || self.prompts.has_pending()
+    }
+
     /// Serialize state, destroy the WebView, show a placeholder.
+    ///
+    /// Two-phase: first snapshot the visible page into a texture (async,
+    /// the web process must still be alive to paint it), then tear down
+    /// in the callback. The placeholder shows the frozen frame, so a
+    /// suspended window is indistinguishable from a live one at a
+    /// glance; a plain title label is the fallback if snapshotting
+    /// fails.
     fn discard(self: &Rc<Self>) {
-        // Never discard a focused window or one awaiting bar input
-        // (find in progress, pending permission/TLS prompt).
-        if self.window.is_active() || self.bar.is_open() || self.prompts.has_pending() {
+        if self.discard_blocked() {
+            return;
+        }
+        let Some(webview) = self.webview.borrow().clone() else {
+            return;
+        };
+        if webview.is_loading() {
+            // Try again later rather than losing an in-flight load.
+            self.schedule_discard();
+            return;
+        }
+        let this = self.clone();
+        webview.snapshot(
+            webkit6::SnapshotRegion::Visible,
+            webkit6::SnapshotOptions::NONE,
+            gtk::gio::Cancellable::NONE,
+            move |result| this.finish_discard(result.ok()),
+        );
+    }
+
+    /// Second phase of [`discard`]: runs after the snapshot resolves.
+    /// The guards are re-checked because focus, prompts, or navigation
+    /// may have changed during the async gap.
+    fn finish_discard(self: &Rc<Self>, snapshot: Option<gtk::gdk::Texture>) {
+        if self.discard_blocked() {
             return;
         }
         let Some(webview) = self.webview.borrow_mut().take() else {
             return;
         };
         if webview.is_loading() {
-            // Try again later rather than losing an in-flight load.
             self.webview.replace(Some(webview));
             self.schedule_discard();
             return;
@@ -522,13 +556,23 @@ impl BrowserWindow {
             title: title.clone(),
         }));
 
-        let placeholder = gtk::Label::builder()
-            .label(if title.is_empty() {
-                "(suspended)"
-            } else {
-                &title
-            })
-            .build();
+        // Frozen frame if the snapshot succeeded; the page keeps its
+        // last-painted look while suspended. Title label as fallback.
+        let placeholder: gtk::Widget = match snapshot {
+            Some(texture) => gtk::Picture::builder()
+                .paintable(&texture)
+                .content_fit(gtk::ContentFit::Cover)
+                .build()
+                .upcast(),
+            None => gtk::Label::builder()
+                .label(if title.is_empty() {
+                    "(suspended)"
+                } else {
+                    &title
+                })
+                .build()
+                .upcast(),
+        };
         self.overlay.set_child(Some(&placeholder));
         // Dropping the WebView alone is not enough: WebKit keeps the web
         // process cached for reuse. State is already serialized, so kill
