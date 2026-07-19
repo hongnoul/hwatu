@@ -57,9 +57,11 @@ Or use the CLI, which is the same protocol with argv parsing:
 ```sh
 hwatu --headless localhost:3000     # open without a window (returns id)
 hwatu --background localhost:3000   # open mapped but unfocused
-hwatu wait-load --id 3              # block until the load settles
-hwatu eval --id 3 'return document.title'
-hwatu shot --id 3 /tmp/check.png    # PNG of the rendered viewport
+hwatu wait-load                     # block until the load settles
+hwatu eval 'document.title'         # id-less: follows the window you opened
+hwatu shot /tmp/check.png           # PNG of the rendered viewport
+hwatu shot --full /tmp/page.png     # PNG of the whole document
+hwatu scroll h2 --contains Pricing  # scroll into view, reports what it hit
 hwatu goto --id 3 /settings         # navigate, waits by default
 hwatu upload --id 3 'input[type=file]' ./avatar.png
 hwatu focus 3                       # materialize for the human
@@ -132,11 +134,14 @@ that reports the match count, not a silent scroll to the wrong place.
 
 ## A verification loop
 
+Sticky targeting means the whole loop needs no ids: each command
+follows the window the previous one drove.
+
 ```sh
-id=$(hwatu --headless localhost:5173 | jq .window.id)   # ~14 ms
-hwatu wait-load --id $id
-hwatu eval --id $id 'return document.querySelector("h1")?.textContent'
-hwatu shot --id $id /tmp/after.png
+id=$(hwatu --headless --json localhost:5173 | jq .id)   # ~14 ms
+hwatu wait-load
+hwatu eval 'document.querySelector("h1")?.textContent'
+hwatu shot /tmp/after.png
 hwatu close $id
 ```
 
@@ -206,8 +211,11 @@ Daemon-based WebKitGTK browser: ~15ms window spawn, full rendering.
 - Open pages without stealing my focus: `hwatu --background <url>`
   (or `mode: background` over the socket). Use `--headless` for
   windows I should never see.
-- Run JS in the page: `hwatu eval '<js function body>'` (returns JSON).
-- Screenshot: `hwatu shot out.png`.
+- Run JS in the page: `hwatu eval '<js expression or function body>'`
+  (returns JSON), e.g. `hwatu eval 'document.title'`.
+- Scroll with feedback: `hwatu scroll <selector> [--contains <text>]`
+  reports what it matched and where the page landed.
+- Screenshot: `hwatu shot out.png` (`--full` for the whole document).
 - Verify hwatu works: `hwatu ping`.
 - Docs: https://github.com/hongnoul/hwatu/blob/main/docs/agents.md
 ```

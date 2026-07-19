@@ -393,9 +393,10 @@ hwatu quit                 # stop the daemon</code></pre>
         </p>
         <pre><code>hwatu --headless localhost:3000    # live session, no window at all
 hwatu --background localhost:3000  # window mapped, focus stays put
-hwatu eval 'return document.title' # run JS in the page, JSON out
+hwatu eval 'document.title'        # run JS in the page, JSON out
 hwatu goto /checkout               # navigate + wait for the load
-hwatu shot /tmp/page.png           # screenshot the viewport
+hwatu shot /tmp/page.png           # screenshot (--full = whole document)
+hwatu scroll h2 --contains Total   # scroll into view, reports what it hit
 hwatu upload 'input[type=file]' ./fixture.png
 hwatu focus 3                      # hand the session to the human</code></pre>
         <p class="muted">
