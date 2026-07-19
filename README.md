@@ -1,4 +1,4 @@
-# hwatu 화투
+# hwatu
 
 [![Latest Release](https://badgen.net/github/release/hongnoul/hwatu?icon=github)](https://github.com/hongnoul/hwatu/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
@@ -243,5 +243,5 @@ Crates:
 
 ## Name
 
-Hwatu (화투) are Korean flower cards: many small cards, one deck. Many small
+Hwatu are Korean flower cards: many small cards, one deck. Many small
 windows, one engine.
