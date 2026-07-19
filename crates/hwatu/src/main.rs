@@ -5,7 +5,7 @@
 
 mod update;
 
-use hwatu_ipc::{AdblockCmd, Request, Response};
+use hwatu_ipc::{AdblockCmd, OpenMode, Request, Response};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::process::Command;
@@ -121,6 +121,7 @@ fn parse(args: &[String]) -> Result<Request, String> {
     let mut id: Option<u64> = None;
     let mut timeout_ms: Option<u64> = None;
     let mut no_wait = false;
+    let mut mode = OpenMode::Normal;
     let mut rest: Vec<&String> = Vec::new();
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -154,13 +155,21 @@ fn parse(args: &[String]) -> Result<Request, String> {
             timeout_ms = Some(v.parse().map_err(|_| "usage: --timeout-ms=<ms>")?);
         } else if arg == "--no-wait" {
             no_wait = true;
+        } else if arg == "--background" {
+            mode = OpenMode::Background;
+        } else if arg == "--headless" {
+            mode = OpenMode::Headless;
         } else {
             rest.push(arg);
         }
     }
 
     match rest.first().map(|s| s.as_str()) {
-        None => Ok(Request::Open { url: None, app_id }),
+        None => Ok(Request::Open {
+            url: None,
+            app_id,
+            mode,
+        }),
         Some("list") => Ok(Request::List),
         Some("ping") => Ok(Request::Ping),
         Some("quit") => Ok(Request::Quit),
@@ -249,11 +258,13 @@ fn parse(args: &[String]) -> Result<Request, String> {
                     .join(" "),
             ),
             app_id,
+            mode,
         }),
     }
 }
 
-const USAGE: &str = "usage: hwatu [--app-id <id>] [url] | list [--json] | close <id> | focus <id> \
+const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless] [url] \
+| list [--json] | close <id> | focus <id> \
 | eval [--id <id>] [--timeout-ms <ms>] <js> | goto [--id <id>] [--no-wait] <url> \
 | shot [--id <id>] [path] | wait-load [--id <id>] | upload [--id <id>] <selector> <path> \
 | adblock [on|off|status|update] | update | ping | quit";
@@ -293,7 +304,7 @@ fn connect_or_spawn() -> std::io::Result<UnixStream> {
 #[cfg(test)]
 mod tests {
     use super::parse;
-    use hwatu_ipc::Request;
+    use hwatu_ipc::{OpenMode, Request};
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
@@ -305,9 +316,30 @@ mod tests {
             parse(&args(&[])),
             Ok(Request::Open {
                 url: None,
-                app_id: None
+                app_id: None,
+                mode: OpenMode::Normal,
             })
         ));
+    }
+
+    #[test]
+    fn background_flag_sets_mode() {
+        let Ok(Request::Open { url, mode, .. }) = parse(&args(&["--background", "localhost:3000"]))
+        else {
+            panic!("expected Open");
+        };
+        assert_eq!(url.as_deref(), Some("localhost:3000"));
+        assert_eq!(mode, OpenMode::Background);
+    }
+
+    #[test]
+    fn headless_flag_sets_mode_any_position() {
+        let Ok(Request::Open { url, mode, .. }) = parse(&args(&["example.com", "--headless"]))
+        else {
+            panic!("expected Open");
+        };
+        assert_eq!(url.as_deref(), Some("example.com"));
+        assert_eq!(mode, OpenMode::Headless);
     }
 
     #[test]
@@ -320,7 +352,8 @@ mod tests {
 
     #[test]
     fn app_id_before_url() {
-        let Ok(Request::Open { url, app_id }) = parse(&args(&["--app-id", "mail", "gmail.com"]))
+        let Ok(Request::Open { url, app_id, .. }) =
+            parse(&args(&["--app-id", "mail", "gmail.com"]))
         else {
             panic!("expected Open");
         };
@@ -330,7 +363,7 @@ mod tests {
 
     #[test]
     fn app_id_after_url_and_equals_form() {
-        let Ok(Request::Open { url, app_id }) = parse(&args(&["gmail.com", "--app-id=mail"]))
+        let Ok(Request::Open { url, app_id, .. }) = parse(&args(&["gmail.com", "--app-id=mail"]))
         else {
             panic!("expected Open");
         };
@@ -340,7 +373,7 @@ mod tests {
 
     #[test]
     fn app_id_without_url_opens_home() {
-        let Ok(Request::Open { url, app_id }) = parse(&args(&["--app-id", "scratch"])) else {
+        let Ok(Request::Open { url, app_id, .. }) = parse(&args(&["--app-id", "scratch"])) else {
             panic!("expected Open");
         };
         assert!(url.is_none());

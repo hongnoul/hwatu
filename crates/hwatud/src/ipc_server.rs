@@ -107,9 +107,9 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
 
     let response = match req {
         Request::Ping => Response::ok(),
-        Request::Open { url, app_id } => {
+        Request::Open { url, app_id, mode } => {
             let url = url.map(normalize_url);
-            let info = BrowserWindow::open(daemon, url, app_id);
+            let info = BrowserWindow::open(daemon, url, app_id, mode);
             Response::window(info)
         }
         Request::List => {
@@ -132,6 +132,9 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
             let win = daemon.windows.borrow().get(&id).cloned();
             match win {
                 Some(w) => {
+                    // Focus promotes any window to normal: an agent (or
+                    // user) explicitly asking for a background/headless
+                    // window means they want to see it now.
                     w.present();
                     Response::ok()
                 }
@@ -270,6 +273,9 @@ mod tests {
             "https://example.com/a?b=1"
         );
         // Trailing/leading dots are not hosts.
-        assert_eq!(normalize_url("what.".into()), crate::search::url_for("what."));
+        assert_eq!(
+            normalize_url("what.".into()),
+            crate::search::url_for("what.")
+        );
     }
 }

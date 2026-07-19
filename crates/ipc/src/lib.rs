@@ -33,6 +33,10 @@ pub enum Request {
         /// Wayland app_id / X11 WM_CLASS for tiling-WM window rules.
         #[serde(default)]
         app_id: Option<String>,
+        /// How the window is shown; see [`OpenMode`]. Absent on the
+        /// wire means [`OpenMode::Normal`], so old clients keep working.
+        #[serde(default)]
+        mode: OpenMode,
     },
     /// List open windows.
     List,
@@ -104,6 +108,26 @@ pub enum Request {
 
 fn default_true() -> bool {
     true
+}
+
+/// How an opened window is shown. Built for agent verification flows
+/// that must not steal the user's focus.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OpenMode {
+    /// Map and request focus (`present`). What a human asked for.
+    #[default]
+    Normal,
+    /// Map the window but do not request activation: it appears in the
+    /// WM layout, renders normally (eval/shot work), and focus stays
+    /// where it is. Compositor policy has the final say; pair with a
+    /// WM rule on `--app-id` to also keep it off the current workspace.
+    Background,
+    /// Never map a toplevel. The WebView lives offscreen in a
+    /// `gtk::OffscreenHolder`-less window kept unrealized; rendering is
+    /// driven by WebKit itself, so eval/goto/upload work and `shot`
+    /// captures the page. Invisible to the WM entirely.
+    Headless,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -223,4 +247,12 @@ pub struct WindowInfo {
     /// Wayland app_id the window was opened with (`--app-id`), if any.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_id: Option<String>,
+    /// How the window was opened (normal/background/headless). `focus`
+    /// promotes a window to normal.
+    #[serde(default, skip_serializing_if = "is_normal")]
+    pub mode: OpenMode,
+}
+
+fn is_normal(mode: &OpenMode) -> bool {
+    *mode == OpenMode::Normal
 }

@@ -8,8 +8,8 @@
 
 use crate::window::BrowserWindow;
 use crate::Daemon;
-use gtk::{gdk, gio, glib};
 use gtk::prelude::*;
+use gtk::{gdk, gio, glib};
 use hwatu_ipc::Response;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -97,7 +97,13 @@ fn arm_timeout(reply: OnceReply, timeout_ms: Option<u64>, what: &'static str) {
 
 /// Run `js` as an async function body in the page. A returned Promise
 /// is awaited by WebKit before the callback fires.
-pub fn eval(daemon: &Rc<Daemon>, id: Option<u64>, js: String, timeout_ms: Option<u64>, reply: Reply) {
+pub fn eval(
+    daemon: &Rc<Daemon>,
+    id: Option<u64>,
+    js: String,
+    timeout_ms: Option<u64>,
+    reply: Reply,
+) {
     let reply = OnceReply::new(reply);
     let view = match resolve(daemon, id).and_then(|w| live_view(&w)) {
         Ok(v) => v,
@@ -311,7 +317,11 @@ fn base64(data: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
         let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
         out.push(TABLE[(n >> 18) as usize & 63] as char);
         out.push(TABLE[(n >> 12) as usize & 63] as char);

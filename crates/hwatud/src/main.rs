@@ -12,6 +12,7 @@ mod bar;
 mod downloads;
 mod ipc_server;
 mod keys;
+mod launcher;
 mod prompts;
 mod search;
 mod session;
@@ -19,6 +20,7 @@ mod window;
 
 use gtk::prelude::*;
 use gtk::{gio, glib};
+use hwatu_ipc::OpenMode;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -117,7 +119,9 @@ impl Daemon {
             infos.sort_by_key(|w| w.id);
             infos
                 .into_iter()
-                .filter(|w| !w.url.is_empty())
+                // Headless windows belong to an agent's verification
+                // run, not the user's session; do not resurrect them.
+                .filter(|w| !w.url.is_empty() && w.mode != OpenMode::Headless)
                 .map(|w| session::SessionEntry {
                     url: w.url,
                     title: w.title,
@@ -143,6 +147,8 @@ fn main() -> glib::ExitCode {
         // Reclaim session blobs orphaned by a crashed/killed daemon.
         window::sweep_discard_dir();
         let daemon = Daemon::new(app.clone());
+        // Internal pages (hwatu://launcher) before any WebView exists.
+        launcher::register_scheme(&daemon);
         adblock::Adblock::init(&daemon);
         daemon.schedule_prewarm();
         if let Err(e) = ipc_server::start(daemon.clone()) {
@@ -159,7 +165,7 @@ fn main() -> glib::ExitCode {
                 leftovers.len()
             );
             for entry in leftovers {
-                BrowserWindow::open(&daemon, Some(entry.url), entry.app_id);
+                BrowserWindow::open(&daemon, Some(entry.url), entry.app_id, OpenMode::Normal);
             }
         }
         println!(

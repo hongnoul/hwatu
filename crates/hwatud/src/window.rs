@@ -10,10 +10,11 @@
 
 use crate::bar::{Bar, BarMode};
 use crate::keys;
+use crate::launcher;
 use crate::prompts::{self, Prompt, Prompts};
 use crate::Daemon;
 use gtk::prelude::*;
-use hwatu_ipc::WindowInfo;
+use hwatu_ipc::{OpenMode, WindowInfo};
 use std::cell::RefCell;
 use std::rc::Rc;
 use webkit6::prelude::*;
@@ -27,13 +28,13 @@ fn discard_timeout_secs() -> u64 {
         .unwrap_or(120)
 }
 
-/// Page a bare `hwatu` opens. Override with HWATU_HOME (any URL, or
-/// `about:blank`); defaults to the hwatu site.
-fn home_page() -> String {
+/// Page a bare `hwatu` opens, if the user configured one with
+/// HWATU_HOME (any URL, or `about:blank`). Unset means the built-in
+/// launcher page with the URL bar pre-opened.
+fn home_page() -> Option<String> {
     std::env::var("HWATU_HOME")
         .ok()
         .filter(|v| !v.trim().is_empty())
-        .unwrap_or_else(|| "https://hongnoul.github.io/hwatu/".into())
 }
 
 /// State saved across a discard. The session blob itself lives on disk
@@ -101,6 +102,10 @@ pub struct BrowserWindow {
     process_group: RefCell<Option<Rc<()>>>,
     /// Wayland app_id this window was opened with, echoed by `hwatu list`.
     app_id: Option<String>,
+    /// How this window is shown (normal/background/headless). Popups
+    /// it spawns inherit it so a headless page can't steal focus. A
+    /// `focus` request promotes the window to Normal.
+    mode: std::cell::Cell<OpenMode>,
 }
 
 /// `HWATU_WEBKIT_FEATURES=Ident:on,Other:off` — escape hatch for odd
@@ -183,12 +188,38 @@ fn apply_view_settings(view: &webkit6::WebView) {
 }
 
 impl BrowserWindow {
-    pub fn open(daemon: &Rc<Daemon>, url: Option<String>, app_id: Option<String>) -> WindowInfo {
+    pub fn open(
+        daemon: &Rc<Daemon>,
+        url: Option<String>,
+        app_id: Option<String>,
+        mode: OpenMode,
+    ) -> WindowInfo {
+        // On Wayland the compositor decides who gets focus, and most
+        // tilers focus new windows. A background window therefore gets
+        // a predictable default app_id so one WM rule can opt it out
+        // (niri: `match app-id="hwatu-background"` + `open-focused
+        // false`; Hyprland: `windowrule = noinitialfocus, class:...`).
+        let app_id = app_id
+            .or_else(|| (mode == OpenMode::Background).then(|| "hwatu-background".to_string()));
         let webview = daemon.take_webview();
-        let target = url.unwrap_or_else(home_page);
-        let this = Self::build(daemon, webview.clone(), app_id.clone());
-        webview.load_uri(&target);
-        this.window.present();
+        let this = Self::build(daemon, webview.clone(), app_id.clone(), mode);
+        // No URL and no configured home page: show the launcher (the
+        // keybind cheat sheet) with the URL bar already open, so a
+        // bare `hwatu` is "type where you want to go".
+        let target = match url.or_else(home_page) {
+            Some(url) => {
+                webview.load_uri(&url);
+                url
+            }
+            None => {
+                webview.load_uri(launcher::URI);
+                if mode == OpenMode::Normal {
+                    this.bar.open_url("");
+                }
+                launcher::URI.to_string()
+            }
+        };
+        this.show();
         WindowInfo {
             id: this.id,
             url: target,
@@ -196,6 +227,39 @@ impl BrowserWindow {
             focused: false,
             suspended: false,
             app_id,
+            mode,
+        }
+    }
+
+    /// Map the window according to its open mode. `present` asks the
+    /// compositor for focus; `set_visible` maps without an activation
+    /// request, so the user's focus stays put; headless never maps.
+    fn show(&self) {
+        match self.mode.get() {
+            OpenMode::Normal => self.window.present(),
+            OpenMode::Background => {
+                // Realize (create the xdg_toplevel) before mapping so
+                // the app_id is already set when the compositor first
+                // sees the window; initial-focus window rules match
+                // against it. The post-map idle in build() is a no-op
+                // repeat for this path.
+                gtk::prelude::WidgetExt::realize(&self.window);
+                if let Some(app_id) = &self.app_id {
+                    set_wayland_app_id(&self.window, app_id);
+                }
+                self.window.set_visible(true);
+            }
+            OpenMode::Headless => {
+                // No map: the WM never sees this window. But WebKit lays
+                // pages out at the widget's allocated size, and an
+                // unallocated widget is 0x0 (pages collapse, snapshots
+                // fail). Realizing the toplevel creates its GDK surface
+                // without mapping, and a manual allocation pushes a real
+                // viewport into the web process.
+                gtk::prelude::WidgetExt::realize(&self.window);
+                self.window
+                    .allocate(1024, 768, -1, None::<gtk::gsk::Transform>);
+            }
         }
     }
 
@@ -211,7 +275,12 @@ impl BrowserWindow {
         let webview = webkit6::WebView::builder().related_view(related).build();
         apply_view_settings(&webview);
         self.daemon.adblock.apply_to(&webview);
-        let popup = Self::build(&self.daemon, webview.clone(), self.app_id.clone());
+        let popup = Self::build(
+            &self.daemon,
+            webview.clone(),
+            self.app_id.clone(),
+            self.mode.get(),
+        );
         // Mark both windows as sharing a web process so neither
         // discard() terminates it while the other still needs it.
         let group = self
@@ -221,8 +290,8 @@ impl BrowserWindow {
             .clone();
         popup.process_group.replace(Some(group));
         {
-            let win = popup.window.clone();
-            webview.connect_ready_to_show(move |_| win.present());
+            let popup = popup.clone();
+            webview.connect_ready_to_show(move |_| popup.show());
         }
         webview
     }
@@ -234,6 +303,7 @@ impl BrowserWindow {
         daemon: &Rc<Daemon>,
         webview: webkit6::WebView,
         app_id: Option<String>,
+        mode: OpenMode,
     ) -> Rc<Self> {
         let id = daemon.alloc_id();
 
@@ -253,6 +323,12 @@ impl BrowserWindow {
         // present), so set it from an idle callback queued on map.
         if let Some(app_id) = app_id.clone() {
             window.connect_map(move |win| {
+                // Synchronous first: if the xdg_toplevel already exists
+                // here, the app_id rides the initial commit and the
+                // compositor's open-time window rules (initial focus,
+                // workspace) match it. The idle repeat covers GTK
+                // versions where the role appears later in the map.
+                set_wayland_app_id(win, &app_id);
                 let win = win.clone();
                 let app_id = app_id.clone();
                 glib::idle_add_local_once(move || set_wayland_app_id(&win, &app_id));
@@ -277,6 +353,7 @@ impl BrowserWindow {
             discard_timer: RefCell::new(None),
             process_group: RefCell::new(None),
             app_id,
+            mode: std::cell::Cell::new(mode),
         });
 
         this.attach_webview(webview);
@@ -628,8 +705,8 @@ impl BrowserWindow {
         // flashes blank while the page re-commits.
         if let Some(placeholder) = self.overlay.child() {
             self.drop_veil(); // stale veil from a prior restore, if any
-            // A widget cannot be parented twice: detach it as the main
-            // child (attach_webview fills that slot) before floating it.
+                              // A widget cannot be parented twice: detach it as the main
+                              // child (attach_webview fills that slot) before floating it.
             self.overlay.set_child(gtk::Widget::NONE);
             self.overlay.add_overlay(&placeholder);
             self.veil.replace(Some(placeholder));
@@ -661,7 +738,10 @@ impl BrowserWindow {
         }
     }
 
+    /// Raise and focus, promoting background/headless windows to
+    /// normal: an explicit focus request means "show me this window".
     pub fn present(&self) {
+        self.mode.set(OpenMode::Normal);
         self.window.present();
     }
 
@@ -674,6 +754,7 @@ impl BrowserWindow {
                 focused: self.window.is_active(),
                 suspended: false,
                 app_id: self.app_id.clone(),
+                mode: self.mode.get(),
             },
             None => {
                 let saved = self.saved.borrow();
@@ -688,6 +769,7 @@ impl BrowserWindow {
                     focused: false,
                     suspended: true,
                     app_id: self.app_id.clone(),
+                    mode: self.mode.get(),
                 }
             }
         }
@@ -771,6 +853,9 @@ impl BrowserWindow {
                 match self.daemon.keymap.lookup(keys::Phase::Bubble, key, state) {
                     Some(action) => self.run_action(action),
                     None if key == gtk::gdk::Key::Escape => {
+                        if self.close_if_bare_launcher() {
+                            return glib::Propagation::Stop;
+                        }
                         self.stop_find();
                         self.bar.close();
                         glib::Propagation::Proceed
@@ -831,11 +916,16 @@ impl BrowserWindow {
                 });
         }
         // Escape inside the entry: cancel find/URL entry entirely.
+        // On a bare launcher window, cancelling means the window
+        // itself was a mis-fire: close it.
         {
             let this = self.clone();
             let ctrl = gtk::EventControllerKey::new();
             ctrl.connect_key_pressed(move |_, key, _, _| {
                 if key == gtk::gdk::Key::Escape {
+                    if this.close_if_bare_launcher() {
+                        return glib::Propagation::Stop;
+                    }
                     this.stop_find();
                     this.bar.close();
                     this.focus_webview();
@@ -845,6 +935,21 @@ impl BrowserWindow {
             });
             self.bar.entry.add_controller(ctrl);
         }
+    }
+
+    /// Close this window if it is still an untouched launcher: showing
+    /// the launcher page with no navigation history. Returns whether
+    /// it closed.
+    fn close_if_bare_launcher(self: &Rc<Self>) -> bool {
+        let Some(webview) = self.live_webview() else {
+            return false;
+        };
+        let on_launcher = webview.uri().is_some_and(|u| u == launcher::URI);
+        if on_launcher && !webview.can_go_back() {
+            self.window.close();
+            return true;
+        }
+        false
     }
 
     /// Open the URL prompt prefilled with the current page's URL.
