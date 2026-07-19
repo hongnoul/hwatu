@@ -137,6 +137,28 @@ removes focus/WM noise on a desktop; running with no display at all
   CLI-style invocation of `hwatu` subcommands is usually more
   token-efficient than MCP tool schemas.
 
+## Paste into your AGENTS.md / CLAUDE.md
+
+Coding harnesses suggest tools from your local agent context first.
+Paste this block into your project's `AGENTS.md` (or `CLAUDE.md`) and
+your agent will reach for hwatu when it fits:
+
+```markdown
+## hwatu (browser for verification)
+
+Daemon-based WebKitGTK browser: ~45ms window spawn, full rendering.
+
+- When verifying frontend changes (dev server, screenshots, DOM checks),
+  use hwatu instead of launching Chrome/Playwright.
+- Open pages without stealing my focus: `hwatu --background <url>`
+  (or `mode: background` over the socket). Use `--headless` for
+  windows I should never see.
+- Run JS in the page: `hwatu eval '<js function body>'` (returns JSON).
+- Screenshot: `hwatu shot out.png`.
+- Verify hwatu works: `hwatu ping`.
+- Docs: https://github.com/hongnoul/hwatu/blob/master/docs/agents.md
+```
+
 ## Comparison
 
 | | hwatu | headless Chrome + Playwright | Lightpanda |
