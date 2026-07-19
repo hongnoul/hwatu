@@ -15,6 +15,11 @@
     />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://hongnoul.github.io/hwatu/" />
+    <meta
+      property="og:image"
+      content="https://hongnoul.github.io/hwatu/assets/boar.svg"
+    />
+    <link rel="icon" type="image/svg+xml" href="assets/boar.svg" />
     <title>hwatu 화투</title>
     <style>
       /* Mono, monochrome, minimal. */
@@ -64,6 +69,12 @@
         align-items: center;
         justify-content: center;
         text-align: center;
+      }
+      .hero .card {
+        width: 76px;
+        height: auto;
+        margin-bottom: 1.25rem;
+        border-radius: 6px;
       }
       .hero h1 {
         font-size: 2.5rem;
@@ -169,6 +180,13 @@
   <body>
     <main>
       <section class="hero">
+        <img
+          class="card"
+          src="assets/boar.svg"
+          alt="Hanafuda July card: bush clover with boar"
+          width="76"
+          height="125"
+        />
         <h1>hwatu 화투</h1>
         <p class="tagline">
           A daemon-based web browser for tiling window managers.<br />
@@ -216,6 +234,64 @@
           Measured: <strong>~10 ms</strong> from <code>hwatu &lt;url&gt;</code>
           to a mapped, loading window on a warm daemon (the first-ever window
           pays a one-time engine/GPU init).
+        </p>
+      </section>
+
+      <section>
+        <h2>Compared</h2>
+        <p>
+          If you want a minimal browser for a tiling WM (Hyprland, sway, i3,
+          river), the usual suspects trade differently:
+        </p>
+        <table>
+          <tr>
+            <th></th>
+            <th>hwatu</th>
+            <th>surf</th>
+            <th>qutebrowser</th>
+            <th>luakit</th>
+          </tr>
+          <tr>
+            <td>Window spawn</td>
+            <td>~10 ms (warm daemon)</td>
+            <td>engine start per window</td>
+            <td>engine start</td>
+            <td>engine start</td>
+          </tr>
+          <tr>
+            <td>Engine</td>
+            <td>WebKitGTK 6</td>
+            <td>WebKitGTK 2</td>
+            <td>QtWebEngine</td>
+            <td>WebKitGTK 2</td>
+          </tr>
+          <tr>
+            <td>Tabs</td>
+            <td>none, WM tiles</td>
+            <td>none</td>
+            <td>built-in</td>
+            <td>built-in</td>
+          </tr>
+          <tr>
+            <td>Keyboard UI</td>
+            <td>your WM's binds</td>
+            <td>patches</td>
+            <td>vim binds</td>
+            <td>lua config</td>
+          </tr>
+          <tr>
+            <td>Memory model</td>
+            <td>one shared engine, N views</td>
+            <td>process per window</td>
+            <td>one big process</td>
+            <td>one process</td>
+          </tr>
+        </table>
+        <p class="muted">
+          Honest take: if you want vim keybindings <em>inside</em> the
+          browser, use qutebrowser. If you want windows that appear as fast
+          as terminals and a WM that does the window management, that's what
+          hwatu is for.
         </p>
       </section>
 
@@ -312,6 +388,15 @@ hwatu quit                 # stop the daemon</code></pre>
       <footer>
         <a href="https://github.com/hongnoul/hwatu">github.com/hongnoul/hwatu</a>
         · MIT license · 화투: the game is played with what's in your hand
+        <br />
+        Boar card by
+        <a href="https://commons.wikimedia.org/wiki/File:Hanafuda_July_Tane.svg"
+          >Louie Mantia</a
+        >
+        ·
+        <a href="https://creativecommons.org/licenses/by-sa/4.0/"
+          >CC BY-SA 4.0</a
+        >
       </footer>
     </main>
   </body>
