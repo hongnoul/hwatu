@@ -68,7 +68,7 @@ adds the warm daemon and a current engine.
 ## Usage
 
 ```sh
-hwatu                      # open your home page (autostarts hwatud)
+hwatu                      # open the launcher (autostarts hwatud)
 hwatu example.com          # open a URL (https:// implied)
 hwatu how to exit vim      # anything that isn't a URL is a web search
 hwatu --app-id mail url    # per-window app_id for WM window rules
@@ -164,6 +164,11 @@ hwatu's one piece of chrome: a single-line vim-style bar at the bottom
 of the window, hidden until summoned. Everything interactive lives
 there, so the resting state stays chromeless.
 
+- **The launcher**: a bare `hwatu` opens a keybind cheat sheet with
+  the URL bar already open — type a URL or search and hit Enter.
+  `Esc` closes an untouched launcher window, so a mis-fired keybind
+  costs nothing. Set `HWATU_HOME` to get a home page instead.
+
 - **Open a URL**: `Ctrl+l`/`O` edit the current address, `o` starts
   blank. Input is normalized like the CLI (`example.com` gets
   `https://`, loopback hosts get `http://`), and anything that
@@ -221,7 +226,8 @@ No config file for engine knobs. They are set to their correct values
 in code (GPU compositing always on), and the only surfaces are
 `keys.conf` (above) and environment variables read by `hwatud`:
 
-- `HWATU_HOME` – page opened by a bare `hwatu`
+- `HWATU_HOME` – page opened by a bare `hwatu` (default: the built-in
+  launcher, a keybind cheat sheet with the URL bar pre-opened)
   (default <https://hongnoul.github.io/hwatu/>, use `about:blank` for none).
 - `HWATU_DISCARD_SECS` – seconds an unfocused window keeps its live
   WebView before being suspended to save RAM (default 120, 0 disables).

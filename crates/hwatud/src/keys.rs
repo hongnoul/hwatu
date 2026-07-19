@@ -75,6 +75,23 @@ impl Action {
         }
     }
 
+    /// Human-readable description, for the launcher page.
+    pub fn describe(self) -> &'static str {
+        match self {
+            Action::Close => "close window",
+            Action::UrlOpen => "open URL / search",
+            Action::UrlEdit => "edit current URL",
+            Action::Find => "find in page",
+            Action::FindBack => "find backwards",
+            Action::FindNext => "next match",
+            Action::FindPrev => "previous match",
+            Action::ScrollDown => "scroll down",
+            Action::ScrollUp => "scroll up",
+            Action::Back => "history back",
+            Action::Forward => "history forward",
+        }
+    }
+
     fn from_name(name: &str) -> Option<Action> {
         Action::ALL.iter().copied().find(|a| a.name() == name)
     }
@@ -191,6 +208,37 @@ impl Chord {
     }
 }
 
+/// Human rendering (`ctrl+J`, `O`, `/`, `Page_Down`), for the
+/// launcher page's keybind table. Shift folds into letter case, as in
+/// config syntax; printable keys show their character, others their
+/// GDK name.
+impl std::fmt::Display for Chord {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.ctrl {
+            write!(f, "ctrl+")?;
+        }
+        if self.alt {
+            write!(f, "alt+")?;
+        }
+        match self.key.to_unicode().filter(|c| !c.is_control()) {
+            Some(c) if c.is_alphabetic() => {
+                if self.shift {
+                    write!(f, "{}", c.to_uppercase())
+                } else {
+                    write!(f, "{c}")
+                }
+            }
+            Some(c) => write!(f, "{c}"),
+            None => {
+                if self.shift {
+                    write!(f, "shift+")?;
+                }
+                write!(f, "{}", self.key.name().unwrap_or_default())
+            }
+        }
+    }
+}
+
 /// Char -> GDK keyval, per gdk_unicode_to_keyval: Latin-1 code points
 /// map directly, everything else is `codepoint | 0x0100_0000`.
 fn key_from_char(c: char) -> gdk::Key {
@@ -239,7 +287,7 @@ impl Keymap {
 
     /// `action = chord[, chord...]` or `action = none`. Replaces all
     /// existing chords for that action.
-    fn apply_line(&mut self, line: &str) -> Result<(), String> {
+    pub(crate) fn apply_line(&mut self, line: &str) -> Result<(), String> {
         let (name, spec) = line
             .split_once('=')
             .ok_or_else(|| format!("expected `action = chord`, got {line:?}"))?;
@@ -268,6 +316,16 @@ impl Keymap {
             .iter()
             .find(|(chord, _)| chord.phase() == phase && chord.matches(key, state))
             .map(|(_, action)| *action)
+    }
+
+    /// Every chord bound to `action`, rendered in config syntax and in
+    /// binding order. Empty if unbound.
+    pub fn chords_for(&self, action: Action) -> Vec<String> {
+        self.bindings
+            .iter()
+            .filter(|(_, a)| *a == action)
+            .map(|(chord, _)| chord.to_string())
+            .collect()
     }
 }
 
@@ -307,6 +365,25 @@ mod tests {
     const NONE: ModifierType = ModifierType::empty();
     const CTRL: ModifierType = ModifierType::CONTROL_MASK;
     const SHIFT: ModifierType = ModifierType::SHIFT_MASK;
+
+    #[test]
+    fn chords_render_for_humans() {
+        let show = |spec: &str| Chord::parse(spec).unwrap().to_string();
+        assert_eq!(show("o"), "o");
+        assert_eq!(show("O"), "O");
+        assert_eq!(show("ctrl+l"), "ctrl+l");
+        assert_eq!(show("ctrl+shift+j"), "ctrl+J");
+        assert_eq!(show("slash"), "/");
+        assert_eq!(show("question"), "?");
+        assert_eq!(show("Page_Down"), "Page_Down");
+    }
+
+    #[test]
+    fn chords_for_lists_bindings_in_order() {
+        let map = Keymap::default();
+        assert_eq!(map.chords_for(Action::UrlEdit), vec!["ctrl+l", "O"]);
+        assert!(map.chords_for(Action::Find).contains(&"/".to_string()));
+    }
 
     #[test]
     fn defaults_resolve() {

@@ -28,11 +28,30 @@ pub const ENGINES: &[(&str, &str)] = &[
 
 /// Search URL for `query` using the configured engine.
 pub fn url_for(query: &str) -> String {
-    let template = std::fs::read_to_string(config_file())
+    template().replace("%s", &encode(query))
+}
+
+/// Display label for the active engine: the known-engine name, or the
+/// host of a custom template. For the launcher page.
+pub fn engine_label() -> String {
+    let template = template();
+    if let Some((name, _)) = ENGINES.iter().find(|(_, t)| *t == template) {
+        return (*name).to_string();
+    }
+    template
+        .split("://")
+        .nth(1)
+        .and_then(|rest| rest.split('/').next())
+        .unwrap_or("custom")
+        .to_string()
+}
+
+/// The active URL template: search.conf if valid, else the default.
+fn template() -> String {
+    std::fs::read_to_string(config_file())
         .ok()
         .and_then(|s| parse_template(&s))
-        .unwrap_or_else(|| ENGINES[0].1.to_string());
-    template.replace("%s", &encode(query))
+        .unwrap_or_else(|| ENGINES[0].1.to_string())
 }
 
 /// First meaningful line of search.conf -> URL template. Accepts an
