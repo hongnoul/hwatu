@@ -24,7 +24,10 @@ machine the human is working on.
   render-less automation engines, which are fast but blind.)
 - **No focus stealing.** `--background` maps a window without an
   activation request; `--headless` never maps one at all. The human
-  keeps typing while the agent verifies.
+  keeps typing while the agent verifies. The CLI even defaults to
+  background when it detects a coding-agent environment (markers
+  like `CLAUDECODE`, `JCODE_SOCKET`, `CURSOR_AGENT`), so a forgotten
+  flag does not cost the user their focus; `--focus` opts back in.
 - **Human hand-off.** Every headless/background window is a live
   session. `hwatu focus <id>` promotes it to a normal window in the
   user's tiling WM: the human watches or takes over, then closes it.

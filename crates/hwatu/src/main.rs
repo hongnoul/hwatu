@@ -115,13 +115,39 @@ fn main() {
 }
 
 fn parse(args: &[String]) -> Result<Request, String> {
+    parse_with_default_mode(args, default_open_mode())
+}
+
+/// Coding agents mark their subprocess environment; a human's shell or
+/// WM keybind has none of these. Opens from an agent default to
+/// `Background` so verification flows never steal the user's focus,
+/// while human entries keep Normal. Explicit flags always win, and
+/// `--focus` opts an agent back into Normal deliberately.
+fn default_open_mode() -> OpenMode {
+    const AGENT_MARKERS: &[&str] = &[
+        "JCODE_SOCKET",   // jcode
+        "CLAUDECODE",     // Claude Code
+        "CODEX_SANDBOX",  // Codex CLI
+        "CURSOR_AGENT",   // Cursor CLI
+        "AGENT",          // Amp, and a de-facto generic marker
+        "OPENCODE",       // opencode
+        "GEMINI_CLI",     // Gemini CLI
+    ];
+    if AGENT_MARKERS.iter().any(|k| std::env::var_os(k).is_some()) {
+        OpenMode::Background
+    } else {
+        OpenMode::Normal
+    }
+}
+
+fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Request, String> {
     // Flags (`--app-id`, `--id`, `--timeout-ms`, `--no-wait`) may
     // appear anywhere relative to the subcommand/URL.
     let mut app_id: Option<String> = None;
     let mut id: Option<u64> = None;
     let mut timeout_ms: Option<u64> = None;
     let mut no_wait = false;
-    let mut mode = OpenMode::Normal;
+    let mut mode = default_mode;
     let mut rest: Vec<&String> = Vec::new();
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -159,6 +185,8 @@ fn parse(args: &[String]) -> Result<Request, String> {
             mode = OpenMode::Background;
         } else if arg == "--headless" {
             mode = OpenMode::Headless;
+        } else if arg == "--focus" {
+            mode = OpenMode::Normal;
         } else {
             rest.push(arg);
         }
@@ -263,7 +291,8 @@ fn parse(args: &[String]) -> Result<Request, String> {
     }
 }
 
-const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless] [url] \
+const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--focus] [url] \
+(agent environments default to --background) \
 | list [--json] | close <id> | focus <id> \
 | eval [--id <id>] [--timeout-ms <ms>] <js> | goto [--id <id>] [--no-wait] <url> \
 | shot [--id <id>] [path] | wait-load [--id <id>] | upload [--id <id>] <selector> <path> \
@@ -303,11 +332,33 @@ fn connect_or_spawn() -> std::io::Result<UnixStream> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse;
-    use hwatu_ipc::{OpenMode, Request};
+    use super::{parse_with_default_mode, OpenMode};
+    use hwatu_ipc::Request;
+
+    /// Env-independent parse: tests themselves often run under a
+    /// coding agent, which would flip `default_open_mode()`.
+    fn parse(args: &[String]) -> Result<Request, String> {
+        parse_with_default_mode(args, OpenMode::Normal)
+    }
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn agent_default_is_background_and_focus_overrides() {
+        let Ok(Request::Open { mode, .. }) =
+            parse_with_default_mode(&args(&["example.com"]), OpenMode::Background)
+        else {
+            panic!("expected Open");
+        };
+        assert_eq!(mode, OpenMode::Background);
+        let Ok(Request::Open { mode, .. }) =
+            parse_with_default_mode(&args(&["--focus", "example.com"]), OpenMode::Background)
+        else {
+            panic!("expected Open");
+        };
+        assert_eq!(mode, OpenMode::Normal);
     }
 
     #[test]
