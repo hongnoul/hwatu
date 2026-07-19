@@ -35,8 +35,10 @@ window (what you actually ask for). hwatu splits them, the same way
 - **`hwatud`** owns WebKitGTK 6, a prewarmed WebView pool, and all windows.
 - **`hwatu`** is a thin client: one Unix-socket roundtrip to open a window.
 
-Measured on the MVP: **~45 ms** from `hwatu <url>` to a mapped, loading window
-(first-ever window pays a one-time engine/GPU init).
+Measured: **13 ms median** (p90 35 ms) from `hwatu <url>` to a mapped,
+loading window on a warm daemon; `--background` and `--headless` land at
+16 ms and 14 ms medians. The first-ever window pays a one-time engine/GPU
+init (~200-400 ms). Full data and methodology: [docs/benchmarks.md](docs/benchmarks.md).
 
 ## hwatu vs surf, qutebrowser, luakit
 
@@ -45,7 +47,7 @@ river), the usual suspects trade differently:
 
 | | hwatu | surf | qutebrowser | luakit |
 |---|---|---|---|---|
-| Window spawn | ~45 ms (warm daemon) | full engine start per window | full engine start | full engine start |
+| Window spawn | 13 ms median (warm daemon) | full engine start per window | full engine start | full engine start |
 | Engine | WebKitGTK 6 | WebKitGTK 2 | QtWebEngine (Chromium) | WebKitGTK 2 |
 | Tabs | none, WM tiles are tabs | none | built-in | built-in |
 | Keyboard-driven UI | your WM's binds | patches | first-class vim binds | lua config |
@@ -86,7 +88,10 @@ hwatu quit                 # stop the daemon
 
 The daemon speaks a small automation protocol, built for AI coding
 agents (jcode has a native hwatu backend) and scripts that need to
-verify web UIs. Full guide: [docs/agents.md](docs/agents.md).
+verify web UIs. A full verification pass (open headless, wait for
+load, eval, screenshot, close) measures **216 ms median**, ~75 ms
+without the screenshot ([docs/benchmarks.md](docs/benchmarks.md)).
+Full guide: [docs/agents.md](docs/agents.md).
 
 ```sh
 hwatu --background localhost:3000           # open without stealing focus
@@ -124,7 +129,7 @@ Because most tilers focus new windows regardless, the installer offers
 `HWATU_WM_RULE=no` to skip.
 
 
-`Ctrl+q` closes the focused window. `Ctrl+l` (or `O`) opens the URL
+`Ctrl+w` (or `Ctrl+q`) closes the focused window. `Ctrl+l` (or `O`) opens the URL
 bar prefilled with the current address, `o` opens it blank; `Enter`
 navigates, `Esc` cancels. `Ctrl+o` / `Ctrl+i` go back/forward in
 history (vim jumplist style). `Ctrl+r` / `F5` reload the page.
@@ -217,9 +222,9 @@ suffix. The bar flashes the destination when a download finishes.
 
 A baseline filter list is embedded in the binary, so blocking works
 offline on first run. `hwatu adblock update` upgrades to full EasyList +
-EasyPrivacy (~117k compiled rules); compiled rulesets are cached, so
+EasyPrivacy (117,431 compiled rules); compiled rulesets are cached, so
 only the first start after a list change pays compile cost (~5 s), warm
-starts load in ~0.4 s. Rules run in WebKit's content-extension engine in
+starts load in ~0.3 s. Rules run in WebKit's content-extension engine in
 the network process — the same machinery as Safari content blockers —
 so there is no JavaScript in the request path and no per-window cost.
 

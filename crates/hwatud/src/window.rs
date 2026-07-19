@@ -359,7 +359,7 @@ impl BrowserWindow {
         this.attach_webview(webview);
         this.wire_bar();
 
-        // Ctrl+q closes the window; the daemon (and engine) stay warm.
+        // Ctrl+w (or ctrl+q) closes the window; the daemon (and engine) stay warm.
         {
             let ctrl = gtk::EventControllerKey::new();
             let this2 = this.clone();

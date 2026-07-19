@@ -103,7 +103,7 @@ impl Action {
     /// Default chords, in config syntax.
     fn default_chords(self) -> &'static str {
         match self {
-            Action::Close => "ctrl+q",
+            Action::Close => "ctrl+w, ctrl+q",
             Action::UrlOpen => "o",
             Action::UrlEdit => "ctrl+l, O",
             Action::Find => "slash",
@@ -427,6 +427,10 @@ mod tests {
         assert_eq!(
             map.lookup(Phase::Capture, Key::J, CTRL | SHIFT),
             Some(Action::ScrollDown)
+        );
+        assert_eq!(
+            map.lookup(Phase::Capture, Key::w, CTRL),
+            Some(Action::Close)
         );
         assert_eq!(
             map.lookup(Phase::Capture, Key::q, CTRL),
