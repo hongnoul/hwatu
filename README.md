@@ -278,7 +278,8 @@ Crates:
 - [x] URL bar (`Ctrl+l`, `o`, `O`)
 - [x] Crash resilience: reopen windows after an unclean daemon death
 - [x] Automation protocol: eval / goto / shot / wait-load / upload / focus
-- [ ] `--background` / `--headless` window modes (no focus steal, no window)
+- [x] `--background` / `--headless` window modes (no focus steal, no window)
+- [x] Measured benchmarks in docs (spawn, verification loop, memory)
 - [ ] Link hints
 - [ ] Profiles (separate cookie jars / web contexts); per-agent isolation
 - [ ] Text/a11y page snapshot (`hwatu snapshot`): token-cheap page state for agents
