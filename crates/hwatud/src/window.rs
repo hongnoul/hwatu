@@ -604,7 +604,7 @@ impl BrowserWindow {
         );
     }
 
-    /// Second phase of [`discard`]: runs after the snapshot resolves.
+    /// Second phase of [`Self::discard`]: runs after the snapshot resolves.
     /// The guards are re-checked because focus, prompts, or navigation
     /// may have changed during the async gap.
     fn finish_discard(self: &Rc<Self>, snapshot: Option<gtk::gdk::Texture>) {
@@ -731,7 +731,7 @@ impl BrowserWindow {
         self.attach_webview(webview);
     }
 
-    /// Remove the frozen-frame overlay left by [`restore`], if present.
+    /// Remove the frozen-frame overlay left by [`Self::restore`], if present.
     fn drop_veil(&self) {
         if let Some(veil) = self.veil.borrow_mut().take() {
             self.overlay.remove_overlay(&veil);
