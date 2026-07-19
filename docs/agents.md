@@ -12,13 +12,16 @@ machine the human is working on.
 
 ## Why agents like it
 
-- **~45 ms window spawn** from a warm daemon. Verification loops
-  spawn and discard windows constantly; Chrome's multi-second cold
-  start is the tax hwatu removes.
+- **13-16 ms window spawn** from a warm daemon, measured medians
+  across focused/background/headless modes
+  ([benchmarks](benchmarks.md)). Verification loops spawn and
+  discard windows constantly; Chrome's multi-second cold start is
+  the tax hwatu removes.
 - **One shared engine.** N windows share one WebKit network process
-  and a prewarm pool, instead of one ~2 GB Chrome per Playwright
-  context. It fits on the dev machine next to the editor, the LSP,
-  and the agent itself.
+  and a prewarm pool: measured, each extra window costs ~56 MB PSS
+  on top of the daemon's floor, instead of one multi-hundred-MB
+  Chrome per Playwright context. It fits on the dev machine next to
+  the editor, the LSP, and the agent itself.
 - **Real rendering.** Full WebKit: layout, CSS, WebGL, media.
   Screenshots show what a user would see. (Contrast with
   render-less automation engines, which are fast but blind.)
@@ -99,12 +102,28 @@ hwatu eval 'return {
 ## A verification loop
 
 ```sh
-id=$(hwatu --headless localhost:5173 | jq .window.id)   # ~45 ms
+id=$(hwatu --headless localhost:5173 | jq .window.id)   # ~14 ms
 hwatu wait-load --id $id
 hwatu eval --id $id 'return document.querySelector("h1")?.textContent'
 hwatu shot --id $id /tmp/after.png
 hwatu close $id
 ```
+
+Measured cost of that whole loop against a local dev page, medians
+over 10 runs ([full data](benchmarks.md)):
+
+| step | median |
+|---|---|
+| open `--headless` | 13 ms |
+| `wait-load` | 50 ms |
+| `eval` | 4 ms |
+| `shot` (1024x768 PNG) | 142 ms |
+| `close` | 8 ms |
+| **total** | **216 ms** |
+
+A full check with a screenshot costs about a fifth of a second; a
+DOM-only check (skip `shot`) is ~75 ms. `eval` at 4 ms is cheap
+enough to poll.
 
 If a check looks wrong and you want the human to see it:
 
@@ -149,7 +168,7 @@ your agent will reach for hwatu when it fits:
 ```markdown
 ## hwatu (browser for verification)
 
-Daemon-based WebKitGTK browser: ~45ms window spawn, full rendering.
+Daemon-based WebKitGTK browser: ~15ms window spawn, full rendering.
 
 - When verifying frontend changes (dev server, screenshots, DOM checks),
   use hwatu instead of launching Chrome/Playwright.
@@ -166,9 +185,9 @@ Daemon-based WebKitGTK browser: ~45ms window spawn, full rendering.
 
 | | hwatu | headless Chrome + Playwright | Lightpanda |
 |---|---|---|---|
-| Spawn per check | ~45 ms (warm) | seconds | fast |
+| Spawn per check | 13-16 ms (warm) | seconds | fast |
 | Rendering / screenshots | full WebKit | full Chromium | none |
-| Memory | one shared engine | ~GBs per browser | very low |
+| Memory | one shared engine, ~56 MB/window | ~GBs per browser | very low |
 | Headed↔headless | per window, switchable live | fixed at launch | headless only |
 | Human hand-off | `hwatu focus <id>` | none | none |
 | Protocol | 1-line JSON over Unix socket | CDP / Playwright API | CDP subset |
