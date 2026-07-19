@@ -1,4 +1,4 @@
-# Maintainer: hongnoul <FIXME email before AUR push>
+# Maintainer: hongnoul <namyang@mit.edu>
 pkgname=hwatu
 pkgver=0.3.0
 pkgrel=1

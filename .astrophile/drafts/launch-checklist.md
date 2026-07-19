@@ -11,14 +11,14 @@ Sequenced: each step feeds the next. Snapshot before and after every step
 - [ ] `astrophile audit` is clean or consciously-waived
 
 ## Phase 1: permanent surfaces (week 1, before launch spikes)
-- [ ] AUR package published (see drafts/PKGBUILD) — package indexes are discovery
+- [ ] AUR package published: one-time, add SSH key at aur.archlinux.org/register, then `scripts/aur-publish.sh` — package indexes are discovery
 - [ ] Ecosystem wiki pages (e.g. Arch Wiki, the wiki of every WM/tool you integrate with)
 - [ ] llms.txt committed (AI crawlers ingest it verbatim)
 
 ## Phase 2: launch (pick ONE channel per day, answer every comment for 3h)
-- [ ] Show HN (drafts/show-hn.md) — Tue-Thu, 14:00-16:00 UTC
+- [ ] Show HN: `HN_USER=.. HN_PASS=.. scripts/post-hn.sh "<title>" "<repo url>"` — Tue-Thu, 14:00-16:00 UTC, then paste first comment from drafts/show-hn.md
 - [ ] lobste.rs (needs an invite; tag appropriately)
-- [ ] Reddit ecosystem subs, one per day (drafts/reddit.md)
+- [ ] Reddit: `scripts/post-reddit.sh <sub> "<title>" <url>` one sub per day (needs script-app creds once, see script header; titles in drafts/reddit.md)
 - [ ] If HN flops: wait 2+ weeks, rewrite the title angle, try once more (allowed)
 
 ## Phase 3: compounding (after first spike)
