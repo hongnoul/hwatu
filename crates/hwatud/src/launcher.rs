@@ -15,6 +15,7 @@ const SHOWN: &[Action] = &[
     Action::Find,
     Action::Back,
     Action::Forward,
+    Action::Reload,
     Action::ScrollDown,
     Action::ScrollUp,
     Action::Close,

@@ -820,8 +820,20 @@ impl BrowserWindow {
             Action::ScrollUp => self.scroll_page(-1.0),
             Action::Back => self.history_go(false),
             Action::Forward => self.history_go(true),
+            Action::Reload => self.reload(),
         }
         glib::Propagation::Stop
+    }
+
+    /// Reload the current page. Restores a discarded window first
+    /// (restore already brings the page back at its saved state, so
+    /// this is only a fresh restore in that case).
+    fn reload(self: &Rc<Self>) {
+        self.restore();
+        let Some(webview) = self.live_webview() else {
+            return;
+        };
+        webview.reload();
     }
 
     /// Back/forward through this window's history. Restores a

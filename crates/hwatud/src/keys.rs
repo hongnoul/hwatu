@@ -42,6 +42,7 @@ pub enum Action {
     ScrollUp,
     Back,
     Forward,
+    Reload,
 }
 
 impl Action {
@@ -57,6 +58,7 @@ impl Action {
         Action::ScrollUp,
         Action::Back,
         Action::Forward,
+        Action::Reload,
     ];
 
     pub fn name(self) -> &'static str {
@@ -72,6 +74,7 @@ impl Action {
             Action::ScrollUp => "scroll_up",
             Action::Back => "back",
             Action::Forward => "forward",
+            Action::Reload => "reload",
         }
     }
 
@@ -89,6 +92,7 @@ impl Action {
             Action::ScrollUp => "scroll up",
             Action::Back => "history back",
             Action::Forward => "history forward",
+            Action::Reload => "reload page",
         }
     }
 
@@ -110,6 +114,7 @@ impl Action {
             Action::ScrollUp => "ctrl+shift+k",
             Action::Back => "ctrl+o",
             Action::Forward => "ctrl+i",
+            Action::Reload => "ctrl+r, F5",
         }
     }
 }
@@ -426,6 +431,15 @@ mod tests {
         assert_eq!(
             map.lookup(Phase::Capture, Key::q, CTRL),
             Some(Action::Close)
+        );
+        assert_eq!(
+            map.lookup(Phase::Capture, Key::r, CTRL),
+            Some(Action::Reload)
+        );
+        // F5 carries no modifiers, so it bubbles like other bare keys.
+        assert_eq!(
+            map.lookup(Phase::Bubble, Key::F5, NONE),
+            Some(Action::Reload)
         );
     }
 

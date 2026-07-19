@@ -127,7 +127,8 @@ Because most tilers focus new windows regardless, the installer offers
 `Ctrl+q` closes the focused window. `Ctrl+l` (or `O`) opens the URL
 bar prefilled with the current address, `o` opens it blank; `Enter`
 navigates, `Esc` cancels. `Ctrl+o` / `Ctrl+i` go back/forward in
-history (vim jumplist style). `Ctrl+Shift+j` / `Ctrl+Shift+k` scroll
+history (vim jumplist style). `Ctrl+r` / `F5` reload the page.
+`Ctrl+Shift+j` / `Ctrl+Shift+k` scroll
 the page down/up by half a viewport. The daemon and engine stay warm.
 
 Every bind is remappable in `~/.config/hwatu/keys.conf`, one
@@ -144,7 +145,7 @@ Chords are `[ctrl+][alt+][shift+]key`; a key is a character (`o`, `/`)
 or a GDK key name (`slash`, `Left`, `Page_Down`). Uppercase implies
 shift. Actions: `close`, `url_open`, `url_edit`, `find`, `find_back`,
 `find_next`, `find_prev`, `scroll_down`, `scroll_up`, `back`,
-`forward`. Chords with ctrl/alt always win over the page; bare keys
+`forward`, `reload`. Chords with ctrl/alt always win over the page; bare keys
 reach the page first (an `o` typed in a text box stays in the page).
 
 On Wayland, `--app-id` names the window for your compositor's rules:
