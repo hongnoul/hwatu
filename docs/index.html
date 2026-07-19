@@ -317,7 +317,7 @@
 
       <section>
         <h2>Usage</h2>
-        <pre><code>hwatu                      # open your home page (autostarts hwatud)
+        <pre><code>hwatu                      # open the launcher (autostarts hwatud)
 hwatu example.com          # open a URL (https:// implied)
 hwatu list                 # id, url, title of every window
 hwatu close 2              # close window 2
@@ -327,6 +327,32 @@ hwatu quit                 # stop the daemon</code></pre>
           <code>Ctrl+Shift+j</code> / <code>Ctrl+Shift+k</code> scroll the
           page down/up by half a viewport. The daemon and engine
           stay warm.
+        </p>
+      </section>
+
+      <section>
+        <h2>For coding agents</h2>
+        <p>
+          The same daemon doubles as a verification harness for AI coding
+          agents: real WebKit, ~10 ms windows, one JSON protocol over the
+          Unix socket. Full guide:
+          <a href="https://github.com/hongnoul/hwatu/blob/main/docs/agents.md"
+            >docs/agents.md</a
+          >.
+        </p>
+        <pre><code>hwatu --headless localhost:3000    # live session, no window at all
+hwatu --background localhost:3000  # window mapped, focus stays put
+hwatu eval 'return document.title' # run JS in the page, JSON out
+hwatu goto /checkout               # navigate + wait for the load
+hwatu shot /tmp/page.png           # screenshot the viewport
+hwatu upload 'input[type=file]' ./fixture.png
+hwatu focus 3                      # hand the session to the human</code></pre>
+        <p class="muted">
+          Agent CLIs (jcode, Claude Code, Codex, Cursor, ...) are
+          auto-detected and default to <code>--background</code>, so
+          verification never steals your focus. <code>focus</code> promotes
+          any headless or background window to a normal one, session
+          intact.
         </p>
       </section>
 
@@ -345,7 +371,8 @@ hwatu quit                 # stop the daemon</code></pre>
           <tr>
             <td><code>HWATU_HOME</code></td>
             <td>
-              Page opened by a bare <code>hwatu</code>. Defaults to this site.
+              Page opened by a bare <code>hwatu</code>. Defaults to the
+              built-in launcher (keybind cheat sheet + URL bar).
             </td>
           </tr>
           <tr>
