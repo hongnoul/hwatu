@@ -94,6 +94,14 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
         Request::WaitLoad { id, timeout_ms } => {
             return automation::wait_load(daemon, id, timeout_ms, reply);
         }
+        Request::Upload {
+            id,
+            selector,
+            path,
+            timeout_ms,
+        } => {
+            return automation::upload(daemon, id, selector, path, timeout_ms, reply);
+        }
         _ => {}
     }
 
@@ -154,7 +162,8 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
         Request::Eval { .. }
         | Request::Navigate { .. }
         | Request::Screenshot { .. }
-        | Request::WaitLoad { .. } => Response::err("internal: async request in sync path"),
+        | Request::WaitLoad { .. }
+        | Request::Upload { .. } => Response::err("internal: async request in sync path"),
     };
     reply(response);
 }

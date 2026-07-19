@@ -88,6 +88,7 @@ hwatu goto localhost:3000                   # navigate + wait for the load
 hwatu goto --no-wait example.com            # navigate without waiting
 hwatu shot /tmp/page.png                    # screenshot the viewport (PNG)
 hwatu wait-load                             # block until the current load settles
+hwatu upload 'input[type=file]' ./pic.png   # set a file input's files from disk
 hwatu focus 2                               # raise/focus window 2
 ```
 

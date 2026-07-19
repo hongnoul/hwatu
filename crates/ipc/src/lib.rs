@@ -87,6 +87,19 @@ pub enum Request {
     },
     /// Present (raise/focus) a window.
     Focus { id: u64 },
+    /// Set a `<input type=file>`'s files from a path on disk. The
+    /// daemon reads the file and injects it into the page as a `File`
+    /// via `DataTransfer`, the standard automation-harness technique
+    /// (programmatically clicking the OS picker is blocked by WebKit,
+    /// but assigning `input.files` is not).
+    Upload {
+        #[serde(default)]
+        id: Option<u64>,
+        selector: String,
+        path: String,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
 }
 
 fn default_true() -> bool {

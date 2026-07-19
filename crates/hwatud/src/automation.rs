@@ -241,3 +241,134 @@ pub fn screenshot(daemon: &Rc<Daemon>, id: Option<u64>, path: Option<String>, re
         },
     );
 }
+
+/// Set a file input's files from a path on disk. The bytes travel
+/// into the page as base64 inside a JS snippet, are decoded to a
+/// `File`, and assigned through `DataTransfer` — the same technique
+/// every automation harness uses, since engines allow assigning
+/// `input.files` but not opening the OS picker programmatically.
+pub fn upload(
+    daemon: &Rc<Daemon>,
+    id: Option<u64>,
+    selector: String,
+    path: String,
+    timeout_ms: Option<u64>,
+    reply: Reply,
+) {
+    let bytes = match std::fs::read(&path) {
+        Ok(b) => b,
+        Err(e) => {
+            return OnceReply::new(reply).send(Response::err(format!("cannot read {path}: {e}")));
+        }
+    };
+    // Keep IPC and JS-source sizes sane: 32 MiB of payload is ~43 MiB
+    // of base64 in a script string. Enough for fixtures and documents;
+    // bulk uploads should not go through a JS harness anyway.
+    const MAX: usize = 32 * 1024 * 1024;
+    if bytes.len() > MAX {
+        return OnceReply::new(reply).send(Response::err(format!(
+            "{path} is {} bytes; upload supports at most {MAX} (32 MiB)",
+            bytes.len()
+        )));
+    }
+    let name = std::path::Path::new(&path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "upload.bin".into());
+    let mime = mime_from_extension(&path);
+    let js = format!(
+        r#"const selector = {selector};
+const el = document.querySelector(selector);
+if (!el) throw new Error('no element matches selector: ' + selector);
+if (!(el instanceof HTMLInputElement) || el.type !== 'file')
+  throw new Error('element is not an <input type=file>: ' + selector);
+const bin = atob({b64});
+const bytes = new Uint8Array(bin.length);
+for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+const file = new File([bytes], {name}, {{ type: {mime} }});
+const dt = new DataTransfer();
+dt.items.add(file);
+el.files = dt.files;
+el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+return {{ uploaded: file.name, size: file.size, type: file.type }};"#,
+        selector = js_string(&selector),
+        b64 = js_string(&base64(&bytes)),
+        name = js_string(&name),
+        mime = js_string(mime),
+    );
+    eval(daemon, id, js, timeout_ms, reply);
+}
+
+/// JSON string literal, which is also a valid JS string literal.
+fn js_string(s: &str) -> String {
+    serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
+}
+
+/// Standard base64 (RFC 4648, with padding). Hand-rolled to keep
+/// hwatud dependency-light; ~20 lines beats a crate for one call site.
+fn base64(data: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
+        out.push(TABLE[(n >> 18) as usize & 63] as char);
+        out.push(TABLE[(n >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 {
+            TABLE[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[n as usize & 63] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// Minimal extension → MIME map for common upload fixtures. Unknown
+/// extensions get `application/octet-stream`, which pages rarely gate.
+fn mime_from_extension(path: &str) -> &'static str {
+    let ext = std::path::Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase());
+    match ext.as_deref() {
+        Some("png") => "image/png",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("gif") => "image/gif",
+        Some("webp") => "image/webp",
+        Some("svg") => "image/svg+xml",
+        Some("pdf") => "application/pdf",
+        Some("txt") | Some("log") => "text/plain",
+        Some("md") => "text/markdown",
+        Some("csv") => "text/csv",
+        Some("json") => "application/json",
+        Some("xml") => "application/xml",
+        Some("html") | Some("htm") => "text/html",
+        Some("zip") => "application/zip",
+        Some("mp4") => "video/mp4",
+        Some("mp3") => "audio/mpeg",
+        Some("wav") => "audio/wav",
+        _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::base64;
+
+    #[test]
+    fn base64_matches_rfc_vectors() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foob"), "Zm9vYg==");
+        assert_eq!(base64(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+    }
+}

@@ -200,6 +200,22 @@ fn parse(args: &[String]) -> Result<Request, String> {
             path: rest.get(1).map(|s| s.to_string()),
         }),
         Some("wait-load") => Ok(Request::WaitLoad { id, timeout_ms }),
+        Some("upload") => {
+            let selector = rest
+                .get(1)
+                .ok_or("usage: hwatu upload [--id <id>] <selector> <path>")?
+                .to_string();
+            let path = rest
+                .get(2)
+                .ok_or("usage: hwatu upload [--id <id>] <selector> <path>")?
+                .to_string();
+            Ok(Request::Upload {
+                id,
+                selector,
+                path,
+                timeout_ms,
+            })
+        }
         Some("focus") => {
             let id = rest
                 .get(1)
@@ -232,7 +248,8 @@ fn parse(args: &[String]) -> Result<Request, String> {
 
 const USAGE: &str = "usage: hwatu [--app-id <id>] [url] | list [--json] | close <id> | focus <id> \
 | eval [--id <id>] [--timeout-ms <ms>] <js> | goto [--id <id>] [--no-wait] <url> \
-| shot [--id <id>] [path] | wait-load [--id <id>] | adblock [on|off|status|update] | update | ping | quit";
+| shot [--id <id>] [path] | wait-load [--id <id>] | upload [--id <id>] <selector> <path> \
+| adblock [on|off|status|update] | update | ping | quit";
 
 fn connect_or_spawn() -> std::io::Result<UnixStream> {
     let path = hwatu_ipc::socket_path();
