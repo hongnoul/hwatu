@@ -125,13 +125,13 @@ fn parse(args: &[String]) -> Result<Request, String> {
 /// `--focus` opts an agent back into Normal deliberately.
 fn default_open_mode() -> OpenMode {
     const AGENT_MARKERS: &[&str] = &[
-        "JCODE_SOCKET",   // jcode
-        "CLAUDECODE",     // Claude Code
-        "CODEX_SANDBOX",  // Codex CLI
-        "CURSOR_AGENT",   // Cursor CLI
-        "AGENT",          // Amp, and a de-facto generic marker
-        "OPENCODE",       // opencode
-        "GEMINI_CLI",     // Gemini CLI
+        "JCODE_SOCKET",  // jcode
+        "CLAUDECODE",    // Claude Code
+        "CODEX_SANDBOX", // Codex CLI
+        "CURSOR_AGENT",  // Cursor CLI
+        "AGENT",         // Amp, and a de-facto generic marker
+        "OPENCODE",      // opencode
+        "GEMINI_CLI",    // Gemini CLI
     ];
     if AGENT_MARKERS.iter().any(|k| std::env::var_os(k).is_some()) {
         OpenMode::Background
