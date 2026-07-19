@@ -98,6 +98,12 @@ fn main() {
             if let Some(v) = value {
                 // Eval results are machine-facing: always JSON.
                 println!("{v}");
+            } else if matches!(request, Request::Eval { .. }) {
+                // A null result serializes as `"value":null`, which
+                // deserializes to `None` here. Eval always answers, so
+                // print the null instead of nothing: silence would be
+                // indistinguishable from a swallowed result.
+                println!("null");
             }
             if let Some(p) = path {
                 println!("{p}");
@@ -147,6 +153,11 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
     let mut id: Option<u64> = None;
     let mut timeout_ms: Option<u64> = None;
     let mut no_wait = false;
+    let mut full = false;
+    let mut nth: Option<u32> = None;
+    let mut contains: Option<String> = None;
+    let mut to_y: Option<f64> = None;
+    let mut by_pages: Option<f64> = None;
     let mut mode = default_mode;
     let mut rest: Vec<&String> = Vec::new();
     let mut it = args.iter();
@@ -181,6 +192,33 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             timeout_ms = Some(v.parse().map_err(|_| "usage: --timeout-ms=<ms>")?);
         } else if arg == "--no-wait" {
             no_wait = true;
+        } else if arg == "--full" {
+            full = true;
+        } else if arg == "--nth" {
+            nth = Some(
+                it.next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("usage: --nth <index>")?,
+            );
+        } else if arg == "--contains" {
+            contains = Some(
+                it.next()
+                    .filter(|v| !v.is_empty())
+                    .ok_or("usage: --contains <text>")?
+                    .clone(),
+            );
+        } else if arg == "--to-y" {
+            to_y = Some(
+                it.next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("usage: --to-y <pixels>")?,
+            );
+        } else if arg == "--by" {
+            by_pages = Some(
+                it.next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("usage: --by <pages>")?,
+            );
         } else if arg == "--background" {
             mode = OpenMode::Background;
         } else if arg == "--headless" {
@@ -235,8 +273,22 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
         Some("shot") | Some("screenshot") => Ok(Request::Screenshot {
             id,
             path: rest.get(1).map(|s| s.to_string()),
+            full,
         }),
         Some("wait-load") => Ok(Request::WaitLoad { id, timeout_ms }),
+        Some("scroll") => {
+            // hwatu scroll [--id <id>] [<selector> [nth]] | --to-y <px> | --by <pages>
+            // Flags --nth/--contains/--to-y/--by were consumed above.
+            Ok(Request::Scroll {
+                id,
+                selector: rest.get(1).map(|s| s.to_string()),
+                nth: rest.get(2).and_then(|s| s.parse().ok()).or(nth),
+                contains,
+                to_y,
+                by_pages,
+                timeout_ms,
+            })
+        }
         Some("upload") => {
             let selector = rest
                 .get(1)
@@ -295,7 +347,8 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--foc
 (agent environments default to --background) \
 | list [--json] | close <id> | focus <id> \
 | eval [--id <id>] [--timeout-ms <ms>] <js> | goto [--id <id>] [--no-wait] <url> \
-| shot [--id <id>] [path] | wait-load [--id <id>] | upload [--id <id>] <selector> <path> \
+| shot [--id <id>] [--full] [path] | wait-load [--id <id>] | upload [--id <id>] <selector> <path> \
+| scroll [--id <id>] [<selector> [nth]] [--contains <text>] [--to-y <px>] [--by <pages>] \
 | adblock [on|off|status|update] | update | ping | quit";
 
 fn connect_or_spawn() -> std::io::Result<UnixStream> {
@@ -445,5 +498,70 @@ mod tests {
             parse(&args(&["close", "3"])),
             Ok(Request::Close { id: 3 })
         ));
+    }
+
+    #[test]
+    fn shot_full_flag() {
+        let Ok(Request::Screenshot { full, path, .. }) =
+            parse(&args(&["shot", "--full", "/tmp/x.png"]))
+        else {
+            panic!("expected Screenshot");
+        };
+        assert!(full);
+        assert_eq!(path.as_deref(), Some("/tmp/x.png"));
+        let Ok(Request::Screenshot { full, .. }) = parse(&args(&["shot"])) else {
+            panic!("expected Screenshot");
+        };
+        assert!(!full);
+    }
+
+    #[test]
+    fn scroll_selector_with_nth_and_contains() {
+        let Ok(Request::Scroll {
+            selector,
+            nth,
+            contains,
+            to_y,
+            by_pages,
+            ..
+        }) = parse(&args(&["scroll", "h3", "2", "--contains", "Joule"]))
+        else {
+            panic!("expected Scroll");
+        };
+        assert_eq!(selector.as_deref(), Some("h3"));
+        assert_eq!(nth, Some(2));
+        assert_eq!(contains.as_deref(), Some("Joule"));
+        assert!(to_y.is_none() && by_pages.is_none());
+    }
+
+    #[test]
+    fn scroll_by_pages_and_to_y() {
+        let Ok(Request::Scroll {
+            selector, by_pages, ..
+        }) = parse(&args(&["scroll", "--by", "-0.5"]))
+        else {
+            panic!("expected Scroll");
+        };
+        assert!(selector.is_none());
+        assert_eq!(by_pages, Some(-0.5));
+        let Ok(Request::Scroll { to_y, .. }) = parse(&args(&["scroll", "--to-y", "1200"])) else {
+            panic!("expected Scroll");
+        };
+        assert_eq!(to_y, Some(1200.0));
+    }
+
+    #[test]
+    fn bare_scroll_defaults_to_one_page() {
+        let Ok(Request::Scroll {
+            selector,
+            to_y,
+            by_pages,
+            ..
+        }) = parse(&args(&["scroll"]))
+        else {
+            panic!("expected Scroll");
+        };
+        // All None: the daemon treats this as by_pages = 1.0.
+        assert!(selector.is_none() && to_y.is_none() && by_pages.is_none());
     }
 }

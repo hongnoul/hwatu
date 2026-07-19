@@ -91,21 +91,25 @@ Full guide: [docs/agents.md](docs/agents.md).
 ```sh
 hwatu --background localhost:3000           # open without stealing focus
 hwatu --headless localhost:3000             # open with no window at all
-hwatu eval 'return document.title'          # run JS in the page (async, JSON out)
-hwatu eval --id 2 'return location.href'    # target a window by id
+hwatu eval 'document.title'                 # run JS in the page (async, JSON out)
+hwatu eval --id 2 'location.href'           # target a window by id
 hwatu goto localhost:3000                   # navigate + wait for the load
 hwatu goto --no-wait example.com            # navigate without waiting
 hwatu shot /tmp/page.png                    # screenshot the viewport (PNG)
+hwatu shot --full /tmp/page.png             # screenshot the whole document
+hwatu scroll h2 --contains Pricing          # scroll an element into view
 hwatu wait-load                             # block until the current load settles
 hwatu upload 'input[type=file]' ./pic.png   # set a file input's files from disk
 hwatu focus 2                               # raise/focus window 2 (materializes
                                             # background/headless windows)
 ```
 
-`eval` takes a JavaScript *function body*: `return` works, `await`
-works, and a returned Promise is awaited before the result comes back
-as JSON. Without `--id`, commands target the focused window (or the
-only window). Everything is one JSON request over the Unix socket
+`eval` accepts a JavaScript *expression* (`document.title`) or a
+*function body* (`const n = ...; return n`); `await` works in both
+and a returned Promise is awaited before the result comes back as
+JSON. Without `--id`, commands target the focused window, the window
+your last automation command touched, or the only window. Everything
+is one JSON request over the Unix socket
 (`$XDG_RUNTIME_DIR/hwatu.sock`), so any language can drive it directly.
 
 A `--headless` window is a live session the WM never sees: an agent

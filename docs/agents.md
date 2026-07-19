@@ -76,21 +76,34 @@ hwatu close 3
 | `focus` | `id` | raise/focus; promotes background/headless windows to normal |
 | `eval` | `id?`, `js`, `timeout_ms?` | run JS, result as JSON |
 | `navigate` | `id?`, `url`, `wait?`, `timeout_ms?` | navigate, optionally wait for the load |
-| `screenshot` | `id?`, `path?` | viewport PNG, returns the file path |
+| `screenshot` | `id?`, `path?`, `full?` | PNG of the viewport (`full: true` = whole document), returns the file path |
 | `wait_load` | `id?`, `timeout_ms?` | block until loading settles |
+| `scroll` | `id?`, `selector?`, `nth?`, `contains?`, `to_y?`, `by_pages?` | scroll and report where it landed |
 | `upload` | `id?`, `selector`, `path` | set a file input's files from disk |
 | `ping` | | health check |
 
-When `id` is omitted, commands target the focused window, or the
-only window. With several unfocused windows the daemon returns an
-error instead of guessing: an agent driving the wrong window is
-worse than a retry.
+When `id` is omitted, commands target the focused window, else the
+window your last automation command targeted (including `open`), else
+the only window. So `open` → `eval` → `shot` chains never need an id.
+Only genuine ambiguity (several windows, none focused, none driven
+yet) is an error: an agent driving the wrong window is worse than a
+retry.
 
 ### Eval semantics
 
-`js` is a **function body**: `return` works, `await` works, and a
-returned Promise is awaited before the response. `undefined` maps to
-JSON `null`. Default timeout 15 s, override with `timeout_ms`.
+`js` can be an **expression** or a **function body**; the daemon
+picks the right form with a compile-only probe, so both just work:
+
+```sh
+hwatu eval 'document.title'                # expression
+hwatu eval '1+1'                           # expression
+hwatu eval 'return document.title'        # function body
+hwatu eval 'const n = 6*7; return n'      # statements need return
+```
+
+`await` works in both forms and a returned Promise is awaited before
+the response. `undefined` maps to JSON `null`. Default timeout 15 s,
+override with `timeout_ms`.
 
 ```sh
 hwatu eval 'return {
@@ -98,6 +111,24 @@ hwatu eval 'return {
   errors: [...document.querySelectorAll(".error")].map(e => e.textContent),
 }'
 ```
+
+### Scroll semantics
+
+Exactly one way to say "where": `selector` (scrolled into view,
+centered; disambiguate with `nth` and/or `contains`), `to_y`
+(absolute pixels), or `by_pages` (viewport-heights, default 1.0,
+negative = up). The response tells you what happened, so no
+screenshot is needed to confirm a scroll:
+
+```sh
+hwatu scroll h2 --contains History
+{"matched":{"matches":1,"tag":"h2","text":"History"},"x":0,"y":431,"max_y":8902,"at_bottom":false}
+hwatu scroll --by 2           # two viewports down
+hwatu scroll --to-y 0         # back to top
+```
+
+A selector that matches nothing (or `nth` past the end) is an error
+that reports the match count, not a silent scroll to the wrong place.
 
 ## A verification loop
 

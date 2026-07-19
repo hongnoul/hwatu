@@ -44,6 +44,12 @@ pub struct Daemon {
     pub prompt_memory: prompts::Memory,
     /// Resolved keybindings (defaults + ~/.config/hwatu/keys.conf).
     pub keymap: keys::Keymap,
+    /// Window most recently targeted by an automation command (eval,
+    /// navigate, screenshot, ...), by explicit id or resolution.
+    /// Id-less commands fall back to it when several windows are open
+    /// and none is focused, so an agent that opened or drove a window
+    /// can keep addressing it without repeating `id`.
+    pub last_target: RefCell<Option<u64>>,
     /// Debounce timer for crash-resilience session snapshots.
     session_save_timer: RefCell<Option<glib::SourceId>>,
 }
@@ -58,6 +64,7 @@ impl Daemon {
             adblock: adblock::Adblock::default(),
             prompt_memory: prompts::Memory::default(),
             keymap: keys::Keymap::load(),
+            last_target: RefCell::new(None),
             session_save_timer: RefCell::new(None),
         })
     }

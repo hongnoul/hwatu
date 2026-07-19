@@ -41,9 +41,23 @@ impl OnceReply {
 const DEFAULT_TIMEOUT_MS: u64 = 15_000;
 
 /// Pick the target window: explicit id, else the focused window, else
-/// the only window. Ambiguity is an error rather than a guess: an
-/// agent driving the wrong window is worse than a retry with an id.
+/// the last window an automation command targeted (if still open),
+/// else the only window. Every successful resolution records the
+/// target, so an agent that opened or drove a window keeps addressing
+/// it without repeating `id` even when nothing has WM focus (the
+/// normal state for background/headless verification flows).
+/// Genuine ambiguity is still an error rather than a guess: an agent
+/// driving the wrong window is worse than a retry with an id.
 fn resolve(daemon: &Rc<Daemon>, id: Option<u64>) -> Result<Rc<BrowserWindow>, Box<Response>> {
+    let win = resolve_uncached(daemon, id)?;
+    daemon.last_target.replace(Some(win.id));
+    Ok(win)
+}
+
+fn resolve_uncached(
+    daemon: &Rc<Daemon>,
+    id: Option<u64>,
+) -> Result<Rc<BrowserWindow>, Box<Response>> {
     let windows = daemon.windows.borrow();
     if let Some(id) = id {
         return windows
@@ -53,6 +67,11 @@ fn resolve(daemon: &Rc<Daemon>, id: Option<u64>) -> Result<Rc<BrowserWindow>, Bo
     }
     if let Some(focused) = windows.values().find(|w| w.window.is_active()) {
         return Ok(focused.clone());
+    }
+    if let Some(last) = *daemon.last_target.borrow() {
+        if let Some(win) = windows.get(&last) {
+            return Ok(win.clone());
+        }
     }
     match windows.len() {
         0 => Err(Box::new(Response::err("no windows open"))),
@@ -95,7 +114,12 @@ fn arm_timeout(reply: OnceReply, timeout_ms: Option<u64>, what: &'static str) {
     });
 }
 
-/// Run `js` as an async function body in the page. A returned Promise
+/// Run `js` in the page: as an *expression* when it parses as one (so
+/// `document.title` just works, the way every agent harness expects),
+/// else as an async *function body* (so `const x = ...; return x`
+/// also works). The choice is made by a compile-only probe that
+/// defines but never calls a function wrapping the expression, so
+/// user code runs exactly once regardless of form. A returned Promise
 /// is awaited by WebKit before the callback fires.
 pub fn eval(
     daemon: &Rc<Daemon>,
@@ -127,12 +151,40 @@ pub fn eval(
         }
     }
 
-    view.call_async_javascript_function(&js, None, None, None, Some(&cancellable), move |result| {
-        match result {
-            Ok(value) => reply.send(Response::value(jsc_to_json(&value))),
-            Err(e) => reply.send(Response::err(format!("eval failed: {e}"))),
-        }
-    });
+    // Trailing semicolons are meaningless on an expression but would
+    // break the `return ( ... )` wrapping; strip them for both the
+    // probe and the expression run.
+    let trimmed = js.trim().trim_end_matches(';').trim_end().to_string();
+    // Compile-only probe: defines an arrow wrapping the expression and
+    // returns it without calling it. Parses iff `js` is an expression;
+    // never executes user code, so a probe failure carries no side
+    // effects and a runtime SyntaxError cannot be mistaken for one.
+    let probe = format!("return typeof (async () => (\n{trimmed}\n));");
+    let expr = format!("return (\n{trimmed}\n);");
+    let body = js;
+    let view2 = view.clone();
+    let cancellable2 = cancellable.clone();
+    view.call_async_javascript_function(
+        &probe,
+        None,
+        None,
+        None,
+        Some(&cancellable),
+        move |probed| {
+            let source = if probed.is_ok() { expr } else { body };
+            view2.call_async_javascript_function(
+                &source,
+                None,
+                None,
+                None,
+                Some(&cancellable2),
+                move |result| match result {
+                    Ok(value) => reply.send(Response::value(jsc_to_json(&value))),
+                    Err(e) => reply.send(Response::err(format!("eval failed: {e}"))),
+                },
+            );
+        },
+    );
 }
 
 /// Navigate a window; with `wait`, reply only once the load finishes.
@@ -208,8 +260,16 @@ fn wire_load_finished(view: &webkit6::WebView, done: impl FnOnce() + 'static) {
     handler.replace(Some(id));
 }
 
-/// Capture the visible viewport as a PNG on disk.
-pub fn screenshot(daemon: &Rc<Daemon>, id: Option<u64>, path: Option<String>, reply: Reply) {
+/// Capture the page as a PNG on disk: the visible viewport, or the
+/// entire document with `full` (WebKit renders the whole scrollable
+/// area, no scroll-and-stitch needed).
+pub fn screenshot(
+    daemon: &Rc<Daemon>,
+    id: Option<u64>,
+    path: Option<String>,
+    full: bool,
+    reply: Reply,
+) {
     let reply = OnceReply::new(reply);
     let win = match resolve(daemon, id) {
         Ok(w) => w,
@@ -228,8 +288,13 @@ pub fn screenshot(daemon: &Rc<Daemon>, id: Option<u64>, path: Option<String>, re
         std::env::temp_dir().join(format!("hwatu-shot-{}-{ts}.png", win.id))
     });
 
+    let region = if full {
+        webkit6::SnapshotRegion::FullDocument
+    } else {
+        webkit6::SnapshotRegion::Visible
+    };
     view.snapshot(
-        webkit6::SnapshotRegion::Visible,
+        region,
         webkit6::SnapshotOptions::NONE,
         gio::Cancellable::NONE,
         move |result| match result {
@@ -304,6 +369,86 @@ return {{ uploaded: file.name, size: file.size, type: file.type }};"#,
         mime = js_string(mime),
     );
     eval(daemon, id, js, timeout_ms, reply);
+}
+
+/// Scroll the page and report where it landed. One of `selector`
+/// (scrolled into view, centered, disambiguated by `nth`/`contains`),
+/// `to_y` (absolute pixels), or `by_pages` (relative viewport-heights,
+/// default 1.0). Implemented as an eval so the response can carry
+/// what actually happened: match count, the matched element's tag and
+/// text, and the final scroll position, so an agent never has to
+/// screenshot just to learn whether a scroll hit the right thing.
+#[allow(clippy::too_many_arguments)]
+pub fn scroll(
+    daemon: &Rc<Daemon>,
+    id: Option<u64>,
+    selector: Option<String>,
+    nth: Option<u32>,
+    contains: Option<String>,
+    to_y: Option<f64>,
+    by_pages: Option<f64>,
+    timeout_ms: Option<u64>,
+    reply: Reply,
+) {
+    let modes = [selector.is_some(), to_y.is_some(), by_pages.is_some()];
+    if modes.iter().filter(|m| **m).count() > 1 {
+        return OnceReply::new(reply).send(Response::err(
+            "scroll takes exactly one of selector, to_y, by_pages",
+        ));
+    }
+    let js = format!(
+        r#"const selector = {selector};
+const nth = {nth};
+const contains = {contains};
+const toY = {to_y};
+const byPages = {by_pages};
+if (selector !== null) {{
+  let els = [...document.querySelectorAll(selector)];
+  const total = els.length;
+  if (contains !== null)
+    els = els.filter(e => (e.textContent || '').includes(contains));
+  const el = els[nth];
+  if (!el) {{
+    const filt = contains === null ? '' : ` (${{els.length}} after contains filter)`;
+    throw new Error(`no match: ${{total}} element(s) for selector${{filt}}, nth=${{nth}}`);
+  }}
+  el.scrollIntoView({{ block: 'center', behavior: 'instant' }});
+  var matched = {{
+    matches: els.length,
+    tag: el.tagName.toLowerCase(),
+    text: (el.textContent || '').trim().slice(0, 120),
+  }};
+}} else if (toY !== null) {{
+  window.scrollTo({{ top: toY, behavior: 'instant' }});
+}} else {{
+  window.scrollBy({{ top: window.innerHeight * (byPages ?? 1.0), behavior: 'instant' }});
+}}
+// Let the instant scroll settle before measuring. Not rAF: frames
+// never fire in headless/unmapped windows, which are exactly where
+// agent scrolls run. scrollTo/scrollBy with behavior:'instant'
+// update scrollY synchronously; one macrotask covers layout shifts.
+await new Promise(r => setTimeout(r, 0));
+const doc = document.documentElement;
+const maxY = Math.max(0, doc.scrollHeight - window.innerHeight);
+return {{
+  x: window.scrollX,
+  y: window.scrollY,
+  max_y: maxY,
+  at_bottom: window.scrollY >= maxY - 1,
+  ...(typeof matched === 'undefined' ? {{}} : {{ matched }}),
+}};"#,
+        selector = json_or_null(selector.as_deref()),
+        nth = nth.unwrap_or(0),
+        contains = json_or_null(contains.as_deref()),
+        to_y = to_y.map_or("null".into(), |v| v.to_string()),
+        by_pages = by_pages.map_or("null".into(), |v| v.to_string()),
+    );
+    eval(daemon, id, js, timeout_ms, reply);
+}
+
+/// JS literal for an optional string: a JSON string or `null`.
+fn json_or_null(s: Option<&str>) -> String {
+    s.map_or("null".into(), js_string)
 }
 
 /// JSON string literal, which is also a valid JS string literal.

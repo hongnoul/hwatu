@@ -88,8 +88,8 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
         } => {
             return automation::navigate(daemon, id, url, wait, timeout_ms, reply);
         }
-        Request::Screenshot { id, path } => {
-            return automation::screenshot(daemon, id, path, reply);
+        Request::Screenshot { id, path, full } => {
+            return automation::screenshot(daemon, id, path, full, reply);
         }
         Request::WaitLoad { id, timeout_ms } => {
             return automation::wait_load(daemon, id, timeout_ms, reply);
@@ -102,6 +102,19 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
         } => {
             return automation::upload(daemon, id, selector, path, timeout_ms, reply);
         }
+        Request::Scroll {
+            id,
+            selector,
+            nth,
+            contains,
+            to_y,
+            by_pages,
+            timeout_ms,
+        } => {
+            return automation::scroll(
+                daemon, id, selector, nth, contains, to_y, by_pages, timeout_ms, reply,
+            );
+        }
         _ => {}
     }
 
@@ -110,6 +123,9 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
         Request::Open { url, app_id, mode } => {
             let url = url.map(normalize_url);
             let info = BrowserWindow::open(daemon, url, app_id, mode);
+            // A fresh open is the natural target for follow-up id-less
+            // automation ("open, then eval").
+            daemon.last_target.replace(Some(info.id));
             Response::window(info)
         }
         Request::List => {
@@ -136,6 +152,7 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
                     // user) explicitly asking for a background/headless
                     // window means they want to see it now.
                     w.present();
+                    daemon.last_target.replace(Some(id));
                     Response::ok()
                 }
                 None => Response::err(format!("no window {id}")),
@@ -166,7 +183,8 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
         | Request::Navigate { .. }
         | Request::Screenshot { .. }
         | Request::WaitLoad { .. }
-        | Request::Upload { .. } => Response::err("internal: async request in sync path"),
+        | Request::Upload { .. }
+        | Request::Scroll { .. } => Response::err("internal: async request in sync path"),
     };
     reply(response);
 }

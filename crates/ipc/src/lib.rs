@@ -74,13 +74,18 @@ pub enum Request {
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
-    /// Capture the visible viewport as a PNG. Writes to `path` (or a
-    /// temp file) and returns the file path in [`Response::Ok::path`].
+    /// Capture the page as a PNG. Writes to `path` (or a temp file)
+    /// and returns the file path in [`Response::Ok::path`].
     Screenshot {
         #[serde(default)]
         id: Option<u64>,
         #[serde(default)]
         path: Option<String>,
+        /// Capture the entire document instead of just the visible
+        /// viewport. Agents hunting for below-the-fold content should
+        /// use this instead of scroll-and-shoot loops.
+        #[serde(default)]
+        full: bool,
     },
     /// Block until the window finishes loading (or `timeout_ms`).
     WaitLoad {
@@ -101,6 +106,34 @@ pub enum Request {
         id: Option<u64>,
         selector: String,
         path: String,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
+    /// Scroll the page and report where it landed. Exactly one way to
+    /// say "where": `selector` (scrolled into view, disambiguated by
+    /// `nth`/`contains`), `to_y` (absolute pixels), or `by_pages`
+    /// (relative viewport-heights; default 1.0 when nothing is given).
+    /// The response `value` reports match count, the matched element's
+    /// text, and the resulting scroll position, so an agent always
+    /// knows what it hit and whether the bottom was reached.
+    Scroll {
+        #[serde(default)]
+        id: Option<u64>,
+        /// CSS selector to scroll into view (centered).
+        #[serde(default)]
+        selector: Option<String>,
+        /// 0-based index among selector matches (default 0).
+        #[serde(default)]
+        nth: Option<u32>,
+        /// Keep only selector matches whose text contains this.
+        #[serde(default)]
+        contains: Option<String>,
+        /// Absolute scroll target in CSS pixels.
+        #[serde(default)]
+        to_y: Option<f64>,
+        /// Relative scroll in viewport heights (negative = up).
+        #[serde(default)]
+        by_pages: Option<f64>,
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
