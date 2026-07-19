@@ -7,6 +7,10 @@
 A daemon-based web browser for tiling window managers. Real WebKit rendering,
 terminal-emulator spawn times.
 
+hwatu treats the browser window as a resource that other programs manage.
+For humans, that program is your tiling WM. For coding agents, it's the
+agent harness: see [docs/agents.md](docs/agents.md).
+
 ![hwatu spawning windows in ~48ms from a warm daemon](docs/assets/spawn-demo.svg)
 
 ## Installation
@@ -82,9 +86,11 @@ hwatu quit                 # stop the daemon
 
 The daemon speaks a small automation protocol, built for AI coding
 agents (jcode has a native hwatu backend) and scripts that need to
-verify web UIs:
+verify web UIs. Full guide: [docs/agents.md](docs/agents.md).
 
 ```sh
+hwatu --background localhost:3000           # open without stealing focus
+hwatu --headless localhost:3000             # open with no window at all
 hwatu eval 'return document.title'          # run JS in the page (async, JSON out)
 hwatu eval --id 2 'return location.href'    # target a window by id
 hwatu goto localhost:3000                   # navigate + wait for the load
@@ -92,7 +98,8 @@ hwatu goto --no-wait example.com            # navigate without waiting
 hwatu shot /tmp/page.png                    # screenshot the viewport (PNG)
 hwatu wait-load                             # block until the current load settles
 hwatu upload 'input[type=file]' ./pic.png   # set a file input's files from disk
-hwatu focus 2                               # raise/focus window 2
+hwatu focus 2                               # raise/focus window 2 (materializes
+                                            # background/headless windows)
 ```
 
 `eval` takes a JavaScript *function body*: `return` works, `await`
@@ -100,6 +107,10 @@ works, and a returned Promise is awaited before the result comes back
 as JSON. Without `--id`, commands target the focused window (or the
 only window). Everything is one JSON request over the Unix socket
 (`$XDG_RUNTIME_DIR/hwatu.sock`), so any language can drive it directly.
+
+A `--headless` window is a live session the WM never sees: an agent
+can drive and screenshot it, and `hwatu focus <id>` later materializes
+that exact session as a normal window for the human to inspect.
 
 
 `Ctrl+q` closes the focused window. `Ctrl+l` (or `O`) opens the URL
@@ -248,9 +259,13 @@ Crates:
 - [x] Per-window `app_id` for WM window rules
 - [x] URL bar (`Ctrl+l`, `o`, `O`)
 - [x] Crash resilience: reopen windows after an unclean daemon death
+- [x] Automation protocol: eval / goto / shot / wait-load / upload / focus
+- [ ] `--background` / `--headless` window modes (no focus steal, no window)
 - [ ] Link hints
-- [ ] Profiles (separate cookie jars / web contexts)
-- [ ] `hwatu ipc js ...` scripting
+- [ ] Profiles (separate cookie jars / web contexts); per-agent isolation
+- [ ] Text/a11y page snapshot (`hwatu snapshot`): token-cheap page state for agents
+- [ ] Console + network capture for verification loops
+- [ ] Displayless operation (nested headless compositor) for CI
 
 ## Name
 
