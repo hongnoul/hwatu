@@ -178,7 +178,7 @@ Daemon-based WebKitGTK browser: ~15ms window spawn, full rendering.
 - Run JS in the page: `hwatu eval '<js function body>'` (returns JSON).
 - Screenshot: `hwatu shot out.png`.
 - Verify hwatu works: `hwatu ping`.
-- Docs: https://github.com/hongnoul/hwatu/blob/master/docs/agents.md
+- Docs: https://github.com/hongnoul/hwatu/blob/main/docs/agents.md
 ```
 
 ## Comparison
