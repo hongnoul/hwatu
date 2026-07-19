@@ -53,11 +53,6 @@ river), the usual suspects trade differently:
 | Keyboard-driven UI | your WM's binds | patches | first-class vim binds | lua config |
 | Memory model | one shared engine, N views | one process per window | one big process | one process |
 
-Honest take: if you want vim keybindings *inside* the browser, use qutebrowser.
-If you want windows that appear as fast as terminals and a WM that does the
-window management, that's what hwatu is for. surf pioneered this shape; hwatu
-adds the warm daemon and a current engine.
-
 ## Philosophy
 
 - **No tabs.** A tab is a window. Your tiling WM is the tab manager.
