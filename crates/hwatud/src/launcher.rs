@@ -54,7 +54,8 @@ pub fn html(keymap: &Keymap) -> String {
     font: 13px monospace;
   }}
   main {{ text-align: left; }}
-  h1 {{ font-size: 15px; font-weight: normal; color: #9a9a9a; margin: 0 0 14px; }}
+  .card {{ margin: 0 0 14px; }}
+  .card svg {{ display: block; height: 96px; width: auto; border-radius: 4px; }}
   table {{ border-collapse: collapse; }}
   td {{ padding: 3px 14px 3px 0; color: #9a9a9a; }}
   td:first-child {{ text-align: right; }}
@@ -64,7 +65,7 @@ pub fn html(keymap: &Keymap) -> String {
   }}
   p {{ color: #6a6a6a; margin: 14px 0 0; }}
 </style></head><body><main>
-  <h1>hwatu</h1>
+  <div class="card">{BOAR_SVG}</div>
   <table>
 {rows}  </table>
   <p>type a URL or search ({engine}) &mdash; Esc closes this window</p>
