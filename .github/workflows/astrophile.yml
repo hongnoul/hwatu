@@ -31,6 +31,7 @@ jobs:
         run: |
           git config user.name 'astrophile-bot'
           git config user.email 'actions@github.com'
-          git add .astrophile/snapshots.jsonl
+          git add -f .astrophile/snapshots.jsonl
           git diff --cached --quiet || git commit -m 'astrophile: weekly snapshot'
+          git pull --rebase origin "${GITHUB_REF_NAME}"
           git push
