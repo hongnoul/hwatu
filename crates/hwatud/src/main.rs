@@ -140,6 +140,34 @@ impl Daemon {
     }
 }
 
+/// Point the default network session's cookie jar at a SQLite file in
+/// the XDG data dir, so logins survive daemon restarts. All WebViews
+/// share the default session (persistence is what makes the shared
+/// engine feel like one browser instead of a fleet of incognito tabs).
+fn persist_cookies() {
+    let Some(session) = webkit6::NetworkSession::default() else {
+        eprintln!("hwatud: no default network session; cookies will not persist");
+        return;
+    };
+    let Some(cookies) = session.cookie_manager() else {
+        eprintln!("hwatud: no cookie manager; cookies will not persist");
+        return;
+    };
+    let dir = glib::user_data_dir().join("hwatud");
+    if let Err(e) = std::fs::create_dir_all(&dir) {
+        eprintln!(
+            "hwatud: cannot create {} ({e}); cookies will not persist",
+            dir.display()
+        );
+        return;
+    }
+    let path = dir.join("cookies.sqlite");
+    cookies.set_persistent_storage(
+        &path.to_string_lossy(),
+        webkit6::CookiePersistentStorage::Sqlite,
+    );
+}
+
 fn main() -> glib::ExitCode {
     // Keep RAM predictable: cap glibc arena explosion under GTK threads.
     std::env::set_var("MALLOC_ARENA_MAX", "2");
@@ -154,6 +182,13 @@ fn main() -> glib::ExitCode {
         // Reclaim session blobs orphaned by a crashed/killed daemon.
         window::sweep_discard_dir();
         let daemon = Daemon::new(app.clone());
+        // Cookies persist across daemon restarts. WebKit's default
+        // network session keeps its jar in RAM only until told
+        // otherwise, which makes every restart look like a brand-new
+        // browser: logins vanish, and sites like GitHub answer the
+        // fresh jar with their strictest anti-bot login path (device
+        // verification, captcha). Must run before any WebView exists.
+        persist_cookies();
         // Internal pages (hwatu://launcher) before any WebView exists.
         launcher::register_scheme(&daemon);
         adblock::Adblock::init(&daemon);
