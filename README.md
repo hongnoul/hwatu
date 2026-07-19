@@ -289,8 +289,3 @@ Crates:
 - [ ] Text/a11y page snapshot (`hwatu snapshot`): token-cheap page state for agents
 - [ ] Console + network capture for verification loops
 - [ ] Displayless operation (nested headless compositor) for CI
-
-## Name
-
-Hwatu are Korean flower cards: many small cards, one deck. Many small
-windows, one engine.
