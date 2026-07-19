@@ -168,18 +168,34 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
     reply(response);
 }
 
-/// `example.com` -> `https://example.com`; keep schemes and about: intact.
-/// Loopback hosts (`localhost`, `*.localhost`, `127.*`, `[::1]`) get `http://`
-/// since local dev servers rarely speak TLS. Shared with the in-window
-/// URL bar so both entry points resolve input identically.
+/// Turn bar/CLI input into a loadable URL: explicit schemes and
+/// `about:` pass through, bare hosts get `https://` (`http://` for
+/// loopback: `localhost`, `*.localhost`, `127.*`, `[::1]`, since local
+/// dev servers rarely speak TLS), and anything that doesn't look like
+/// a URL becomes a web search with the configured engine (see
+/// [`crate::search`]). Shared with the in-window URL bar so both
+/// entry points resolve input identically.
 pub fn normalize_url(input: String) -> String {
+    let input = input.trim().to_string();
     if input.contains("://") || input.starts_with("about:") {
         input
     } else if is_loopback_host(&input) {
         format!("http://{input}")
-    } else {
+    } else if looks_like_host(&input) {
         format!("https://{input}")
+    } else {
+        crate::search::url_for(&input)
     }
+}
+
+/// Heuristic for scheme-less input: URL, not search query? A single
+/// whitespace-free token whose host part contains a dot.
+fn looks_like_host(input: &str) -> bool {
+    if input.is_empty() || input.contains(char::is_whitespace) {
+        return false;
+    }
+    let host = input.split(['/', '?', '#']).next().unwrap_or(input);
+    host.contains('.') && !host.starts_with('.') && !host.ends_with('.')
 }
 
 /// True if the host part of a scheme-less input is a loopback address.
@@ -227,5 +243,33 @@ mod tests {
             normalize_url("localhost.example.com".into()),
             "https://localhost.example.com"
         );
+    }
+
+    #[test]
+    fn queries_become_searches() {
+        // The engine is user-configured, so assert against the search
+        // module rather than a hardcoded engine URL.
+        assert_eq!(
+            normalize_url("rust borrow checker".into()),
+            crate::search::url_for("rust borrow checker")
+        );
+        assert_eq!(normalize_url("vim".into()), crate::search::url_for("vim"));
+        assert_eq!(
+            normalize_url("  what is 2+2?  ".into()),
+            crate::search::url_for("what is 2+2?")
+        );
+        // Any whitespace means search, even with a dot: real URLs
+        // never contain raw spaces.
+        assert_eq!(
+            normalize_url("example.com login page".into()),
+            crate::search::url_for("example.com login page")
+        );
+        // Dotted single tokens stay URLs, path and all.
+        assert_eq!(
+            normalize_url("example.com/a?b=1".into()),
+            "https://example.com/a?b=1"
+        );
+        // Trailing/leading dots are not hosts.
+        assert_eq!(normalize_url("what.".into()), crate::search::url_for("what."));
     }
 }

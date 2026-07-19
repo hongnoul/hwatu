@@ -78,6 +78,65 @@ mkdir -p "$INSTALL_DIR"
 install -m755 "$tmp/${artifact}/hwatu" "$tmp/${artifact}/hwatud" "$INSTALL_DIR/"
 
 say "installed hwatu + hwatud ${tag} to ${INSTALL_DIR}"
+
+# --- search engine ------------------------------------------------------------
+# Input in the URL bar / CLI that isn't a URL becomes a web search.
+# Pick the engine here (like `npm init` prompts); it lands in
+# ~/.config/hwatu/search.conf and is editable any time. Keep the list
+# in sync with ENGINES in crates/hwatud/src/search.rs.
+config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/hwatu"
+search_conf="$config_dir/search.conf"
+
+engine_names=(duckduckgo google bing brave startpage kagi ecosia)
+
+pick_engine() {
+  # Preseeded (HWATU_SEARCH_ENGINE=google curl ... | bash)?
+  if [ -n "${HWATU_SEARCH_ENGINE:-}" ]; then
+    printf '%s' "$HWATU_SEARCH_ENGINE"
+    return
+  fi
+  # curl | bash: stdin is the script, so prompt on the terminal.
+  if [ ! -e /dev/tty ] || ! : </dev/tty 2>/dev/null; then
+    printf 'duckduckgo'
+    return
+  fi
+  say "choose a search engine (used when URL-bar input isn't a URL):"
+  local i=1
+  for name in "${engine_names[@]}"; do
+    if [ "$name" = duckduckgo ]; then
+      printf '  %d) %s (default)\n' "$i" "$name"
+    else
+      printf '  %d) %s\n' "$i" "$name"
+    fi
+    i=$((i + 1))
+  done
+  printf '\033[1;35mhwatu:\033[0m pick [1-%d] or enter a URL template with %%s: ' "${#engine_names[@]}"
+  local choice
+  IFS= read -r choice </dev/tty || choice=""
+  case "$choice" in
+    "") printf 'duckduckgo' ;;
+    [1-9] | [1-9][0-9])
+      if [ "$choice" -ge 1 ] && [ "$choice" -le "${#engine_names[@]}" ]; then
+        printf '%s' "${engine_names[$((choice - 1))]}"
+      else
+        say "no such option, using duckduckgo" >&2
+        printf 'duckduckgo'
+      fi
+      ;;
+    *) printf '%s' "$choice" ;;  # engine name or custom %s template
+  esac
+}
+
+if [ -s "$search_conf" ]; then
+  say "keeping existing search engine: $(grep -m1 -v '^\s*#' "$search_conf" || true) ($search_conf)"
+else
+  engine=$(pick_engine)
+  mkdir -p "$config_dir"
+  printf '# search engine: duckduckgo | google | bing | brave | startpage | kagi | ecosia\n# or a URL template containing %%s, e.g. https://example.com/search?q=%%s\n%s\n' \
+    "$engine" >"$search_conf"
+  say "search engine set to ${engine} (edit ${search_conf} to change)"
+fi
+
 case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
   *) say "note: $INSTALL_DIR is not on your PATH" ;;

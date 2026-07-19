@@ -64,6 +64,7 @@ adds the warm daemon and a current engine.
 ```sh
 hwatu                      # open your home page (autostarts hwatud)
 hwatu example.com          # open a URL (https:// implied)
+hwatu how to exit vim      # anything that isn't a URL is a web search
 hwatu --app-id mail url    # per-window app_id for WM window rules
 hwatu list                 # id, url, title of every window
 hwatu list --json          # same, as JSON (for wofi/rofi pipelines)
@@ -152,7 +153,15 @@ there, so the resting state stays chromeless.
 
 - **Open a URL**: `Ctrl+l`/`O` edit the current address, `o` starts
   blank. Input is normalized like the CLI (`example.com` gets
-  `https://`, loopback hosts get `http://`).
+  `https://`, loopback hosts get `http://`), and anything that
+  doesn't look like a URL becomes a web search.
+- **Web search**: input with spaces or without a dot (`rust borrow
+  checker`, `vim`) searches with your configured engine. The
+  installer asks which one (DuckDuckGo, Google, Bing, Brave,
+  Startpage, Kagi, Ecosia — default DuckDuckGo); change it any time
+  in `~/.config/hwatu/search.conf`, either an engine name or a URL
+  template like `https://example.com/search?q=%s`. Applies without
+  a daemon restart.
 - **Find in page**: `/` opens forward search, `?` backward. Matches
   highlight incrementally with a live count. `Enter` commits (focus
   returns to the page, `n`/`N` jump next/previous), `Esc` cancels.

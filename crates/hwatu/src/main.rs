@@ -239,8 +239,15 @@ fn parse(args: &[String]) -> Result<Request, String> {
             Ok(Request::Adblock { action })
         }
         Some("-h") | Some("--help") => Err(USAGE.to_string()),
-        Some(url) => Ok(Request::Open {
-            url: Some(url.to_string()),
+        // Everything else is a URL or search query. Join the words so
+        // `hwatu how to exit vim` searches without needing quotes.
+        Some(_) => Ok(Request::Open {
+            url: Some(
+                rest.iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" "),
+            ),
             app_id,
         }),
     }
@@ -301,6 +308,14 @@ mod tests {
                 app_id: None
             })
         ));
+    }
+
+    #[test]
+    fn multiword_query_joins_into_one_open() {
+        let Ok(Request::Open { url, .. }) = parse(&args(&["how", "to", "exit", "vim"])) else {
+            panic!("expected Open");
+        };
+        assert_eq!(url.as_deref(), Some("how to exit vim"));
     }
 
     #[test]

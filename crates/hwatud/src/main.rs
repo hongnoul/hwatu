@@ -13,6 +13,7 @@ mod downloads;
 mod ipc_server;
 mod keys;
 mod prompts;
+mod search;
 mod session;
 mod window;
 
