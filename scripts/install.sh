@@ -141,4 +141,56 @@ case ":$PATH:" in
   *":$INSTALL_DIR:"*) ;;
   *) say "note: $INSTALL_DIR is not on your PATH" ;;
 esac
+
+# --- WM rule: background windows must not steal focus --------------------------
+# `hwatu --background` (the default when a coding agent drives hwatu)
+# maps a window without requesting activation, but most tiling
+# compositors focus every new window anyway. One rule matching
+# app-id "hwatu-background" makes the no-focus-steal guarantee hard.
+# Installed by default; preseed HWATU_WM_RULE=no to skip.
+ask_yes() {
+  # $1: prompt. Defaults to yes; curl|bash without a tty also means yes.
+  # (stderr redirect first: redirections apply left to right, and the
+  # /dev/tty open failure itself is the message to silence.)
+  if [ ! -e /dev/tty ] || ! : 2>/dev/null </dev/tty; then
+    return 0
+  fi
+  printf '\033[1;35mhwatu:\033[0m %s [Y/n]: ' "$1"
+  local answer
+  IFS= read -r answer </dev/tty || answer=""
+  case "$answer" in
+    [nN]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+install_wm_rule() {
+  [ "${HWATU_WM_RULE:-yes}" = "no" ] && return 0
+
+  local niri_conf="${XDG_CONFIG_HOME:-$HOME/.config}/niri/config.kdl"
+  local hypr_conf="${XDG_CONFIG_HOME:-$HOME/.config}/hypr/hyprland.conf"
+  local sway_conf="${XDG_CONFIG_HOME:-$HOME/.config}/sway/config"
+
+  if [ -f "$niri_conf" ]; then
+    grep -q 'app-id="hwatu-background"' "$niri_conf" && return 0
+    ask_yes "add a niri rule so hwatu agent/background windows never steal focus?" || return 0
+    printf '\n// hwatu --background: agent-verification windows must not steal focus.\nwindow-rule {\n    match app-id="hwatu-background"\n    open-focused false\n}\n' >>"$niri_conf"
+    say "added window rule to $niri_conf (niri reloads config automatically)"
+  elif [ -f "$hypr_conf" ]; then
+    grep -q 'hwatu-background' "$hypr_conf" && return 0
+    ask_yes "add a Hyprland rule so hwatu agent/background windows never steal focus?" || return 0
+    printf '\n# hwatu --background: agent-verification windows must not steal focus.\nwindowrule = noinitialfocus, class:^(hwatu-background)$\n' >>"$hypr_conf"
+    say "added window rule to $hypr_conf (hyprctl reload to apply)"
+  elif [ -f "$sway_conf" ]; then
+    grep -q 'hwatu-background' "$sway_conf" && return 0
+    ask_yes "add a sway rule so hwatu agent/background windows never steal focus?" || return 0
+    printf '\n# hwatu --background: agent-verification windows must not steal focus.\nno_focus [app_id="hwatu-background"]\n' >>"$sway_conf"
+    say "added window rule to $sway_conf (swaymsg reload to apply)"
+  else
+    say "note: to keep hwatu --background windows from stealing focus, add a WM rule"
+    say "      matching app-id \"hwatu-background\" (see README, e.g. niri open-focused false)"
+  fi
+}
+install_wm_rule
+
 say "try: hwatu example.com"

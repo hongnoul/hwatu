@@ -118,6 +118,10 @@ inside a coding-agent environment (detected by markers like
 background so a verification flow never steals the human's focus.
 Human entries (shells, WM keybinds) keep the normal focused open, and
 an agent can pass `--focus` to deliberately show the user a window.
+Because most tilers focus new windows regardless, the installer offers
+(default yes) to add a no-initial-focus rule for app-id
+`hwatu-background` to your niri/Hyprland/sway config; preseed
+`HWATU_WM_RULE=no` to skip.
 
 
 `Ctrl+q` closes the focused window. `Ctrl+l` (or `O`) opens the URL
