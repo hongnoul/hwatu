@@ -1,0 +1,36 @@
+# Copy to .github/workflows/astrophile.yml in your repo.
+# Weekly growth snapshot + geo check, committed back to the repo so
+# .astrophile/snapshots.jsonl becomes a long-term trend log.
+name: astrophile weekly snapshot
+
+on:
+  schedule:
+    - cron: '0 9 * * 1' # Mondays 09:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install astrophile
+        run: cargo install --git https://github.com/hongnoul/astrophile --locked
+      - name: Snapshot + geo
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          astrophile snapshot
+          astrophile geo || true
+          astrophile audit
+      - name: Commit trend log
+        run: |
+          git config user.name 'astrophile-bot'
+          git config user.email 'actions@github.com'
+          git add .astrophile/snapshots.jsonl
+          git diff --cached --quiet || git commit -m 'astrophile: weekly snapshot'
+          git push

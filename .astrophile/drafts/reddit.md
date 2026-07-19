@@ -1,12 +1,28 @@
-# Reddit drafts
+# Reddit drafts (ready to adapt)
 
-## r/unixporn (screenshot/video REQUIRED, lead with the rice not the tool)
-Title: [<WM>] <rice name> — browser windows are just tiles now (hwatu)
-Body: link https://github.com/hongnoul/hwatu in a comment, not the post.
+Rule: one sub per day, never simultaneously. Answer every comment for the
+first 3 hours. Post the repo link in a comment where the sub culture expects
+that (r/unixporn), in the post body elsewhere.
+
+## r/hyprland
+Title: Browser windows that open as fast as terminals (45ms) — hwatu, a daemon-based WebKit browser
+Body: what it is (daemon owns the engine, client is a socket roundtrip),
+the `windowrule = workspace 3, class:mail` example with --app-id, and the
+"your WM is the tab manager" philosophy. Link the repo.
+
+## r/swaywm
+Same as above with `assign [app_id="mail"] workspace 3`.
+
+## r/unixporn (screenshot/video REQUIRED, lead with the rice)
+Title: [Hyprland] every "tab" is a tile — browser windows spawn in 45ms (hwatu)
+Body: screenshot of a tiled layout where several hwatu windows are just tiles.
+Repo link in a comment.
 
 ## r/rust
-Title: hwatu: Daemon-based WebKitGTK browser for tiling WMs: real rendering, ~45ms window spawn
-Body: focus on the Rust architecture; that sub stars implementations, not products.
+Title: hwatu: a daemon-based WebKitGTK 6 browser in Rust (~45ms window spawn via prewarmed WebView pool)
+Body: architecture focus: 3 crates (ipc / daemon / thin client with no GTK
+linkage), newline-delimited JSON over a Unix socket on the GLib main loop,
+discard-to-disk suspension. That sub stars implementations, not products.
 
-## Ecosystem subs (r/hyprland, r/swaywm, r/archlinux)
-One per week, not simultaneously. Answer every comment for the first 3 hours.
+## r/linux (later, only after traction elsewhere)
+Title: hwatu: splitting the browser into engine-daemon + thin client, like emacsclient

@@ -7,6 +7,8 @@
 A daemon-based web browser for tiling window managers. Real WebKit rendering,
 terminal-emulator spawn times.
 
+![hwatu spawning windows in ~48ms from a warm daemon](docs/assets/spawn-demo.svg)
+
 ## Installation
 
 ```bash

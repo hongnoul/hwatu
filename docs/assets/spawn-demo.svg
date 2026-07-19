@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="300" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="14">
+  <rect width="720" height="300" rx="8" fill="#0d1117"/>
+  <circle cx="20" cy="18" r="5" fill="#ff5f57"/><circle cx="38" cy="18" r="5" fill="#febc2e"/><circle cx="56" cy="18" r="5" fill="#28c840"/>
+  <text x="360" y="22" fill="#8b949e" font-size="12" text-anchor="middle">real timings, warm daemon</text>
+
+  <!-- line 1 -->
+  <text x="16" y="56" fill="#e6edf3" xml:space="preserve"><tspan fill="#7ee787">$</tspan> time hwatu example.com</text>
+  <g opacity="0">
+    <text x="16" y="80" fill="#8b949e" xml:space="preserve">0.048s  <tspan fill="#79c0ff">window mapped, page loading</tspan></text>
+    <animate attributeName="opacity" values="0;1" begin="0.7s" dur="0.05s" fill="freeze"/>
+  </g>
+
+  <!-- line 2 -->
+  <g opacity="0">
+    <text x="16" y="116" fill="#e6edf3" xml:space="preserve"><tspan fill="#7ee787">$</tspan> time hwatu news.ycombinator.com</text>
+    <animate attributeName="opacity" values="0;1" begin="1.4s" dur="0.05s" fill="freeze"/>
+  </g>
+  <g opacity="0">
+    <text x="16" y="140" fill="#8b949e" xml:space="preserve">0.049s  <tspan fill="#79c0ff">window mapped, page loading</tspan></text>
+    <animate attributeName="opacity" values="0;1" begin="2.1s" dur="0.05s" fill="freeze"/>
+  </g>
+
+  <!-- line 3 -->
+  <g opacity="0">
+    <text x="16" y="176" fill="#e6edf3" xml:space="preserve"><tspan fill="#7ee787">$</tspan> hwatu how to exit vim   <tspan fill="#8b949e"># not a URL: web search</tspan></text>
+    <animate attributeName="opacity" values="0;1" begin="2.8s" dur="0.05s" fill="freeze"/>
+  </g>
+
+  <!-- tiles -->
+  <g opacity="0">
+    <rect x="16" y="196" width="220" height="76" rx="4" fill="#161b22" stroke="#30363d"/>
+    <text x="126" y="238" fill="#8b949e" font-size="12" text-anchor="middle">example.com</text>
+    <animate attributeName="opacity" values="0;1" begin="0.75s" dur="0.1s" fill="freeze"/>
+  </g>
+  <g opacity="0">
+    <rect x="250" y="196" width="220" height="76" rx="4" fill="#161b22" stroke="#30363d"/>
+    <text x="360" y="238" fill="#8b949e" font-size="12" text-anchor="middle">news.ycombinator.com</text>
+    <animate attributeName="opacity" values="0;1" begin="2.15s" dur="0.1s" fill="freeze"/>
+  </g>
+  <g opacity="0">
+    <rect x="484" y="196" width="220" height="76" rx="4" fill="#161b22" stroke="#30363d"/>
+    <text x="594" y="238" fill="#8b949e" font-size="12" text-anchor="middle">duckduckgo.com/?q=…</text>
+    <animate attributeName="opacity" values="0;1" begin="3.5s" dur="0.1s" fill="freeze"/>
+  </g>
+  <text x="360" y="290" fill="#484f58" font-size="11" text-anchor="middle">one warm engine · your WM tiles the windows</text>
+</svg>
