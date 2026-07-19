@@ -75,6 +75,29 @@ hwatu update               # self-update to the latest release
 hwatu quit                 # stop the daemon
 ```
 
+### Automation (for coding agents)
+
+The daemon speaks a small automation protocol, built for AI coding
+agents (jcode has a native hwatu backend) and scripts that need to
+verify web UIs:
+
+```sh
+hwatu eval 'return document.title'          # run JS in the page (async, JSON out)
+hwatu eval --id 2 'return location.href'    # target a window by id
+hwatu goto localhost:3000                   # navigate + wait for the load
+hwatu goto --no-wait example.com            # navigate without waiting
+hwatu shot /tmp/page.png                    # screenshot the viewport (PNG)
+hwatu wait-load                             # block until the current load settles
+hwatu focus 2                               # raise/focus window 2
+```
+
+`eval` takes a JavaScript *function body*: `return` works, `await`
+works, and a returned Promise is awaited before the result comes back
+as JSON. Without `--id`, commands target the focused window (or the
+only window). Everything is one JSON request over the Unix socket
+(`$XDG_RUNTIME_DIR/hwatu.sock`), so any language can drive it directly.
+
+
 `Ctrl+q` closes the focused window. `Ctrl+l` (or `O`) opens the URL
 bar prefilled with the current address, `o` opens it blank; `Enter`
 navigates, `Esc` cancels. `Ctrl+o` / `Ctrl+i` go back/forward in
