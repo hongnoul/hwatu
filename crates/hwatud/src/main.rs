@@ -7,6 +7,7 @@
 
 mod abp;
 mod adblock;
+mod automation;
 mod bar;
 mod downloads;
 mod ipc_server;

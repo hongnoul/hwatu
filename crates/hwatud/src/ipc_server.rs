@@ -1,7 +1,7 @@
 //! Unix-socket IPC server, integrated with the GLib main loop so all
 //! window work happens on the GTK main thread.
 
-use crate::{adblock::Adblock, window::BrowserWindow, Daemon};
+use crate::{adblock::Adblock, automation, window::BrowserWindow, Daemon};
 use gtk::gio;
 use gtk::gio::prelude::*;
 use gtk::glib;
@@ -49,28 +49,55 @@ fn handle_conn(conn: gio::SocketConnection, daemon: Rc<Daemon>) {
                 Ok(l) => String::from_utf8_lossy(&l).into_owned(),
                 Err(_) => return,
             };
-            let response = match serde_json::from_str::<Request>(line.trim()) {
-                Ok(req) => dispatch(&daemon, req),
-                Err(e) => Response::err(format!("bad request: {e}")),
-            };
-            let mut out = serde_json::to_vec(&response).unwrap_or_default();
-            out.push(b'\n');
-            let stream = conn.output_stream();
-            stream.write_all_async(
-                out,
-                glib::Priority::DEFAULT,
-                gio::Cancellable::NONE,
-                move |_| {
-                    // conn dropped here; client sees EOF after response.
-                    let _ = conn.close(gio::Cancellable::NONE);
-                },
-            );
+            let reply: automation::Reply = Box::new(move |response: Response| {
+                let mut out = serde_json::to_vec(&response).unwrap_or_default();
+                out.push(b'\n');
+                let stream = conn.output_stream();
+                stream.write_all_async(
+                    out,
+                    glib::Priority::DEFAULT,
+                    gio::Cancellable::NONE,
+                    move |_| {
+                        // conn dropped here; client sees EOF after response.
+                        let _ = conn.close(gio::Cancellable::NONE);
+                    },
+                );
+            });
+            match serde_json::from_str::<Request>(line.trim()) {
+                Ok(req) => dispatch(&daemon, req, reply),
+                Err(e) => reply(Response::err(format!("bad request: {e}"))),
+            }
         },
     );
 }
 
-fn dispatch(daemon: &Rc<Daemon>, req: Request) -> Response {
+/// Route one request. Most commands answer synchronously; the
+/// automation commands (eval/navigate/screenshot/wait_load) complete
+/// later on the main loop and consume `reply` when they finish.
+fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
+    // Async paths hand the reply off and return.
     match req {
+        Request::Eval { id, js, timeout_ms } => {
+            return automation::eval(daemon, id, js, timeout_ms, reply);
+        }
+        Request::Navigate {
+            id,
+            url,
+            wait,
+            timeout_ms,
+        } => {
+            return automation::navigate(daemon, id, url, wait, timeout_ms, reply);
+        }
+        Request::Screenshot { id, path } => {
+            return automation::screenshot(daemon, id, path, reply);
+        }
+        Request::WaitLoad { id, timeout_ms } => {
+            return automation::wait_load(daemon, id, timeout_ms, reply);
+        }
+        _ => {}
+    }
+
+    let response = match req {
         Request::Ping => Response::ok(),
         Request::Open { url, app_id } => {
             let url = url.map(normalize_url);
@@ -88,6 +115,16 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request) -> Response {
             match win {
                 Some(w) => {
                     w.close();
+                    Response::ok()
+                }
+                None => Response::err(format!("no window {id}")),
+            }
+        }
+        Request::Focus { id } => {
+            let win = daemon.windows.borrow().get(&id).cloned();
+            match win {
+                Some(w) => {
+                    w.present();
                     Response::ok()
                 }
                 None => Response::err(format!("no window {id}")),
@@ -113,7 +150,13 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request) -> Response {
             });
             Response::ok()
         }
-    }
+        // Handled above; unreachable but keeps the match exhaustive.
+        Request::Eval { .. }
+        | Request::Navigate { .. }
+        | Request::Screenshot { .. }
+        | Request::WaitLoad { .. } => Response::err("internal: async request in sync path"),
+    };
+    reply(response);
 }
 
 /// `example.com` -> `https://example.com`; keep schemes and about: intact.

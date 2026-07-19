@@ -44,6 +44,53 @@ pub enum Request {
     Quit,
     /// Health check / used by the client to detect a live daemon.
     Ping,
+
+    // ---- automation (agent integration) ----------------------------
+    // These primitives let coding agents (e.g. jcode) drive a window:
+    // run JS in the page, navigate, screenshot, and wait for loads.
+    // `id: None` targets the focused window, else the only window.
+    /// Run JavaScript in a window's page. `js` is a *function body*
+    /// (so `return` works), and a returned Promise is awaited. The
+    /// result comes back as JSON in [`Response::Ok::value`].
+    Eval {
+        #[serde(default)]
+        id: Option<u64>,
+        js: String,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
+    /// Navigate an existing window. `wait` (default true) blocks the
+    /// response until the load finishes or `timeout_ms` expires.
+    Navigate {
+        #[serde(default)]
+        id: Option<u64>,
+        url: String,
+        #[serde(default = "default_true")]
+        wait: bool,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
+    /// Capture the visible viewport as a PNG. Writes to `path` (or a
+    /// temp file) and returns the file path in [`Response::Ok::path`].
+    Screenshot {
+        #[serde(default)]
+        id: Option<u64>,
+        #[serde(default)]
+        path: Option<String>,
+    },
+    /// Block until the window finishes loading (or `timeout_ms`).
+    WaitLoad {
+        #[serde(default)]
+        id: Option<u64>,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
+    /// Present (raise/focus) a window.
+    Focus { id: u64 },
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,6 +116,12 @@ pub enum Response {
         windows: Option<Vec<WindowInfo>>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         adblock: Option<AdblockStatus>,
+        /// Eval result (JSON), or ping capability info.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        value: Option<serde_json::Value>,
+        /// File path produced by a screenshot.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        path: Option<String>,
     },
     Err {
         message: String,
@@ -81,28 +134,44 @@ impl Response {
             window: None,
             windows: None,
             adblock: None,
+            value: None,
+            path: None,
         }
     }
     pub fn window(w: WindowInfo) -> Self {
-        Response::Ok {
-            window: Some(w),
-            windows: None,
-            adblock: None,
+        let mut r = Response::ok();
+        if let Response::Ok { window, .. } = &mut r {
+            *window = Some(w);
         }
+        r
     }
     pub fn windows(ws: Vec<WindowInfo>) -> Self {
-        Response::Ok {
-            window: None,
-            windows: Some(ws),
-            adblock: None,
+        let mut r = Response::ok();
+        if let Response::Ok { windows, .. } = &mut r {
+            *windows = Some(ws);
         }
+        r
     }
     pub fn adblock(status: AdblockStatus) -> Self {
-        Response::Ok {
-            window: None,
-            windows: None,
-            adblock: Some(status),
+        let mut r = Response::ok();
+        if let Response::Ok { adblock, .. } = &mut r {
+            *adblock = Some(status);
         }
+        r
+    }
+    pub fn value(v: serde_json::Value) -> Self {
+        let mut r = Response::ok();
+        if let Response::Ok { value, .. } = &mut r {
+            *value = Some(v);
+        }
+        r
+    }
+    pub fn path(p: impl Into<String>) -> Self {
+        let mut r = Response::ok();
+        if let Response::Ok { path, .. } = &mut r {
+            *path = Some(p.into());
+        }
+        r
     }
     pub fn err(message: impl Into<String>) -> Self {
         Response::Err {
@@ -130,6 +199,10 @@ pub struct WindowInfo {
     pub id: u64,
     pub url: String,
     pub title: String,
+    /// True when this window currently has WM focus. Lets automation
+    /// clients find "the window the user is looking at".
+    #[serde(default)]
+    pub focused: bool,
     /// True when the window's WebView has been discarded to save RAM;
     /// it restores automatically on focus.
     #[serde(default)]

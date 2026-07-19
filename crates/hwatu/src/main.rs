@@ -59,6 +59,8 @@ fn main() {
             window,
             windows,
             adblock,
+            value,
+            path,
         }) => {
             if let Some(w) = window {
                 if json {
@@ -93,6 +95,13 @@ fn main() {
                 }
                 println!("adblock {state}: {} rules ({}{extra})", a.rules, a.source);
             }
+            if let Some(v) = value {
+                // Eval results are machine-facing: always JSON.
+                println!("{v}");
+            }
+            if let Some(p) = path {
+                println!("{p}");
+            }
         }
         Ok(Response::Err { message }) => {
             eprintln!("hwatu: {message}");
@@ -106,8 +115,12 @@ fn main() {
 }
 
 fn parse(args: &[String]) -> Result<Request, String> {
-    // `--app-id <id>` may appear anywhere before/after the URL.
+    // Flags (`--app-id`, `--id`, `--timeout-ms`, `--no-wait`) may
+    // appear anywhere relative to the subcommand/URL.
     let mut app_id: Option<String> = None;
+    let mut id: Option<u64> = None;
+    let mut timeout_ms: Option<u64> = None;
+    let mut no_wait = false;
     let mut rest: Vec<&String> = Vec::new();
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -123,6 +136,24 @@ fn parse(args: &[String]) -> Result<Request, String> {
                 return Err("usage: hwatu --app-id=<id> [url]".into());
             }
             app_id = Some(v.to_string());
+        } else if arg == "--id" {
+            id = Some(
+                it.next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("usage: --id <window-id>")?,
+            );
+        } else if let Some(v) = arg.strip_prefix("--id=") {
+            id = Some(v.parse().map_err(|_| "usage: --id=<window-id>")?);
+        } else if arg == "--timeout-ms" {
+            timeout_ms = Some(
+                it.next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("usage: --timeout-ms <ms>")?,
+            );
+        } else if let Some(v) = arg.strip_prefix("--timeout-ms=") {
+            timeout_ms = Some(v.parse().map_err(|_| "usage: --timeout-ms=<ms>")?);
+        } else if arg == "--no-wait" {
+            no_wait = true;
         } else {
             rest.push(arg);
         }
@@ -139,6 +170,43 @@ fn parse(args: &[String]) -> Result<Request, String> {
                 .and_then(|s| s.parse().ok())
                 .ok_or("usage: hwatu close <id>")?;
             Ok(Request::Close { id })
+        }
+        Some("eval") => {
+            // Join the remaining args so unquoted JS still works.
+            let js = rest[1..]
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            if js.trim().is_empty() {
+                return Err("usage: hwatu eval [--id <id>] [--timeout-ms <ms>] <js>".into());
+            }
+            Ok(Request::Eval { id, js, timeout_ms })
+        }
+        Some("goto") => {
+            let url = rest
+                .get(1)
+                .ok_or("usage: hwatu goto [--id <id>] [--no-wait] <url>")?
+                .to_string();
+            Ok(Request::Navigate {
+                id,
+                url,
+                wait: !no_wait,
+                timeout_ms,
+            })
+        }
+        Some("shot") | Some("screenshot") => Ok(Request::Screenshot {
+            id,
+            path: rest.get(1).map(|s| s.to_string()),
+        }),
+        Some("wait-load") => Ok(Request::WaitLoad { id, timeout_ms }),
+        Some("focus") => {
+            let id = rest
+                .get(1)
+                .and_then(|s| s.parse().ok())
+                .or(id)
+                .ok_or("usage: hwatu focus <id>")?;
+            Ok(Request::Focus { id })
         }
         Some("adblock") => {
             let action = match rest.get(1).map(|s| s.as_str()) {
@@ -162,7 +230,9 @@ fn parse(args: &[String]) -> Result<Request, String> {
     }
 }
 
-const USAGE: &str = "usage: hwatu [--app-id <id>] [url] | list [--json] | close <id> | adblock [on|off|status|update] | update | ping | quit";
+const USAGE: &str = "usage: hwatu [--app-id <id>] [url] | list [--json] | close <id> | focus <id> \
+| eval [--id <id>] [--timeout-ms <ms>] <js> | goto [--id <id>] [--no-wait] <url> \
+| shot [--id <id>] [path] | wait-load [--id <id>] | adblock [on|off|status|update] | update | ping | quit";
 
 fn connect_or_spawn() -> std::io::Result<UnixStream> {
     let path = hwatu_ipc::socket_path();

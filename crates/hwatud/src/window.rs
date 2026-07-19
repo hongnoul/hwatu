@@ -189,6 +189,7 @@ impl BrowserWindow {
             id: this.id,
             url: target,
             title: String::new(),
+            focused: false,
             suspended: false,
             app_id,
         }
@@ -545,7 +546,9 @@ impl BrowserWindow {
     }
 
     /// Bring a discarded window back to life from the prewarm pool.
-    fn restore(self: &Rc<Self>) {
+    /// pub(crate): automation (eval/navigate) must revive a discarded
+    /// window before touching its WebView.
+    pub(crate) fn restore(self: &Rc<Self>) {
         if self.webview.borrow().is_some() {
             return;
         }
@@ -583,6 +586,7 @@ impl BrowserWindow {
                 id: self.id,
                 url: wv.uri().map(|u| u.to_string()).unwrap_or_default(),
                 title: wv.title().map(|t| t.to_string()).unwrap_or_default(),
+                focused: self.window.is_active(),
                 suspended: false,
                 app_id: self.app_id.clone(),
             },
@@ -596,6 +600,7 @@ impl BrowserWindow {
                     id: self.id,
                     url,
                     title,
+                    focused: false,
                     suspended: true,
                     app_id: self.app_id.clone(),
                 }
