@@ -88,6 +88,10 @@ pub struct BrowserWindow {
     prompts: Prompts,
     webview: RefCell<Option<webkit6::WebView>>,
     saved: RefCell<Option<SavedState>>,
+    /// Frozen-frame overlay shown above a restoring WebView so the swap
+    /// from placeholder to live page never flashes blank. Dropped when
+    /// the restored load commits (or on a timeout failsafe).
+    veil: RefCell<Option<gtk::Widget>>,
     discard_timer: RefCell<Option<glib::SourceId>>,
     /// Marker shared between windows whose WebViews share one web
     /// process (popup ↔ opener, via `related_view`). `discard` must
@@ -269,6 +273,7 @@ impl BrowserWindow {
             prompts: Prompts::new(daemon.prompt_memory.clone()),
             webview: RefCell::new(None),
             saved: RefCell::new(None),
+            veil: RefCell::new(None),
             discard_timer: RefCell::new(None),
             process_group: RefCell::new(None),
             app_id,
@@ -617,7 +622,43 @@ impl BrowserWindow {
             None if !saved.url.is_empty() => webview.load_uri(&saved.url),
             None => {}
         }
+        // Speed of *perceived* restore: re-float the frozen frame (the
+        // outgoing placeholder) above the fresh WebView and lift it on
+        // the first paint-worthy load event. Without this the window
+        // flashes blank while the page re-commits.
+        if let Some(placeholder) = self.overlay.child() {
+            self.drop_veil(); // stale veil from a prior restore, if any
+            // A widget cannot be parented twice: detach it as the main
+            // child (attach_webview fills that slot) before floating it.
+            self.overlay.set_child(gtk::Widget::NONE);
+            self.overlay.add_overlay(&placeholder);
+            self.veil.replace(Some(placeholder));
+            let this = self.clone();
+            webview.connect_load_changed(move |_, event| {
+                // Committed fires when the first bytes render;
+                // Finished covers same-document restores that skip it.
+                if matches!(
+                    event,
+                    webkit6::LoadEvent::Committed | webkit6::LoadEvent::Finished
+                ) {
+                    this.drop_veil();
+                }
+            });
+            // Failsafe: a hung load must not leave a stale frame
+            // covering a live, interactive page.
+            let this = self.clone();
+            glib::timeout_add_local_once(std::time::Duration::from_secs(5), move || {
+                this.drop_veil();
+            });
+        }
         self.attach_webview(webview);
+    }
+
+    /// Remove the frozen-frame overlay left by [`restore`], if present.
+    fn drop_veil(&self) {
+        if let Some(veil) = self.veil.borrow_mut().take() {
+            self.overlay.remove_overlay(&veil);
+        }
     }
 
     pub fn present(&self) {
