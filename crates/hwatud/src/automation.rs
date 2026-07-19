@@ -43,31 +43,31 @@ const DEFAULT_TIMEOUT_MS: u64 = 15_000;
 /// Pick the target window: explicit id, else the focused window, else
 /// the only window. Ambiguity is an error rather than a guess: an
 /// agent driving the wrong window is worse than a retry with an id.
-fn resolve(daemon: &Rc<Daemon>, id: Option<u64>) -> Result<Rc<BrowserWindow>, Response> {
+fn resolve(daemon: &Rc<Daemon>, id: Option<u64>) -> Result<Rc<BrowserWindow>, Box<Response>> {
     let windows = daemon.windows.borrow();
     if let Some(id) = id {
         return windows
             .get(&id)
             .cloned()
-            .ok_or_else(|| Response::err(format!("no window {id}")));
+            .ok_or_else(|| Box::new(Response::err(format!("no window {id}"))));
     }
     if let Some(focused) = windows.values().find(|w| w.window.is_active()) {
         return Ok(focused.clone());
     }
     match windows.len() {
-        0 => Err(Response::err("no windows open")),
+        0 => Err(Box::new(Response::err("no windows open"))),
         1 => Ok(windows.values().next().cloned().expect("len checked")),
-        n => Err(Response::err(format!(
+        n => Err(Box::new(Response::err(format!(
             "{n} windows open and none focused; pass an explicit id (see `hwatu list`)"
-        ))),
+        )))),
     }
 }
 
 /// Live WebView of a window, reviving it from a discard first.
-fn live_view(win: &Rc<BrowserWindow>) -> Result<webkit6::WebView, Response> {
+fn live_view(win: &Rc<BrowserWindow>) -> Result<webkit6::WebView, Box<Response>> {
     win.restore();
     win.live_webview()
-        .ok_or_else(|| Response::err("window has no live webview"))
+        .ok_or_else(|| Box::new(Response::err("window has no live webview")))
 }
 
 /// Convert a JS evaluation result to JSON. `undefined` maps to null;
@@ -107,7 +107,7 @@ pub fn eval(
     let reply = OnceReply::new(reply);
     let view = match resolve(daemon, id).and_then(|w| live_view(&w)) {
         Ok(v) => v,
-        Err(resp) => return reply.send(resp),
+        Err(resp) => return reply.send(*resp),
     };
 
     let cancellable = gio::Cancellable::new();
@@ -147,11 +147,11 @@ pub fn navigate(
     let reply = OnceReply::new(reply);
     let win = match resolve(daemon, id) {
         Ok(w) => w,
-        Err(resp) => return reply.send(resp),
+        Err(resp) => return reply.send(*resp),
     };
     let view = match live_view(&win) {
         Ok(v) => v,
-        Err(resp) => return reply.send(resp),
+        Err(resp) => return reply.send(*resp),
     };
 
     let url = crate::ipc_server::normalize_url(url);
@@ -173,11 +173,11 @@ pub fn wait_load(daemon: &Rc<Daemon>, id: Option<u64>, timeout_ms: Option<u64>, 
     let reply = OnceReply::new(reply);
     let win = match resolve(daemon, id) {
         Ok(w) => w,
-        Err(resp) => return reply.send(resp),
+        Err(resp) => return reply.send(*resp),
     };
     let view = match live_view(&win) {
         Ok(v) => v,
-        Err(resp) => return reply.send(resp),
+        Err(resp) => return reply.send(*resp),
     };
 
     if !view.is_loading() {
@@ -213,11 +213,11 @@ pub fn screenshot(daemon: &Rc<Daemon>, id: Option<u64>, path: Option<String>, re
     let reply = OnceReply::new(reply);
     let win = match resolve(daemon, id) {
         Ok(w) => w,
-        Err(resp) => return reply.send(resp),
+        Err(resp) => return reply.send(*resp),
     };
     let view = match live_view(&win) {
         Ok(v) => v,
-        Err(resp) => return reply.send(resp),
+        Err(resp) => return reply.send(*resp),
     };
 
     let target = path.map(std::path::PathBuf::from).unwrap_or_else(|| {
