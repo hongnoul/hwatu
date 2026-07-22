@@ -133,7 +133,6 @@ fn parse(args: &[String]) -> Result<Request, String> {
 /// `agent_mode` in `~/.config/hwatu/config.json`, then headless.
 fn default_open_mode() -> OpenMode {
     const AGENT_MARKERS: &[&str] = &[
-        "JCODE_SOCKET",  // jcode
         "CLAUDECODE",    // Claude Code
         "CODEX_SANDBOX", // Codex CLI
         "CURSOR_AGENT",  // Cursor CLI
@@ -141,7 +140,15 @@ fn default_open_mode() -> OpenMode {
         "OPENCODE",      // opencode
         "GEMINI_CLI",    // Gemini CLI
     ];
-    if !AGENT_MARKERS.iter().any(|k| std::env::var_os(k).is_some()) {
+    // jcode tool subprocesses carry various JCODE_* vars (JCODE_SCRATCH_DIR,
+    // JCODE_NON_INTERACTIVE, ...) but not always JCODE_SOCKET, so treat any
+    // JCODE_-prefixed var as an agent marker.
+    let from_jcode = std::env::vars_os().any(|(k, _)| {
+        k.to_str()
+            .map(|k| k.starts_with("JCODE_"))
+            .unwrap_or(false)
+    });
+    if !from_jcode && !AGENT_MARKERS.iter().any(|k| std::env::var_os(k).is_some()) {
         return OpenMode::Normal;
     }
     if let Ok(v) = std::env::var("HWATU_AGENT_MODE") {
