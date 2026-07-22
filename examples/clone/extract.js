@@ -1,4 +1,47 @@
 // extract.js — runs inside the target page via `hwatu eval`.
+// Async: sweeps the page (priming lazy content + scroll reveals and
+// harvesting canvas frames while they are painted), settles animations
+// (entrance reveals to their END state, infinite loops paused at 0 —
+// pausing everything at 0 freezes reveals at opacity:0 and produces a
+// faithful copy of a broken page), then serializes the rendered DOM.
+return (async () => {
+const canvasFrames = new Map(); // canvas element -> dataURL
+{
+  // Tag canvases up front so frames can be matched later.
+  document.querySelectorAll('canvas').forEach((c, i) => { c.dataset.hwatuCanvas = i; });
+  const harvest = () => {
+    for (const c of document.querySelectorAll('canvas')) {
+      const r = c.getBoundingClientRect();
+      const visible = r.bottom > 0 && r.top < innerHeight && r.width > 0;
+      if (!visible) continue;
+      try {
+        const data = c.toDataURL('image/png');
+        // Keep the largest capture (later frames of a lazy canvas
+        // usually have more drawn on them than the first).
+        const prev = canvasFrames.get(c);
+        if (!prev || data.length > prev.length) canvasFrames.set(c, data);
+      } catch (e) { /* tainted */ }
+    }
+  };
+  const H = document.documentElement.scrollHeight;
+  for (let y = 0; y <= H; y += 400) {
+    scrollTo(0, y);
+    await new Promise(r => setTimeout(r, 60));
+    harvest();
+  }
+  scrollTo(0, 0);
+  await new Promise(r => setTimeout(r, 800));
+  harvest();
+}
+// Freeze animation state for a still capture. Just pause, at the
+// current frame: the sweep above already ran entrance reveals to
+// completion naturally, and force-finish()ing is wrong for exclusive
+// states (rotating headlines render every variant at once).
+for (const a of document.getAnimations()) {
+  try { a.pause(); } catch (e) { /* infinite timeline etc. */ }
+}
+await new Promise(r => setTimeout(r, 200));
+
 // Returns { html, css, assets, canvases, base } as JSON.
 // Serializes the *rendered* DOM so JS-built content survives without
 // re-running the site's scripts locally.
@@ -18,12 +61,21 @@ for (const sheet of document.styleSheets) {
 
 // 2. Freeze canvases and lazy media into data URLs / concrete attrs.
 const canvases = [];
-document.querySelectorAll('canvas').forEach((c, i) => {
-  try {
-    c.dataset.hwatuCanvas = i;
-    const r = c.getBoundingClientRect();
-    canvases.push({ i, data: c.toDataURL('image/png'), w: Math.round(r.width), h: Math.round(r.height) });
-  } catch (e) { /* tainted canvas */ }
+document.querySelectorAll('canvas').forEach((c) => {
+  const i = Number(c.dataset.hwatuCanvas);
+  const r = c.getBoundingClientRect();
+  let data = canvasFrames.get(c);
+  if (!data) {
+    try { data = c.toDataURL('image/png'); } catch (e) { data = null; }
+  }
+  // WebGL without preserveDrawingBuffer yields blank data URLs (a few
+  // hundred bytes). Record geometry either way: the driver falls back
+  // to an engine-side screenshot crop for blank ones.
+  canvases.push({
+    i, data, w: Math.round(r.width), h: Math.round(r.height),
+    doc_x: Math.round(r.left + scrollX), doc_y: Math.round(r.top + scrollY),
+    blank: !data || data.length < 2000,
+  });
 });
 // Lazy images: promote data-src/srcset and currentSrc to src.
 document.querySelectorAll('img').forEach(img => {
@@ -85,10 +137,22 @@ const pins = [];
   let pinId = 0;
   for (const el of document.querySelectorAll('*')) {
     const st = getComputedStyle(el);
-    if (!st.transitionProperty || st.transitionDuration.split(',').every(d => parseFloat(d) === 0)) continue;
-    const props = st.transitionProperty.split(',').map(p => p.trim());
-    const wanted = PINNABLE.filter(p => props.some(d => covers(d, p)));
+    const hasTransition = st.transitionProperty && !st.transitionDuration.split(',').every(d => parseFloat(d) === 0);
+    // CSS animation state does not survive serialization: the clone
+    // restarts every cycle at load, so a rotating headline renders all
+    // of its phrases overlapped. Pin the rendered values and kill the
+    // animation instead — the still shows the captured instant.
+    const hasAnimation = st.animationName && st.animationName !== 'none';
+    if (!hasTransition && !hasAnimation) continue;
     const decls = [];
+    let wanted;
+    if (hasAnimation) {
+      wanted = PINNABLE;
+      decls.push('animation: none !important');
+    } else {
+      const props = st.transitionProperty.split(',').map(p => p.trim());
+      wanted = PINNABLE.filter(p => props.some(d => covers(d, p)));
+    }
     for (const p of wanted) {
       const v = st.getPropertyValue(p);
       if (v) decls.push(`${p}: ${v} !important`);
@@ -126,3 +190,4 @@ return {
   pins,
   viewport: { w: innerWidth, h: innerHeight, dpr: devicePixelRatio },
 };
+})();

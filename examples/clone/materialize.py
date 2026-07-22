@@ -6,6 +6,7 @@ asset into <outdir>/assets/, rewrites asset URLs in both the HTML and
 the inlined CSS to the local copies, injects canvas data URLs back
 into their elements, and writes <outdir>/index.html.
 """
+import base64
 import hashlib
 import json
 import pathlib
@@ -78,14 +79,25 @@ def absolutize_css(base: str, text: str) -> str:
 
 all_css = [absolutize_css(b, t) for b, t in all_css]
 
+FONT_EXT = {".woff2": "font/woff2", ".woff": "font/woff", ".ttf": "font/ttf", ".otf": "font/otf"}
+
 mapping: dict[str, str] = {}
 with ThreadPoolExecutor(max_workers=16) as ex:
     for url, body in ex.map(fetch, sorted(assets)):
         if body is None:
             continue
         name = local_name(url)
-        (ASSETS / name).write_bytes(body)
-        mapping[url] = f"assets/{name}"
+        ext = pathlib.Path(name).suffix
+        if ext in FONT_EXT:
+            # Fonts embed as data: URLs so the real face exists at first
+            # paint. A swapping font invalidates text layers late, and
+            # WebKit's blend-mode layers can keep the fallback paint,
+            # double-exposing headlines.
+            b64 = base64.b64encode(body).decode()
+            mapping[url] = f"data:{FONT_EXT[ext]};base64,{b64}"
+        else:
+            (ASSETS / name).write_bytes(body)
+            mapping[url] = f"assets/{name}"
 
 print(f"fetched {len(mapping)}/{len(assets)} assets", file=sys.stderr)
 
@@ -108,10 +120,16 @@ def rewrite(text: str) -> str:
 
 
 html = rewrite(cap["html"])
-css = rewrite("\n".join(all_css))
+css = rewrite("\n".join(t for _, t in all_css) if all_css and isinstance(all_css[0], tuple) else "\n".join(all_css))
 
 # ---- 3. canvas freeze: replace each canvas with its captured frame --
+# Blank frames (WebGL without preserveDrawingBuffer) are replaced by
+# engine-side screenshot crops if the driver put one at
+# assets/canvas-<i>.png (see clone-page.sh).
 for c in cap.get("canvases", []):
+    crop = ASSETS / f"canvas-{c['i']}.png"
+    if c.get("blank") and crop.exists():
+        c["data"] = f"assets/canvas-{c['i']}.png"
     # <canvas ... data-hwatu-canvas="i" ...></canvas> -> <img>
     pat = re.compile(
         rf'<canvas([^>]*data-hwatu-canvas="{c["i"]}"[^>]*)>\s*</canvas>', re.S
@@ -156,6 +174,13 @@ if scrolls:
         html = html.replace("</body>", scroll_js + "</body>", 1)
     else:
         html += scroll_js
+
+# ---- 3.7 font-display: fonts are inline data URLs (decode is local
+# and fast), so font-display:block is free and prevents any fallback
+# first paint. WebKit keeps stale fallback paint inside blend-mode
+# layers (hard-light headlines double-expose); never painting the
+# fallback avoids the bug entirely.
+css = re.sub(r"font-display:\s*(swap|auto|fallback|optional)", "font-display:block", css)
 
 # ---- 4. inject inlined CSS and write ---------------------------------
 style_block = f"<style>\n{css}\n</style>"
