@@ -280,6 +280,34 @@ pub enum Request {
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
+    /// Assert page state, polling until it holds or `timeout_ms`
+    /// expires: `selector` matches an element (disambiguated by `nth`/
+    /// `contains`), optionally with text containing `text`; `absent`
+    /// inverts (assert no match). One command instead of an eval-poll
+    /// script; failure reports what WAS found (match count, actual
+    /// text), so a failed assertion is directly actionable.
+    Expect {
+        #[serde(default)]
+        id: Option<u64>,
+        selector: String,
+        #[serde(default)]
+        nth: Option<u32>,
+        /// Keep only matches whose text contains this (a filter, like
+        /// Click's).
+        #[serde(default)]
+        contains: Option<String>,
+        /// Require the matched element's text to contain this. Unlike
+        /// `contains`, a `text` mismatch fails the assertion and the
+        /// error reports the element's actual text.
+        #[serde(default)]
+        text: Option<String>,
+        /// Assert the selector matches nothing instead.
+        #[serde(default)]
+        absent: bool,
+        /// Poll deadline (default 5000 ms; 0 = a single check).
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
 }
 
 fn default_true() -> bool {

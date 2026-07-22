@@ -125,6 +125,19 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
         Request::Snapshot { id, timeout_ms } => {
             return automation::snapshot(daemon, id, timeout_ms, reply);
         }
+        Request::Expect {
+            id,
+            selector,
+            nth,
+            contains,
+            text,
+            absent,
+            timeout_ms,
+        } => {
+            return automation::expect(
+                daemon, id, selector, nth, contains, text, absent, timeout_ms, reply,
+            );
+        }
         Request::Click {
             id,
             selector,
@@ -261,7 +274,8 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
         | Request::Type { .. }
         | Request::Motion { .. }
         | Request::Seek { .. }
-        | Request::Diff { .. } => Response::err("internal: async request in sync path"),
+        | Request::Diff { .. }
+        | Request::Expect { .. } => Response::err("internal: async request in sync path"),
     };
     reply(response);
 }

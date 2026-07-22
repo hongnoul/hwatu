@@ -758,6 +758,81 @@ fn json_or_null(s: Option<&str>) -> String {
     s.map_or("null".into(), js_string)
 }
 
+/// Assert page state, polling inside the page until it holds or the
+/// deadline passes. Success replies `{ok: true, matches, tag, text,
+/// elapsed_ms}`; failure is a structured error naming what WAS found
+/// (match count, the element's actual text) so the agent can act on
+/// it without a follow-up snapshot.
+#[allow(clippy::too_many_arguments)]
+pub fn expect(
+    daemon: &Rc<Daemon>,
+    id: Option<u64>,
+    selector: String,
+    nth: Option<u32>,
+    contains: Option<String>,
+    text: Option<String>,
+    absent: bool,
+    timeout_ms: Option<u64>,
+    reply: Reply,
+) {
+    let deadline = timeout_ms.unwrap_or(5000);
+    let js = format!(
+        r#"const selector = {selector};
+const nth = {nth};
+const contains = {contains};
+const wantText = {want_text};
+const absent = {absent};
+const deadline = {deadline};
+const started = Date.now();
+
+function check() {{
+  let els = [...document.querySelectorAll(selector)];
+  const total = els.length;
+  if (contains !== null)
+    els = els.filter(e => (e.textContent || '').includes(contains));
+  const el = els[nth];
+  if (absent) {{
+    if (els.length === 0) return {{ ok: true }};
+    const t = (els[0].textContent || '').trim().slice(0, 120);
+    return {{ ok: false, why: `expected no match, found ${{els.length}} (first: <${{els[0].tagName.toLowerCase()}}> ${{JSON.stringify(t)}})` }};
+  }}
+  if (!el) {{
+    const filt = contains === null ? '' : ` (${{els.length}} after contains filter)`;
+    return {{ ok: false, why: `no match: ${{total}} element(s) for selector${{filt}}, nth=${{nth}}` }};
+  }}
+  const actual = (el.textContent || '').trim();
+  if (wantText !== null && !actual.includes(wantText)) {{
+    return {{ ok: false, why: `text mismatch: expected to contain ${{JSON.stringify(wantText)}}, got ${{JSON.stringify(actual.slice(0, 200))}}` }};
+  }}
+  return {{
+    ok: true,
+    matches: els.length,
+    tag: el.tagName.toLowerCase(),
+    text: actual.slice(0, 120),
+  }};
+}}
+
+let result = check();
+while (!result.ok && Date.now() - started < deadline) {{
+  await new Promise(r => setTimeout(r, 100));
+  result = check();
+}}
+result.elapsed_ms = Date.now() - started;
+if (!result.ok) throw new Error(`expect failed after ${{result.elapsed_ms}} ms: ${{result.why}}`);
+return result;"#,
+        selector = js_string(&selector),
+        nth = nth.unwrap_or(0),
+        contains = json_or_null(contains.as_deref()),
+        want_text = json_or_null(text.as_deref()),
+        absent = absent,
+        deadline = deadline,
+    );
+    // The page-side loop owns the deadline; give the eval transport a
+    // margin above it so the structured failure (not a generic eval
+    // timeout) is what the caller sees.
+    eval(daemon, id, js, Some(deadline + 2000), reply);
+}
+
 /// Token-cheap page state: url, title, bounded visible text, and an
 /// indexed list of interactable elements (links, buttons, inputs...).
 /// The elements are remembered on `window.__hwatu_refs`, so a

@@ -63,6 +63,7 @@ hwatu --headless localhost:3000     # open without a window (returns id)
 hwatu --background localhost:3000   # open mapped but unfocused
 hwatu wait-load                     # block until the load settles
 hwatu snapshot                      # text + interactables, cheaper than a shot
+hwatu expect '#status' --text ready # assert page state (polls up to 5s)
 hwatu eval 'document.title'         # id-less: follows the window you opened
 hwatu click a --contains "Sign in"  # real pointer-event click
 hwatu click --ref 4                 # click interactable #4 from the snapshot
@@ -94,6 +95,7 @@ hwatu close 3
 | `challenge` | `id?`, `wait?`, `timeout_ms?` | detect CAPTCHA/anti-bot UI; optionally wait for manual/user resolution |
 | `scroll` | `id?`, `selector?`, `nth?`, `contains?`, `to_y?`, `by_pages?` | scroll and report where it landed |
 | `snapshot` | `id?` | token-cheap page state: url, title, text, indexed interactables |
+| `expect` | `id?`, `selector`, `nth?`, `contains?`, `text?`, `absent?`, `timeout_ms?` | assert page state, polling until it holds (default 5 s); failure names what WAS found |
 | `click` | `id?`, `selector?`, `nth?`, `contains?`, `ref?` | click an element (real pointer events), reports what it hit |
 | `type` | `id?`, `selector?`/`ref?`, `text`, `clear?`, `enter?` | fill input/textarea/select/contenteditable |
 | `console` | `id?`, `clear?`, `limit?` | read the console/error/network capture buffer |
@@ -317,10 +319,11 @@ removes focus/WM noise on a desktop; running with no display at all
   (engine: `hwatu`), speaking the socket directly.
 - **MCP**: `hwatu mcp` serves the Model Context Protocol over stdio,
   so Claude Code, Cursor, and every other MCP client can adopt hwatu
-  with one config entry. It exposes the automation protocol as 18
-  tools (`open`, `snapshot`, `click`, `type_text`, `eval`, `console`,
-  `screenshot`, `scroll`, `goto`, `wait_load`, `upload`, `challenge`,
-  `motion`, `seek`, `diff`, `focus`, `close`, `list_windows`);
+  with one config entry. It exposes the automation protocol as 19
+  tools (`open`, `snapshot`, `expect`, `click`, `type_text`, `eval`,
+  `console`, `screenshot`, `scroll`, `goto`, `wait_load`, `challenge`,
+  `upload`, `motion`, `seek`, `diff`, `focus`, `close`,
+  `list_windows`);
   `open` defaults to headless, and
   id-less calls follow the last-driven window just like the CLI.
 

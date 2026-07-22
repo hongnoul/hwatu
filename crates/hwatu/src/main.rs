@@ -251,6 +251,8 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
     let mut baseline: Option<String> = None;
     let mut tolerance: Option<u8> = None;
     let mut heatmap: Option<String> = None;
+    let mut expect_text: Option<String> = None;
+    let mut absent = false;
     let mut mode = default_mode;
     let mut rest: Vec<&String> = Vec::new();
     let mut it = args.iter();
@@ -360,6 +362,15 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                     .ok_or("usage: --heatmap <png-path>")?
                     .clone(),
             );
+        } else if arg == "--text" {
+            expect_text = Some(
+                it.next()
+                    .filter(|v| !v.is_empty())
+                    .ok_or("usage: --text <substring>")?
+                    .clone(),
+            );
+        } else if arg == "--absent" {
+            absent = true;
         } else if arg == "--to-y" {
             to_y = Some(
                 it.next()
@@ -479,6 +490,24 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             })
         }
         Some("snapshot") => Ok(Request::Snapshot { id, timeout_ms }),
+        Some("expect") => {
+            let selector = rest
+                .get(1)
+                .ok_or(
+                    "usage: hwatu expect [--id <id>] <selector> [--contains <filter>] \
+                     [--text <substring>] [--absent] [--nth <n>] [--timeout-ms <ms>]",
+                )?
+                .to_string();
+            Ok(Request::Expect {
+                id,
+                selector,
+                nth,
+                contains,
+                text: expect_text,
+                absent,
+                timeout_ms,
+            })
+        }
         Some("motion") => Ok(Request::Motion { id, timeout_ms }),
         Some("seek") => Ok(Request::Seek {
             id,
@@ -603,6 +632,7 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--foc
     | upload [--id <id>] <selector> <path> \
 | scroll [--id <id>] [<selector> [nth]] [--contains <text>] [--to-y <px>] [--by <pages>] \
 | snapshot [--id <id>] \
+| expect [--id <id>] <selector> [--contains <filter>] [--text <substring>] [--absent] [--nth <n>] [--timeout-ms <ms>] \
 | click [--id <id>] (<selector> [nth] [--contains <text>] | --ref <n>) \
 | type [--id <id>] (<selector> | --ref <n>) <text> [--enter] [--no-clear] \
 | console [--id <id>] [--clear] [--limit <n>] \

@@ -67,9 +67,10 @@ a human browser polishes rendering:
 4. **Stable refs.** Interactable refs that survive re-snapshots of an
    unchanged page, with clear staleness errors on navigation (already
    partially true; make it a documented guarantee).
-5. **Assertion primitives.** `hwatu expect <selector> --contains X
-   --timeout 5s` and `hwatu shot --diff baseline.png`, so a verify
-   loop is single commands instead of eval scripts.
+5. **Assertion primitives.** **Shipped:** `hwatu expect <selector>
+   [--text X] [--absent]` polls until the assertion holds (failure
+   names what WAS found), and `hwatu diff` covers pixel comparison
+   against windows or baselines.
 
 ### P2 — concurrency and isolation
 

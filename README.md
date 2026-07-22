@@ -139,6 +139,7 @@ Full guide: [docs/agents.md](docs/agents.md).
 hwatu --background localhost:3000           # open without stealing focus
 hwatu --headless localhost:3000             # open with no window at all
 hwatu snapshot                              # page text + clickable elements, as JSON
+hwatu expect '#status' --text ready         # assert page state (polls up to 5s)
 hwatu click a --contains Pricing            # click (selector or --ref from snapshot)
 hwatu type 'input[name=q]' hello --enter    # fill an input, then submit
 hwatu console                               # console output, JS errors, failed requests
@@ -368,7 +369,7 @@ Crates:
 - [x] MCP server (`hwatu mcp`, stdio) so any MCP client can adopt hwatu
 - [x] Head-to-head benchmark vs Playwright (scripts/bench-vs-playwright.mjs, honest numbers in docs/benchmarks.md)
 - [ ] Snapshot diffing (`snapshot --diff`): only what changed, fewer tokens
-- [ ] Assertion primitives (`hwatu expect`, `shot --diff baseline.png`)
+- [x] Assertion primitives (`hwatu expect`; pixel diff shipped as `hwatu diff`)
 - [ ] Profiles (separate cookie jars / web contexts); per-agent isolation
 - [ ] Displayless operation (nested headless compositor) for CI
 - [ ] Generalized human hand-off (agent flags "needs human" with a reason)

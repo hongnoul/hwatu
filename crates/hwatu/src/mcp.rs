@@ -213,6 +213,15 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
         }),
         "wait_load" => Ok(Request::WaitLoad { id, timeout_ms }),
         "snapshot" => Ok(Request::Snapshot { id, timeout_ms }),
+        "expect" => Ok(Request::Expect {
+            id,
+            selector: req_str(args, "selector")?,
+            nth: opt_u32(args, "nth"),
+            contains: opt_str(args, "contains"),
+            text: opt_str(args, "text"),
+            absent: opt_bool(args, "absent").unwrap_or(false),
+            timeout_ms,
+        }),
         "click" => {
             let selector = opt_str(args, "selector");
             let r#ref = opt_u32(args, "ref");
@@ -486,6 +495,24 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
             &[],
         ),
         tool(
+            "expect",
+            "Assert page state, polling until it holds or timeout (default \
+             5000 ms): the selector matches an element, optionally with text \
+             containing `text`; `absent` asserts no match instead. On failure \
+             the error names what WAS found (match count, actual text), so no \
+             follow-up snapshot is needed. The one-call verify primitive.",
+            json!({
+                "id": prop("integer", ID_DESC),
+                "selector": prop("string", "CSS selector to assert on."),
+                "nth": prop("integer", "0-based index among selector matches."),
+                "contains": prop("string", "Keep only matches whose text contains this (a filter)."),
+                "text": prop("string", "Require the matched element's text to contain this (an assertion)."),
+                "absent": prop("boolean", "Assert the selector matches nothing."),
+                "timeout_ms": prop("integer", "Poll deadline in ms (default 5000; 0 = single check)."),
+            }),
+            &["selector"],
+        ),
+        tool(
             "motion",
             "Extract the page's motion spec as JSON: every CSS animation, \
              transition, and Web-Animations-API animation (keyframes, \
@@ -678,6 +705,7 @@ mod tests {
             "list_windows": {},
             "goto": { "url": "example.com" },
             "snapshot": {},
+            "expect": { "selector": "h1" },
             "click": { "ref": 0 },
             "type_text": { "ref": 0, "text": "x" },
             "eval": { "js": "1+1" },
