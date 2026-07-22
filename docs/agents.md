@@ -58,7 +58,12 @@ Or use the CLI, which is the same protocol with argv parsing:
 hwatu --headless localhost:3000     # open without a window (returns id)
 hwatu --background localhost:3000   # open mapped but unfocused
 hwatu wait-load                     # block until the load settles
+hwatu snapshot                      # text + interactables, cheaper than a shot
 hwatu eval 'document.title'         # id-less: follows the window you opened
+hwatu click a --contains "Sign in"  # real pointer-event click
+hwatu click --ref 4                 # click interactable #4 from the snapshot
+hwatu type 'input[name=q]' hi --enter   # fill and submit
+hwatu console                       # console.*, exceptions, failed requests
 hwatu shot /tmp/check.png           # PNG of the rendered viewport
 hwatu shot --full /tmp/page.png     # PNG of the whole document
 hwatu scroll h2 --contains Pricing  # scroll into view, reports what it hit
@@ -81,6 +86,10 @@ hwatu close 3
 | `screenshot` | `id?`, `path?`, `full?` | PNG of the viewport (`full: true` = whole document), returns the file path |
 | `wait_load` | `id?`, `timeout_ms?` | block until loading settles |
 | `scroll` | `id?`, `selector?`, `nth?`, `contains?`, `to_y?`, `by_pages?` | scroll and report where it landed |
+| `snapshot` | `id?` | token-cheap page state: url, title, text, indexed interactables |
+| `click` | `id?`, `selector?`, `nth?`, `contains?`, `ref?` | click an element (real pointer events), reports what it hit |
+| `type` | `id?`, `selector?`/`ref?`, `text`, `clear?`, `enter?` | fill input/textarea/select/contenteditable |
+| `console` | `id?`, `clear?`, `limit?` | read the console/error/network capture buffer |
 | `upload` | `id?`, `selector`, `path` | set a file input's files from disk |
 | `ping` | | health check |
 
@@ -132,6 +141,73 @@ hwatu scroll --to-y 0         # back to top
 A selector that matches nothing (or `nth` past the end) is an error
 that reports the match count, not a silent scroll to the wrong place.
 
+### Snapshot: page state without pixels
+
+`hwatu snapshot` returns the page as structured JSON: url, title, the
+visible text (bounded to ~4 KB), the scroll position, and up to 120
+visible **interactables** (links, buttons, inputs, selects,
+role=button, contenteditable), each with a `ref` index, tag, label
+text, and, where useful, `href`/`type`/`value`/`name`/`checked`:
+
+```sh
+hwatu snapshot
+{"url":"http://localhost:5173/","title":"My app","text":"…",
+ "interactables":[{"ref":0,"tag":"a","text":"Docs","href":"/docs"},
+                  {"ref":1,"tag":"input","type":"text","name":"q","text":"Search"}],
+ "scroll":{"y":0,"max_y":1180}}
+```
+
+The refs are live element handles held by the page: `hwatu click
+--ref 0` or `hwatu type --ref 1 hello` target them directly, no
+selector engineering. Refs go stale on navigation (you get a clear
+error, not a wrong click); re-snapshot after the page changes. For
+"did it render right" use `shot`; for "what is on this page and what
+can I do" use `snapshot`, at a fraction of the tokens.
+
+### Click and type
+
+Both target elements the same way: a CSS selector (disambiguated
+with `--nth` / `--contains`, like scroll) or `--ref <n>` from the
+last snapshot. Both scroll the element into view first and report
+what they hit.
+
+```sh
+hwatu click button --contains "Save"
+{"clicked":{"matches":1,"tag":"button","text":"Save"},"url":"http://localhost:5173/"}
+
+hwatu type 'input[name=email]' user@example.com
+hwatu type 'textarea' "line one" --no-clear     # append instead of replace
+hwatu type 'select[name=lang]' Korean           # picks the matching <option>
+hwatu type 'input[name=q]' query --enter        # Enter; submits the form if unhandled
+```
+
+`click` dispatches a full pointer sequence (pointerdown, mousedown,
+focus, pointerup, mouseup, click), so handlers listening on any of
+those fire. `type` sets values through the native setter and fires
+`input`/`change`, which framework-controlled inputs (React et al.)
+observe. Ambiguity and misses are structured errors with match
+counts, not silent no-ops.
+
+### Console and network capture
+
+Every window buffers, from document start: `console.*` calls,
+uncaught exceptions, unhandled promise rejections, failed resource
+loads, and HTTP >= 400 responses (last 500 entries). This answers
+"why is the page broken" without screenshot archaeology:
+
+```sh
+hwatu console
+[{"ts_ms":1784737800442,"kind":"console","level":"error","text":"something bad happened {\"code\":42}","page":"http://localhost:5173/"},
+ {"ts_ms":1784737800448,"kind":"exception","level":"error","text":"unhandled rejection: lost promise\n…","page":"http://localhost:5173/"},
+ {"ts_ms":1784737800449,"kind":"network","level":"error","status":404,"text":"HTTP 404","url":"http://localhost:5173/api/x","page":"http://localhost:5173/"}]
+
+hwatu console --clear          # read and drain, so the next read is a clean diff
+hwatu console --limit 10       # just the tail
+```
+
+A tight verify loop: `hwatu console --clear` before the action,
+act, then `hwatu console` shows only what the action caused.
+
 ## A verification loop
 
 Sticky targeting means the whole loop needs no ids: each command
@@ -140,7 +216,9 @@ follows the window the previous one drove.
 ```sh
 id=$(hwatu --headless --json localhost:5173 | jq .id)   # ~14 ms
 hwatu wait-load
-hwatu eval 'document.querySelector("h1")?.textContent'
+hwatu snapshot                  # what's on the page, what can be clicked
+hwatu click --ref 2             # act on it
+hwatu console                   # did the page complain?
 hwatu shot /tmp/after.png
 hwatu close $id
 ```
@@ -211,6 +289,12 @@ Daemon-based WebKitGTK browser: ~15ms window spawn, full rendering.
 - Open pages without stealing my focus: `hwatu --background <url>`
   (or `mode: background` over the socket). Use `--headless` for
   windows I should never see.
+- Read page state cheaply: `hwatu snapshot` returns url, title, text,
+  and indexed interactables; `hwatu click --ref <n>` / `hwatu type
+  --ref <n> <text>` act on them. Selectors work too:
+  `hwatu click button --contains "Save"`.
+- Check for errors: `hwatu console` returns console output, uncaught
+  exceptions, and failed/4xx+ network requests as JSON.
 - Run JS in the page: `hwatu eval '<js expression or function body>'`
   (returns JSON), e.g. `hwatu eval 'document.title'`.
 - Scroll with feedback: `hwatu scroll <selector> [--contains <text>]`

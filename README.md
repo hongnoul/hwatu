@@ -91,6 +91,10 @@ Full guide: [docs/agents.md](docs/agents.md).
 ```sh
 hwatu --background localhost:3000           # open without stealing focus
 hwatu --headless localhost:3000             # open with no window at all
+hwatu snapshot                              # page text + clickable elements, as JSON
+hwatu click a --contains Pricing            # click (selector or --ref from snapshot)
+hwatu type 'input[name=q]' hello --enter    # fill an input, then submit
+hwatu console                               # console output, JS errors, failed requests
 hwatu eval 'document.title'                 # run JS in the page (async, JSON out)
 hwatu eval --id 2 'location.href'           # target a window by id
 hwatu goto localhost:3000                   # navigate + wait for the load
@@ -289,8 +293,9 @@ Crates:
 - [x] `scroll` with selector/nth/contains disambiguation + landing report
 - [x] Full-document screenshots (`shot --full`)
 - [x] Persistent cookies (logins survive daemon restarts)
+- [x] Text/a11y page snapshot (`hwatu snapshot`): token-cheap page state for agents
+- [x] First-class interaction: `hwatu click` / `hwatu type` (selector or snapshot ref)
+- [x] Console + network capture for verification loops (`hwatu console`)
 - [ ] Link hints
 - [ ] Profiles (separate cookie jars / web contexts); per-agent isolation
-- [ ] Text/a11y page snapshot (`hwatu snapshot`): token-cheap page state for agents
-- [ ] Console + network capture for verification loops
 - [ ] Displayless operation (nested headless compositor) for CI
