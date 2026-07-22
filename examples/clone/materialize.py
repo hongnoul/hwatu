@@ -121,6 +121,23 @@ for c in cap.get("canvases", []):
     size = f' style="width:{c["w"]}px;height:{c["h"]}px"' if c.get("w") else ""
     html = pat.sub(rf'<img\1 src="{c["data"]}"{size}>', html)
 
+# ---- 3.55 media-scoped transition pins -------------------------------
+# Pins bake this capture's rendered transition state (open accordions,
+# reveal opacities, JS-set widths). Scoping them to the capture width
+# keeps other widths on the site's own responsive CSS: a clone captured
+# at 819px must not wear 819px measurements at 1920px.
+pins = cap.get("pins", [])
+if pins:
+    vw = cap.get("viewport", {}).get("w", 0)
+    lo, hi = max(vw - 40, 1), vw + 40
+    rules = "\n".join(
+        f'[data-hwatu-pin="{p["i"]}"] {{ {p["css"]} }}' for p in pins
+    )
+    css += (
+        f"\n@media (min-width: {lo}px) and (max-width: {hi}px) {{\n"
+        f"/* transition-state pins from capture at {vw}px */\n{rules}\n}}\n"
+    )
+
 # ---- 3.6 scroll restoration + snap disable ---------------------------
 # scroll-snap in the clone can land scrollers on a different snap
 # point than the captured frame; disable snap and restore recorded

@@ -76,14 +76,28 @@ const PINNABLE = ['max-height', 'height', 'width', 'max-width', 'opacity', 'tran
 // A transition on the shorthand ('background', 'border') covers its
 // longhands, so match by prefix in both directions.
 const covers = (declared, pin) => declared === 'all' || pin === declared || pin.startsWith(declared + '-');
-for (const el of document.querySelectorAll('*')) {
-  const st = getComputedStyle(el);
-  if (!st.transitionProperty || st.transitionDuration.split(',').every(d => parseFloat(d) === 0)) continue;
-  const props = st.transitionProperty.split(',').map(p => p.trim());
-  const wanted = PINNABLE.filter(p => props.some(d => covers(d, p)));
-  for (const p of wanted) {
-    const v = st.getPropertyValue(p);
-    if (v) el.style.setProperty(p, v);
+// Pins are emitted as CSS rules keyed by data attribute, NOT inline
+// styles: the materializer scopes them in a @media block matching the
+// capture width, so other widths fall back to the site's own
+// responsive CSS instead of wearing this width's measurements.
+const pins = [];
+{
+  let pinId = 0;
+  for (const el of document.querySelectorAll('*')) {
+    const st = getComputedStyle(el);
+    if (!st.transitionProperty || st.transitionDuration.split(',').every(d => parseFloat(d) === 0)) continue;
+    const props = st.transitionProperty.split(',').map(p => p.trim());
+    const wanted = PINNABLE.filter(p => props.some(d => covers(d, p)));
+    const decls = [];
+    for (const p of wanted) {
+      const v = st.getPropertyValue(p);
+      if (v) decls.push(`${p}: ${v} !important`);
+    }
+    if (decls.length) {
+      el.dataset.hwatuPin = pinId;
+      pins.push({ i: pinId, css: decls.join('; ') });
+      pinId++;
+    }
   }
 }
 
@@ -109,5 +123,6 @@ return {
   assets: [...assets].slice(0, 500),
   canvases,
   scrolls,
+  pins,
   viewport: { w: innerWidth, h: innerHeight, dpr: devicePixelRatio },
 };
