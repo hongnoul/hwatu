@@ -45,8 +45,9 @@ struct SessionFile {
     /// XDG_RUNTIME_DIR) must not consume another daemon's crash
     /// snapshot: doing so "restores" windows the original daemon still
     /// owns, popping them onto the user's workspace. Absent in files
-    /// written before this field existed; those belonged to the
-    /// default daemon, so absence matches any reader.
+    /// written before this field existed; those were written by the
+    /// user's default-socket daemon, so absence matches only a reader
+    /// on the system-default socket (see [`is_system_default_socket`]).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     socket: Option<String>,
     windows: Vec<SessionEntry>,
@@ -57,6 +58,14 @@ const VERSION: u32 = 1;
 /// `$XDG_STATE_HOME/hwatu/session.json`, falling back to
 /// `~/.local/state/hwatu/session.json`. State (not cache): losing it
 /// loses user data, so it must survive cache cleaners.
+///
+/// The file is scoped to the daemon's socket: the user's default
+/// daemon uses `session.json`, while a daemon on an isolated socket
+/// (test harness / agent with its own `XDG_RUNTIME_DIR`) gets
+/// `session-<hash>.json`. Without this, an isolated daemon shares the
+/// state file with the user's live daemon and every path goes wrong:
+/// its startup consumes ("restores") the user's windows, its debounced
+/// saves overwrite them, and its clean quit deletes them.
 fn session_file() -> Option<PathBuf> {
     let base = std::env::var("XDG_STATE_HOME")
         .ok()
@@ -67,7 +76,24 @@ fn session_file() -> Option<PathBuf> {
                 .ok()
                 .map(|h| PathBuf::from(h).join(".local").join("state"))
         })?;
-    Some(base.join("hwatu").join("session.json"))
+    let name = if is_system_default_socket() {
+        "session.json".to_string()
+    } else {
+        let socket = hwatu_ipc::socket_path();
+        format!("session-{:016x}.json", fnv1a(socket.to_string_lossy().as_bytes()))
+    };
+    Some(base.join("hwatu").join(name))
+}
+
+/// FNV-1a 64-bit: tiny, dependency-free, stable across runs. Only
+/// used to give isolated sockets distinct session file names.
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    hash
 }
 
 /// Write the current window set. Atomic (write to a temp file, then
@@ -105,9 +131,18 @@ pub fn take() -> Vec<SessionEntry> {
     match serde_json::from_slice::<SessionFile>(&bytes) {
         Ok(file) if file.version == VERSION => {
             let ours = hwatu_ipc::socket_path().to_string_lossy().into_owned();
-            if file.socket.as_ref().is_some_and(|s| *s != ours) {
-                // Another daemon's snapshot (different socket). Leave
-                // the file for its owner; restore nothing here.
+            let owned_by_us = match &file.socket {
+                Some(s) => *s == ours,
+                // Legacy file: written by a pre-socket build, which
+                // only ever ran as the user's default daemon. Only the
+                // default daemon may consume it; an isolated daemon
+                // restoring it would pop the user's windows onto their
+                // workspace.
+                None => is_system_default_socket(),
+            };
+            if !owned_by_us {
+                // Another daemon's snapshot. Leave the file for its
+                // owner; restore nothing here.
                 return Vec::new();
             }
             let _ = std::fs::remove_file(&path);
@@ -140,6 +175,23 @@ pub fn clear() {
     }
 }
 
+/// True when this daemon listens on the user's system-default socket
+/// (`/run/user/$UID/hwatu.sock`, or the `/tmp` fallback when no
+/// runtime dir exists), as opposed to an isolated socket set up via a
+/// custom `XDG_RUNTIME_DIR`. Decides ownership of legacy (pre-socket
+/// field) session snapshots.
+fn is_system_default_socket() -> bool {
+    let ours = hwatu_ipc::socket_path();
+    let uid = unsafe { libc_geteuid() };
+    ours.as_path() == std::path::Path::new(&format!("/run/user/{uid}/hwatu.sock"))
+        || ours.as_path() == std::path::Path::new(&format!("/tmp/hwatu-{uid}.sock"))
+}
+
+extern "C" {
+    #[link_name = "geteuid"]
+    fn libc_geteuid() -> u32;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,6 +204,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("hwatu-session-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::env::set_var("XDG_STATE_HOME", &dir);
+        // No runtime dir: socket_path() falls back to /tmp/hwatu-$UID,
+        // which counts as the system-default socket, so this test runs
+        // as "the user's daemon" unless it says otherwise below.
+        std::env::remove_var("XDG_RUNTIME_DIR");
 
         // Nothing saved yet: nothing to take.
         assert!(take().is_empty());
@@ -225,14 +281,27 @@ mod tests {
         assert!(path.exists(), "foreign snapshot must not be consumed");
         std::fs::remove_file(&path).unwrap();
 
-        // A pre-socket file (no "socket" field) belongs to the default
-        // daemon and is restored by any reader.
+        // A pre-socket file (no "socket" field) belongs to the
+        // default-socket daemon and is restored by it...
         std::fs::write(
             &path,
             br#"{"version": 1, "windows": [{"url": "https://presocket.example/"}]}"#,
         )
         .unwrap();
         assert_eq!(take().len(), 1);
+
+        // ...but not by an isolated daemon (custom XDG_RUNTIME_DIR):
+        // it must leave the user's legacy snapshot alone.
+        std::fs::write(
+            &path,
+            br#"{"version": 1, "windows": [{"url": "https://presocket.example/"}]}"#,
+        )
+        .unwrap();
+        std::env::set_var("XDG_RUNTIME_DIR", &dir);
+        assert!(take().is_empty());
+        assert!(path.exists(), "isolated daemon must not consume legacy snapshot");
+        std::env::remove_var("XDG_RUNTIME_DIR");
+        std::fs::remove_file(&path).unwrap();
 
         // clear() removes the file.
         save(&entries);
