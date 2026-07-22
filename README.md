@@ -20,7 +20,13 @@ curl -fsSL https://raw.githubusercontent.com/hongnoul/hwatu/main/scripts/install
 ```
 
 Requires `webkitgtk-6.0` at runtime (the installer checks and tells you the
-package for your distro). Or build from source:
+package for your distro). On Arch, install from the [AUR](https://aur.archlinux.org/packages/hwatu):
+
+```sh
+yay -S hwatu   # or paru -S hwatu
+```
+
+Or build from source:
 
 ```sh
 cargo build --release   # needs rust + webkitgtk-6.0 dev headers
