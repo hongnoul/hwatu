@@ -106,6 +106,9 @@ pub struct BrowserWindow {
     /// it spawns inherit it so a headless page can't steal focus. A
     /// `focus` request promotes the window to Normal.
     mode: std::cell::Cell<OpenMode>,
+    /// Console/error/network capture for `hwatu console`. Outlives
+    /// discards: the page's state dies, what it logged did happen.
+    pub console: crate::console::Buffer,
 }
 
 /// `HWATU_WEBKIT_FEATURES=Ident:on,Other:off` — escape hatch for odd
@@ -151,6 +154,7 @@ fn set_wayland_app_id(window: &gtk::Window, app_id: &str) {
 pub fn build_webview() -> webkit6::WebView {
     let view = webkit6::WebView::new();
     apply_view_settings(&view);
+    crate::console::wire_view(&view);
     view
 }
 
@@ -274,6 +278,7 @@ impl BrowserWindow {
     fn open_popup(self: &Rc<Self>, related: &webkit6::WebView) -> webkit6::WebView {
         let webview = webkit6::WebView::builder().related_view(related).build();
         apply_view_settings(&webview);
+        crate::console::wire_view(&webview);
         self.daemon.adblock.apply_to(&webview);
         let popup = Self::build(
             &self.daemon,
@@ -354,6 +359,7 @@ impl BrowserWindow {
             process_group: RefCell::new(None),
             app_id,
             mode: std::cell::Cell::new(mode),
+            console: crate::console::Buffer::default(),
         });
 
         this.attach_webview(webview);
@@ -446,6 +452,7 @@ impl BrowserWindow {
 
     /// Put a WebView into the window and wire its signals.
     fn attach_webview(self: &Rc<Self>, webview: webkit6::WebView) {
+        crate::console::attach(&self.console, &webview);
         let win = self.window.clone();
         webview.connect_title_notify(move |wv| {
             let title = wv.title().unwrap_or_default();
