@@ -3,7 +3,10 @@
 > Visual verification browser for AI coding agents: daemon-based WebKitGTK, real rendering, ~13ms median window spawn, ~216ms full verify pass
 
 hwatu is AI-first: the primary user is a coding agent verifying web
-UIs in its inner loop. Agent-facing features include headless/background
+UIs in its inner loop. Integrations: a one-line JSON protocol over a
+Unix socket, a CLI mirroring it, and `hwatu mcp`, a Model Context
+Protocol server over stdio for Claude Code, Cursor, and other MCP
+clients. Agent-facing features include headless/background
 windows, snapshot/click/type/console automation, file upload, full-page
 screenshots, and safe CAPTCHA/anti-bot challenge hand-off via
 `hwatu challenge` / `hwatu challenge --wait` for manual user

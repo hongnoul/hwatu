@@ -114,6 +114,7 @@ hwatu close 2              # close window 2
 hwatu adblock              # content-blocker status (rule count, source)
 hwatu adblock off          # disable blocking (persisted; `on` re-enables)
 hwatu adblock update       # fetch EasyList + EasyPrivacy, recompile
+hwatu mcp                  # serve MCP over stdio (for Claude Code, Cursor, ...)
 hwatu update               # self-update to the latest release
 hwatu quit                 # stop the daemon
 ```
@@ -357,7 +358,7 @@ Crates:
 - [x] First-class interaction: `hwatu click` / `hwatu type` (selector or snapshot ref)
 - [x] Console + network capture for verification loops (`hwatu console`)
 - [x] Challenge detection + manual wait/resume (`hwatu challenge --wait`)
-- [ ] MCP server (`hwatu mcp`, stdio transport) so any harness can adopt hwatu
+- [x] MCP server (`hwatu mcp`, stdio) so any MCP client can adopt hwatu
 - [ ] Published head-to-head benchmark vs Playwright / chrome-devtools-mcp
 - [ ] Snapshot diffing (`snapshot --diff`): only what changed, fewer tokens
 - [ ] Assertion primitives (`hwatu expect`, `shot --diff baseline.png`)

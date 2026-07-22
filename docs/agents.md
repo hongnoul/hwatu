@@ -316,12 +316,23 @@ removes focus/WM noise on a desktop; running with no display at all
 
 - **jcode** has a native hwatu backend for its `browser` tool
   (engine: `hwatu`), speaking the socket directly.
-- **MCP**: an MCP server (`hwatu mcp`, stdio transport) is the top
-  roadmap item ([roadmap](roadmap.md)), so Claude Code, Cursor, and
-  other MCP-speaking harnesses can adopt hwatu without custom
-  integration. Until it ships, note that for coding agents,
-  CLI-style invocation of `hwatu` subcommands is usually more
-  token-efficient than MCP tool schemas anyway.
+- **MCP**: `hwatu mcp` serves the Model Context Protocol over stdio,
+  so Claude Code, Cursor, and every other MCP client can adopt hwatu
+  with one config entry. It exposes the automation protocol as 15
+  tools (`open`, `snapshot`, `click`, `type_text`, `eval`, `console`,
+  `screenshot`, `scroll`, `goto`, `wait_load`, `upload`, `challenge`,
+  `focus`, `close`, `list_windows`); `open` defaults to headless, and
+  id-less calls follow the last-driven window just like the CLI.
+
+  ```jsonc
+  // e.g. Claude Code: .mcp.json / Cursor: mcp.json
+  { "mcpServers": { "hwatu": { "command": "hwatu", "args": ["mcp"] } } }
+  ```
+
+  The daemon autostarts on the first tool call. For coding agents
+  that can run shell commands, CLI-style invocation of `hwatu`
+  subcommands is often even more token-efficient than MCP schemas;
+  both speak to the same daemon and can be mixed freely.
 - **Anything else**: the socket protocol above is the integration.
 
 ## Paste into your AGENTS.md / CLAUDE.md

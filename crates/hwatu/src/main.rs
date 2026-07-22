@@ -3,6 +3,7 @@
 //! `hana <url>` opens a window in ~1 IPC roundtrip. If no daemon is
 //! running, it spawns one and waits for the socket.
 
+mod mcp;
 mod update;
 
 use hwatu_ipc::{AdblockCmd, OpenMode, Request, Response};
@@ -15,6 +16,9 @@ fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("update") {
         std::process::exit(update::run());
+    }
+    if args.first().map(String::as_str) == Some("mcp") {
+        std::process::exit(mcp::run());
     }
     // `--json` is a client-side output flag (machine-readable `list`
     // for wofi/rofi/fuzzel pipelines), not part of the wire protocol.
@@ -538,7 +542,7 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--foc
 | click [--id <id>] (<selector> [nth] [--contains <text>] | --ref <n>) \
 | type [--id <id>] (<selector> | --ref <n>) <text> [--enter] [--no-clear] \
 | console [--id <id>] [--clear] [--limit <n>] \
-| adblock [on|off|status|update] | update | ping | quit";
+| adblock [on|off|status|update] | mcp | update | ping | quit";
 
 fn connect_or_spawn() -> std::io::Result<UnixStream> {
     let path = hwatu_ipc::socket_path();

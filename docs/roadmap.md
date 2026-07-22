@@ -42,12 +42,11 @@ human for a minute.
 
 ### P0 — adoption surface
 
-1. **MCP server.** hwatu's best features currently have one consumer
-   (jcode). An MCP server over the existing socket protocol makes
-   hwatu adoptable by Claude Code, Cursor, and every other harness
-   without custom integration. Thin translation layer; the socket
-   protocol stays the source of truth. Ship it as `hwatu mcp`
-   (stdio transport) so there is nothing extra to install.
+1. **MCP server.** ~~hwatu's best features currently have one consumer
+   (jcode).~~ **Shipped:** `hwatu mcp` serves MCP over stdio (no SDK,
+   no new dependencies), translating tool calls onto the socket
+   protocol, which stays the source of truth. Claude Code, Cursor,
+   and other MCP clients adopt hwatu with one config entry.
 2. **Published head-to-head benchmark** vs Playwright and
    chrome-devtools-mcp: spawn time, RAM per concurrent session,
    tokens per snapshot, full-verify-loop latency. Agent harness
