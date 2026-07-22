@@ -13,10 +13,12 @@ Sequenced: each step feeds the next. Snapshot before and after every step
 
 The AI-first story only lands with the roadmap P0 items shipped. You get
 one launch; "WebKit daemon, jcode-only consumer" is not it.
-- [ ] `hwatu mcp` shipped — any harness (Claude Code, Cursor) can adopt it
-- [ ] Head-to-head benchmark published (vs Playwright, chrome-devtools-mcp):
-      spawn time, RAM per session, tokens per snapshot, verify-loop latency.
-      This table IS the launch post.
+- [x] `hwatu mcp` shipped (6ce2659, v0.5.0; 18 tools as of 82fea8b) — any
+      harness (Claude Code, Cursor) can adopt it
+- [x] Head-to-head benchmark published (2a4586c, docs/benchmarks.md):
+      spawn, RAM per session, verify-loop latency vs Playwright+Chromium.
+      This table IS the launch post. Follow-up (non-blocking): add a
+      chrome-devtools-mcp column and tokens-per-snapshot row.
 
 ## Phase 0: before any traffic (do all, ~1 hour)
 - [ ] Demo GIF/video at the top of the README (star conversion roughly doubles).
