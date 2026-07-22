@@ -78,6 +78,15 @@ impl Daemon {
             self.adblock.apply_to(&view);
             view
         });
+        // The pool deep-warms with an about:blank load. If adoption
+        // happens mid-warm, the stale load's own Started clears the
+        // window's nav_pending flag and its Finished then satisfies
+        // wait_load before the real navigation begins (callers' evals
+        // get destroyed by the real commit). Cancel unconditionally:
+        // `is_loading` is false until a provisional load engages, so a
+        // conditional stop would miss the queued warm load, and
+        // stopping an idle/finished view is a no-op.
+        view.stop_loading();
         self.schedule_prewarm();
         view
     }

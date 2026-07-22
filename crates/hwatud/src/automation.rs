@@ -82,9 +82,12 @@ fn resolve_uncached(
     }
 }
 
-/// Live WebView of a window, reviving it from a discard first.
+/// Live WebView of a window, reviving it from a discard first and
+/// re-asserting the offscreen viewport for headless windows (GTK can
+/// re-allocate an unmapped toplevel to 0x0 behind our back).
 fn live_view(win: &Rc<BrowserWindow>) -> Result<webkit6::WebView, Box<Response>> {
     win.restore();
+    win.ensure_viewport();
     win.live_webview()
         .ok_or_else(|| Box::new(Response::err("window has no live webview")))
 }
@@ -319,13 +322,13 @@ pub fn navigate(
 
     let url = crate::ipc_server::normalize_url(url);
     if !wait {
-        win.mark_nav_pending();
+        win.mark_nav_pending(&url);
         view.load_uri(&url);
         return reply.send(Response::window(win.info()));
     }
 
     arm_timeout(reply.clone(), timeout_ms, "navigate");
-    win.mark_nav_pending();
+    win.mark_nav_pending(&url);
     wire_load_settled(&view, win.clone(), {
         let reply = reply.clone();
         move |_| reply.send(Response::window(win.info()))
@@ -555,18 +558,66 @@ pub fn screenshot(
         gio::Cancellable::NONE,
         move |result| match result {
             Ok(texture) => {
-                use gdk::prelude::TextureExt;
-                match texture.save_to_png(&target) {
-                    Ok(()) => reply.send(Response::path(target.to_string_lossy())),
-                    Err(e) => reply.send(Response::err(format!(
-                        "screenshot write to {} failed: {e}",
-                        target.display()
-                    ))),
-                }
+                // Download the pixels here (a memcpy), then encode and
+                // write on a worker thread: PNG compression of a
+                // 2048x1536 frame costs tens of ms and used to stall
+                // the GTK main loop (and with it every other window)
+                // inside cairo's zlib-best path. The `png` crate with
+                // fast filtering is also ~2x quicker.
+                let mut downloader = gdk::TextureDownloader::new(&texture);
+                downloader.set_format(gdk::MemoryFormat::R8g8b8a8);
+                let (bytes, stride) = downloader.download_bytes();
+                let width = texture.width() as u32;
+                let height = texture.height() as u32;
+                glib::spawn_future_local(async move {
+                    let path = target.clone();
+                    let encoded = gio::spawn_blocking(move || {
+                        write_png(&path, &bytes, stride, width, height)
+                    })
+                    .await;
+                    match encoded {
+                        Ok(Ok(())) => reply.send(Response::path(target.to_string_lossy())),
+                        Ok(Err(e)) => reply.send(Response::err(format!(
+                            "screenshot write to {} failed: {e}",
+                            target.display()
+                        ))),
+                        Err(_) => reply.send(Response::err("screenshot encode panicked")),
+                    }
+                });
             }
             Err(e) => reply.send(Response::err(format!("screenshot failed: {e}"))),
         },
     );
+}
+
+/// Encode RGBA rows (possibly padded to `stride`) as a PNG. Fast
+/// compression + Sub filtering: screenshots are verification
+/// artifacts, so encode speed beats squeezing out the last few KB.
+fn write_png(
+    path: &std::path::Path,
+    rgba: &[u8],
+    stride: usize,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
+    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_compression(png::Compression::Fast);
+    encoder.set_filter(png::FilterType::Sub);
+    let mut writer = encoder.write_header().map_err(|e| e.to_string())?;
+    let row = width as usize * 4;
+    if stride == row {
+        writer.write_image_data(rgba).map_err(|e| e.to_string())?;
+    } else {
+        let mut tight = Vec::with_capacity(row * height as usize);
+        for y in 0..height as usize {
+            tight.extend_from_slice(&rgba[y * stride..y * stride + row]);
+        }
+        writer.write_image_data(&tight).map_err(|e| e.to_string())?;
+    }
+    writer.finish().map_err(|e| e.to_string())
 }
 
 /// Set a file input's files from a path on disk. The bytes travel
