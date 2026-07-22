@@ -1,5 +1,11 @@
 # Show HN draft (ready to post)
 
+Pre-flight: this draft assumes the launch gate in launch-checklist.md is
+met. Before posting, add one line to the first comment about `hwatu mcp`
+(works with Claude Code/Cursor out of the box) and link the published
+head-to-head benchmark table. Those two are the difference between "neat"
+and "I'll adopt this today".
+
 Title: Show HN: Hwatu – a browser your coding agent drives over a Unix socket
 URL: https://github.com/hongnoul/hwatu
 

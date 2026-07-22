@@ -13,9 +13,11 @@ human UI is hand-off-scoped, not a qutebrowser replacement.
 Title: A browser for agent verification loops: 13ms window spawn, 216ms open→eval→screenshot→close (hwatu)
 Body: the verification-loop cost table vs headless Chrome, the snapshot/
 click/type-by-ref protocol (one JSON line over a Unix socket, cheap for
-token budgets), and the human hand-off: agent hits a CAPTCHA, `hwatu
-focus <id>` gives the human the same live session in their WM, agent
-resumes. Paste-able AGENTS.md block in docs/agents.md. Link the repo.
+token budgets), `hwatu mcp` for zero-config adoption in Claude Code/
+Cursor (mention once shipped; it's the launch gate), and the human
+hand-off: agent hits a CAPTCHA, `hwatu focus <id>` gives the human the
+same live session in their WM, agent resumes. Paste-able AGENTS.md block
+in docs/agents.md. Link the repo.
 
 ## r/rust
 Title: hwatu: a daemon-based WebKitGTK 6 browser in Rust for AI agent verification (~13ms window spawn via prewarmed WebView pool)
