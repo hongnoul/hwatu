@@ -383,6 +383,7 @@ fn capture(daemon: &Rc<Daemon>, id: u64, full: bool, done: Box<dyn FnOnce(Result
         None => return done(Err(format!("no window {id}"))),
     };
     win.restore();
+    win.ensure_viewport();
     let view = match win.live_webview() {
         Some(v) => v,
         None => return done(Err(format!("window {id} has no live webview"))),

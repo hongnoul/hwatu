@@ -275,15 +275,15 @@ over 10 runs ([full data](benchmarks.md)):
 
 | step | median |
 |---|---|
-| open `--headless` | 13 ms |
-| `wait-load` | 50 ms |
-| `eval` | 4 ms |
-| `shot` (1024x768 PNG) | 142 ms |
-| `close` | 8 ms |
-| **total** | **216 ms** |
+| open `--headless` | 9 ms |
+| `wait-load` | 49 ms |
+| `eval` | 2 ms |
+| `shot` (1024x768 PNG) | 15 ms |
+| `close` | 6 ms |
+| **total** | **87 ms** |
 
-A full check with a screenshot costs about a fifth of a second; a
-DOM-only check (skip `shot`) is ~75 ms. `eval` at 4 ms is cheap
+A full check with a screenshot costs under a tenth of a second; a
+DOM-only check (skip `shot`) is ~70 ms. `eval` at 2 ms is cheap
 enough to poll.
 
 If a check looks wrong and you want the human to see it:
@@ -369,7 +369,7 @@ Daemon-based WebKitGTK browser: ~15ms window spawn, full rendering.
 
 | | hwatu | headless Chrome + Playwright | Lightpanda |
 |---|---|---|---|
-| Verify pass w/ screenshot (warm) | 163 ms | 75 ms | n/a (no rendering) |
+| Verify pass w/ screenshot (warm) | 83 ms | 82 ms | n/a (no rendering) |
 | Rendering / screenshots | full WebKit, real WM windows | full Chromium, offscreen | none |
 | Runtime deps | one binary + distro webkitgtk | Node + package + browser download | one binary |
 | Headed↔headless | per window, switchable live | fixed at launch | headless only |

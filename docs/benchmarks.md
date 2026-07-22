@@ -38,16 +38,18 @@ fixture page:
 
 | step | median |
 |---|---|
-| `hwatu --headless <url>` | 13 ms |
-| `hwatu wait-load` | 50 ms |
-| `hwatu eval 'return document.title'` | 4 ms |
-| `hwatu shot /tmp/check.png` (1024x768 PNG) | 142 ms |
-| `hwatu close <id>` | 8 ms |
-| **whole loop** | **216 ms** |
+| `hwatu --headless <url>` | 9 ms |
+| `hwatu wait-load` | 49 ms |
+| `hwatu eval 'return document.title'` | 2 ms |
+| `hwatu shot /tmp/check.png` (1024x768 PNG) | 15 ms |
+| `hwatu close <id>` | 6 ms |
+| **whole loop** | **87 ms** |
 
-Two hundred milliseconds per full check, screenshot included. Skip
-the screenshot and a DOM-level check (open, wait, eval, close) is
-~75 ms. `eval` at 4 ms is cheap enough to poll.
+Under ninety milliseconds per full check, screenshot included
+(screenshots are encoded off the main loop with fast PNG filtering,
+~15 ms). A DOM-level check (open, wait, eval, close) is ~70 ms.
+`eval` at 2 ms is cheap enough to poll. Remeasured 2026-07-22 after
+the threaded-encode change; the loop was 216 ms before.
 
 ## Memory
 
@@ -77,23 +79,25 @@ which kills their web process and returns that ~56 MB until refocus.
 
 `scripts/bench-vs-playwright.mjs` runs both tools against the same
 local fixture page (40 cards, no network), same machine, same clock.
-Medians over 12 runs, measured 2026-07-22 (hwatu ec4ebeb, Playwright
+Medians over 12 runs, measured 2026-07-22 (hwatu 1a75785, Playwright
 1.5x headless-shell Chromium):
 
 | scenario | hwatu | Playwright |
 |---|---|---|
-| verify pass, cold engine (start, open, load, eval, shot, teardown) | 494 ms | 143 ms |
-| open + full load, warm engine | 74 ms | 24 ms |
-| verify pass, warm engine (open, load, eval, shot, close) | 163 ms | 75 ms |
-| verify pass, warm, no screenshot | 70 ms | 34 ms |
+| verify pass, cold engine (start, open, load, eval, shot, teardown) | 392 ms | 137 ms |
+| open + full load, warm engine | 92 ms | 23 ms |
+| verify pass, warm engine (open, load, eval, shot, close) | 83 ms | 82 ms |
+| verify pass, warm, no screenshot | 82 ms | 32 ms |
 | page-state payload (snapshot JSON vs ARIA snapshot) | 7.3 KB | 5.1 KB |
-| memory, 5 pages open (tree PSS, fresh engine) | 737 MB | 238 MB |
+| memory, 5 pages open (tree PSS, fresh engine) | 630 MB | 238 MB |
 
-Read it honestly: **a warm Playwright server beats hwatu on raw
-latency and memory for this fixture.** Two widespread claims about
-the incumbent are simply outdated and hwatu's docs no longer repeat
-them: headless-shell Chromium cold-starts in ~150 ms (not seconds),
-and 5 shared-browser contexts cost ~240 MB (not GBs).
+Read it honestly: cold start, load-settle, and memory go to
+Playwright; the warm verify pass with a screenshot is a tie (hwatu's
+threaded fast-PNG encode landed screenshots at ~14 ms). Two
+widespread claims about the incumbent are simply outdated and hwatu's
+docs no longer repeat them: headless-shell Chromium cold-starts in
+~150 ms (not seconds), and 5 shared-browser contexts cost ~240 MB
+(not GBs).
 
 What the table does not capture, and why hwatu still exists:
 
@@ -109,13 +113,15 @@ What the table does not capture, and why hwatu still exists:
   one-line JSON, no client library or session objects; for coding
   agents the invocation cost (tokens, not milliseconds) is the scarce
   resource.
-- **Absolute cost is tiny either way.** 163 ms per screenshot-included
+- **Absolute cost is tiny either way.** 83 ms per screenshot-included
   check is far below any agent's thinking time. The fight is not won
-  on 90 ms.
+  on stopwatch deltas.
 
-Known optimization targets from this data: screenshot encode
-(~90 ms of hwatu's warm pass) and load-settle latency (WebKitGTK
-finishes this fixture ~50 ms behind Chromium). Tracked in
+Known optimization targets from this data: load-settle latency
+(WebKitGTK reports loads settled ~50 ms behind Chromium on this
+fixture) and cold engine init. Screenshot encode was the previous
+target (90 ms of the pass) and was fixed by moving a fast-filter PNG
+encode off the main loop: shots now cost ~14 ms. Tracked in
 [roadmap.md](roadmap.md).
 
 Caveat on method: hwatu steps go through CLI process spawns (5 per

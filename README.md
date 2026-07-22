@@ -58,7 +58,7 @@ For the agent verification loop, the incumbents pay for generality:
 
 | | hwatu | headless Chrome + Playwright | chrome-devtools-mcp |
 |---|---|---|---|
-| Verify pass w/ screenshot (warm) | 163 ms | 75 ms | comparable to Playwright |
+| Verify pass w/ screenshot (warm) | 83 ms | 82 ms | comparable to Playwright |
 | Runtime deps | one binary + distro webkitgtk | Node + package + ~170 MB browser | Node + Chrome |
 | Rendering | GPU-composited, real WM windows | offscreen only (headless-shell) | offscreen or a visible Chrome |
 | Headed↔headless | per window, switchable live | fixed at launch | fixed at launch |
@@ -131,7 +131,7 @@ hwatu quit                 # stop the daemon
 The daemon speaks a small automation protocol, built for AI coding
 agents (jcode has a native hwatu backend) and scripts that need to
 verify web UIs. This is hwatu's primary use case. A full verification pass (open headless, wait for
-load, eval, screenshot, close) measures **216 ms median**, ~75 ms
+load, eval, screenshot, close) measures **87 ms median**, ~70 ms
 without the screenshot ([docs/benchmarks.md](docs/benchmarks.md)).
 Full guide: [docs/agents.md](docs/agents.md).
 

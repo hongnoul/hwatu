@@ -10,7 +10,7 @@ lead with the WM angle only in WM subs, and be upfront there that the
 human UI is hand-off-scoped, not a qutebrowser replacement.
 
 ## r/ClaudeCode / r/ChatGPTCoding / agent-tooling subs (primary)
-Title: A browser for agent verification loops: 13ms window spawn, 216ms open→eval→screenshot→close (hwatu)
+Title: A browser for agent verification loops: 13ms window spawn, 87ms open→eval→screenshot→close (hwatu)
 Body: the verification-loop cost table vs headless Chrome, the snapshot/
 click/type-by-ref protocol (one JSON line over a Unix socket, cheap for
 token budgets), `hwatu mcp` for zero-config adoption in Claude Code/

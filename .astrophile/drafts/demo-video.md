@@ -87,7 +87,7 @@ Final side-by-side, synchronized scroll on both windows
 
 End card:
 
-> open → verify → close: 216 ms.
+> open → verify → close: 87 ms.
 > `hwatu diff`: a number your agent can climb.
 > One binary. One Unix socket. `hwatu mcp` for Claude Code & Cursor.
 

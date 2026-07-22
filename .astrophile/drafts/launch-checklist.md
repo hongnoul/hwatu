@@ -1,7 +1,7 @@
 # hwatu launch checklist
 
 Positioning (2026-07, see docs/roadmap.md): AI-first. Lead every channel
-with agent verification (13ms spawn, 216ms verify pass, human hand-off);
+with agent verification (13ms spawn, 87ms verify pass, human hand-off);
 the tiling-WM angle is the secondary hook for WM-specific venues.
 Prioritize agent-tooling channels (MCP/agent lists, agent subs) over WM
 channels.

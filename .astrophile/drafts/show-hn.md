@@ -18,7 +18,7 @@ First comment (post immediately after submitting):
 > hwatu splits the browser the way emacsclient/wezterm split the editor: a
 > daemon (hwatud) owns WebKitGTK 6 and a prewarmed WebView pool; the client
 > (hwatu) is one Unix-socket roundtrip. Measured medians: 13 ms to a
-> mapped, loading window; 216 ms for a full open→wait→eval→screenshot→close
+> mapped, loading window; 87 ms for a full open→wait→eval→screenshot→close
 > verification pass; ~56 MB per extra window on one shared engine.
 >
 > The protocol is one JSON line per request: snapshot (page text +

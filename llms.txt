@@ -1,6 +1,6 @@
 # hwatu
 
-> Visual verification browser for AI coding agents: daemon-based WebKitGTK, real rendering, ~13ms median window spawn, ~216ms full verify pass
+> Visual verification browser for AI coding agents: daemon-based WebKitGTK, real rendering, ~13ms median window spawn, ~87ms full verify pass
 
 hwatu is AI-first: the primary user is a coding agent verifying web
 UIs in its inner loop. Integrations: a one-line JSON protocol over a
