@@ -319,11 +319,13 @@ pub fn navigate(
 
     let url = crate::ipc_server::normalize_url(url);
     if !wait {
+        win.mark_nav_pending();
         view.load_uri(&url);
         return reply.send(Response::window(win.info()));
     }
 
     arm_timeout(reply.clone(), timeout_ms, "navigate");
+    win.mark_nav_pending();
     wire_load_finished(&view, {
         let reply = reply.clone();
         move |_| reply.send(Response::window(win.info()))
@@ -343,7 +345,13 @@ pub fn wait_load(daemon: &Rc<Daemon>, id: Option<u64>, timeout_ms: Option<u64>, 
         Err(resp) => return reply.send(*resp),
     };
 
-    if !view.is_loading() {
+    // `is_loading` alone races on a fresh window: `open`/`navigate`
+    // issue load_uri, but WebKit only turns that into a live load (and
+    // is_loading=true) after a main-loop trip. In that gap wait_load
+    // would answer "done" and the caller's next eval gets destroyed by
+    // the commit. The window tracks the request (`nav_pending`) until
+    // LoadEvent::Started, so cover both.
+    if !view.is_loading() && !win.nav_pending() {
         return reply.send(Response::window(win.info()));
     }
     arm_timeout(reply.clone(), timeout_ms, "wait_load");

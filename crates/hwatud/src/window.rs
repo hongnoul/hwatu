@@ -116,6 +116,11 @@ pub struct BrowserWindow {
     /// it spawns inherit it so a headless page can't steal focus. A
     /// `focus` request promotes the window to Normal.
     mode: std::cell::Cell<OpenMode>,
+    /// True from "a navigation was requested" (load_uri issued) until
+    /// WebKit reports the load Started. `is_loading` is false in that
+    /// gap, so `wait_load` needs this flag to not answer early and let
+    /// the caller's next eval be destroyed by the commit.
+    nav_pending: std::cell::Cell<bool>,
     /// Console/error/network capture for `hwatu console`. Outlives
     /// discards: the page's state dies, what it logged did happen.
     pub console: crate::console::Buffer,
@@ -222,10 +227,12 @@ impl BrowserWindow {
         // bare `hwatu` is "type where you want to go".
         let target = match url.or_else(home_page) {
             Some(url) => {
+                this.nav_pending.set(true);
                 webview.load_uri(&url);
                 url
             }
             None => {
+                this.nav_pending.set(true);
                 webview.load_uri(launcher::URI);
                 if mode == OpenMode::Normal {
                     this.bar.open_url("");
@@ -370,6 +377,7 @@ impl BrowserWindow {
             process_group: RefCell::new(None),
             app_id,
             mode: std::cell::Cell::new(mode),
+            nav_pending: std::cell::Cell::new(false),
             console: crate::console::Buffer::default(),
         });
 
@@ -488,6 +496,9 @@ impl BrowserWindow {
             let this = self.clone();
             webview.connect_load_changed(move |wv, event| match event {
                 webkit6::LoadEvent::Started => {
+                    // The requested navigation is now a real load;
+                    // is_loading covers it from here (see nav_pending).
+                    this.nav_pending.set(false);
                     this.clear_recovery_overlay();
                     let this = this.clone();
                     let wv = wv.clone();
@@ -928,6 +939,18 @@ impl BrowserWindow {
         self.webview.borrow().clone()
     }
 
+    /// Mark that a navigation was just requested on this window (see
+    /// the `nav_pending` field). Automation calls this around its own
+    /// `load_uri` so `wait_load` cannot answer in the request gap.
+    pub(crate) fn mark_nav_pending(&self) {
+        self.nav_pending.set(true);
+    }
+
+    /// True while a requested navigation has not yet Started.
+    pub(crate) fn nav_pending(&self) -> bool {
+        self.nav_pending.get()
+    }
+
     /// Scroll the page by `pages` half-viewports (negative = up). Runs
     /// in the page's JS world; a discarded window has no page and this
     /// is a no-op.
@@ -1121,6 +1144,7 @@ impl BrowserWindow {
     fn navigate(self: &Rc<Self>, input: &str) {
         self.restore();
         if let Some(webview) = self.live_webview() {
+            self.nav_pending.set(true);
             webview.load_uri(&crate::ipc_server::normalize_url(input.to_string()));
         }
     }
