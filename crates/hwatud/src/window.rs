@@ -137,6 +137,22 @@ fn feature_overrides() -> Vec<(String, bool)> {
         .unwrap_or_default()
 }
 
+/// Features hwatu flips away from the engine default. Env overrides
+/// (`HWATU_WEBKIT_FEATURES`) win over these, so
+/// `PropagateDamagingInformation:on` re-enables it for testing.
+///
+/// `PropagateDamagingInformation` (default on since WebKitGTK 2.52)
+/// makes the compositor upload only damaged regions. On some stacks
+/// the damage rects are wrong and stale/uninitialized buffer rows show
+/// through as horizontal black bars: observed here on fractional-scale
+/// Wayland (niri at 1.25) after animations moving fixed-position
+/// layers, and on Intel+NVIDIA hybrid laptops while scrolling (WebKit
+/// bugs 305560/305758 landed fixes upstream after 2.52 branched).
+/// Chromium-family browsers don't share this path, which is why the
+/// same pages look fine elsewhere. Trade a little GPU bandwidth for
+/// correct pixels until the fixes ship in a stable WebKitGTK.
+const BASELINE_FEATURE_OVERRIDES: &[(&str, bool)] = &[("PropagateDamagingInformation", false)];
+
 fn parse_feature_overrides(raw: &str) -> Vec<(String, bool)> {
     raw.split(',')
         .filter_map(|entry| {
@@ -189,17 +205,24 @@ fn apply_view_settings(view: &webkit6::WebView) {
         // unaffected.
         settings.set_enable_smooth_scrolling(true);
 
+        // Baseline feature flips (see BASELINE_FEATURE_OVERRIDES),
+        // then env overrides on top so HWATU_WEBKIT_FEATURES can
+        // re-enable anything hwatu turns off by default.
         let overrides = feature_overrides();
-        if !overrides.is_empty() {
-            if let Some(features) = webkit6::Settings::all_features() {
-                for i in 0..features.length() {
-                    let Some(feature) = features.get(i) else {
-                        continue;
-                    };
-                    let ident = feature.identifier().unwrap_or_default();
-                    if let Some((_, on)) = overrides.iter().find(|(name, _)| *name == ident) {
-                        settings.set_feature_enabled(&feature, *on);
-                    }
+        if let Some(features) = webkit6::Settings::all_features() {
+            for i in 0..features.length() {
+                let Some(feature) = features.get(i) else {
+                    continue;
+                };
+                let ident = feature.identifier().unwrap_or_default();
+                if let Some((_, on)) = BASELINE_FEATURE_OVERRIDES
+                    .iter()
+                    .find(|(name, _)| *name == ident)
+                {
+                    settings.set_feature_enabled(&feature, *on);
+                }
+                if let Some((_, on)) = overrides.iter().find(|(name, _)| *name == ident) {
+                    settings.set_feature_enabled(&feature, *on);
                 }
             }
         }
