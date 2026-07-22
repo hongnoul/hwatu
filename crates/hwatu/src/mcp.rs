@@ -271,6 +271,38 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
             wait: opt_bool(args, "wait").unwrap_or(false),
             timeout_ms,
         }),
+        "motion" => Ok(Request::Motion { id, timeout_ms }),
+        "seek" => {
+            let time_ms = opt_f64(args, "time_ms");
+            let progress = opt_f64(args, "progress");
+            let resume = opt_bool(args, "resume").unwrap_or(false);
+            if time_ms.is_none() && progress.is_none() && !resume {
+                return Err("seek needs `time_ms`, `progress`, or `resume`".into());
+            }
+            Ok(Request::Seek {
+                id,
+                time_ms,
+                progress,
+                resume,
+                timeout_ms,
+            })
+        }
+        "diff" => {
+            let other = opt_u64(args, "other");
+            let baseline = opt_str(args, "baseline");
+            if other.is_none() && baseline.is_none() {
+                return Err("diff needs `other` (window id) or `baseline` (PNG path)".into());
+            }
+            Ok(Request::Diff {
+                id: opt_u64(args, "id").ok_or("missing required argument: id")?,
+                other,
+                baseline,
+                tolerance: opt_u64(args, "tolerance").map(|v| v.min(255) as u8),
+                heatmap: opt_str(args, "heatmap"),
+                full: opt_bool(args, "full").unwrap_or(false),
+                timeout_ms,
+            })
+        }
         other => Err(format!("unknown tool: {other}")),
     }
 }
@@ -454,6 +486,44 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
             &[],
         ),
         tool(
+            "motion",
+            "Extract the page's motion spec as JSON: every CSS animation, \
+             transition, and Web-Animations-API animation (keyframes, \
+             durations, delays, easings), plus @keyframes rules from CSSOM. \
+             Motion as numbers instead of eyeballed frames.",
+            json!({ "id": prop("integer", ID_DESC) }),
+            &[],
+        ),
+        tool(
+            "seek",
+            "Freeze animation time for deterministic screenshots: pause every \
+             animation and set its currentTime. Give `time_ms` (absolute) or \
+             `progress` (0-1, proportional per animation); `resume` unpauses.",
+            json!({
+                "id": prop("integer", ID_DESC),
+                "time_ms": prop("number", "Absolute animation time in ms."),
+                "progress": prop("number", "Fractional progress 0.0-1.0 per animation."),
+                "resume": prop("boolean", "Unpause all animations instead."),
+            }),
+            &[],
+        ),
+        tool(
+            "diff",
+            "Perceptual pixel diff of a window against another window or a \
+             baseline PNG. Returns match percent and bounding boxes of the \
+             largest mismatched regions; optionally writes a heatmap PNG. The \
+             numeric score is a convergence signal for pixel-perfect work.",
+            json!({
+                "id": prop("integer", "First window id."),
+                "other": prop("integer", "Second window id to compare against."),
+                "baseline": prop("string", "Baseline PNG path (instead of `other`)."),
+                "tolerance": prop("integer", "Per-channel tolerance 0-255 before a pixel counts as different (default 8)."),
+                "heatmap": prop("string", "Write a mismatch heatmap PNG to this path."),
+                "full": prop("boolean", "Diff the full document instead of the viewport."),
+            }),
+            &["id"],
+        ),
+        tool(
             "focus",
             "Raise and focus a window, promoting headless/background windows to \
              normal: the human sees the agent's live session, cookies and all.",
@@ -568,6 +638,38 @@ mod tests {
     }
 
     #[test]
+    fn seek_requires_a_target_time() {
+        assert!(build_request("seek", &json!({})).is_err());
+        assert!(matches!(
+            build_request("seek", &json!({ "resume": true })),
+            Ok(Request::Seek { resume: true, .. })
+        ));
+        let Request::Seek { progress, .. } =
+            build_request("seek", &json!({ "progress": 0.25 })).unwrap()
+        else {
+            panic!("expected Seek");
+        };
+        assert_eq!(progress, Some(0.25));
+    }
+
+    #[test]
+    fn diff_requires_id_and_a_comparand() {
+        assert!(build_request("diff", &json!({ "id": 1 })).is_err());
+        assert!(build_request("diff", &json!({ "other": 2 })).is_err());
+        let Request::Diff {
+            id,
+            other,
+            tolerance,
+            ..
+        } = build_request("diff", &json!({ "id": 1, "other": 2, "tolerance": 400 })).unwrap()
+        else {
+            panic!("expected Diff");
+        };
+        assert_eq!((id, other), (1, Some(2)));
+        assert_eq!(tolerance, Some(255)); // clamped
+    }
+
+    #[test]
     fn every_tool_definition_maps_to_a_request() {
         // Guard against schema/dispatch drift: every advertised tool
         // must be buildable with minimal valid arguments.
@@ -585,6 +687,9 @@ mod tests {
             "wait_load": {},
             "upload": { "selector": "input", "path": "/tmp/x" },
             "challenge": {},
+            "motion": {},
+            "seek": { "progress": 0.5 },
+            "diff": { "id": 1, "other": 2 },
             "focus": { "id": 1 },
             "close": { "id": 1 },
         });
