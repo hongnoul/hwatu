@@ -28,6 +28,21 @@ fn discard_timeout_secs() -> u64 {
         .unwrap_or(120)
 }
 
+/// Viewport pushed into headless windows, `WIDTHxHEIGHT`. Override
+/// with HWATU_HEADLESS_SIZE. Defaults to a common desktop size so
+/// responsive pages render their desktop layout instead of tripping
+/// tablet breakpoints at 1024px.
+fn headless_size() -> (i32, i32) {
+    std::env::var("HWATU_HEADLESS_SIZE")
+        .ok()
+        .and_then(|v| {
+            let (w, h) = v.trim().split_once(['x', 'X'])?;
+            Some((w.trim().parse().ok()?, h.trim().parse().ok()?))
+        })
+        .filter(|&(w, h)| w > 0 && h > 0)
+        .unwrap_or((1920, 1080))
+}
+
 /// Page a bare `hwatu` opens, if the user configured one with
 /// HWATU_HOME (any URL, or `about:blank`). Unset means the built-in
 /// launcher page with the URL bar pre-opened.
@@ -303,8 +318,9 @@ impl BrowserWindow {
                 // without mapping, and a manual allocation pushes a real
                 // viewport into the web process.
                 gtk::prelude::WidgetExt::realize(&self.window);
+                let (w, h) = headless_size();
                 self.window
-                    .allocate(1024, 768, -1, None::<gtk::gsk::Transform>);
+                    .allocate(w, h, -1, None::<gtk::gsk::Transform>);
             }
         }
     }
@@ -984,8 +1000,9 @@ impl BrowserWindow {
             .unwrap_or(false);
         if collapsed {
             gtk::prelude::WidgetExt::realize(&self.window);
+            let (w, h) = headless_size();
             self.window
-                .allocate(1024, 768, -1, None::<gtk::gsk::Transform>);
+                .allocate(w, h, -1, None::<gtk::gsk::Transform>);
         }
     }
 
