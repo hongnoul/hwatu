@@ -19,6 +19,7 @@ python3 -m http.server 8322 --directory clone &
 REF=$(hwatu --headless --json http://localhost:8321/ | jq .id)
 CLONE=$(hwatu --headless --json http://localhost:8322/ | jq .id)
 hwatu wait-load --id $REF --timeout-ms 20000
+hwatu wait-load --id $CLONE          # diff a window only after it settles
 
 # 1. Measure: match % + worst regions + heatmap
 hwatu diff --id $CLONE --other $REF --heatmap /tmp/heat.png
@@ -32,7 +33,7 @@ hwatu shot --id $REF /tmp/ref-mid.png     # byte-identical on repeat
 hwatu seek --id $REF --resume
 
 # 4. Edit clone/index.html, then re-measure
-hwatu goto --id $CLONE http://localhost:8322/
+hwatu goto --id $CLONE http://localhost:8322/   # goto waits by default
 hwatu diff --id $CLONE --other $REF
 
 # 5. Hand off to a human at any point
