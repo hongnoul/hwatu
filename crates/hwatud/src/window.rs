@@ -49,6 +49,12 @@ struct SavedState {
     title: String,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RecoveryOverlay {
+    Loading,
+    Failure,
+}
+
 /// Where discarded session blobs live: `~/.cache/hwatu/discard`.
 /// Deliberately NOT `$XDG_RUNTIME_DIR`, which is tmpfs (RAM-backed) on
 /// every mainstream distro and would defeat the reclaim. Files are
@@ -93,6 +99,10 @@ pub struct BrowserWindow {
     /// from placeholder to live page never flashes blank. Dropped when
     /// the restored load commits (or on a timeout failsafe).
     veil: RefCell<Option<gtk::Widget>>,
+    /// Human-visible diagnostic overlay for cases that otherwise look
+    /// like a featureless gray WebKit surface: crashed processes,
+    /// network/load failures, or a page that stays blank while loading.
+    recovery: RefCell<Option<(gtk::Widget, RecoveryOverlay)>>,
     discard_timer: RefCell<Option<glib::SourceId>>,
     /// Marker shared between windows whose WebViews share one web
     /// process (popup ↔ opener, via `related_view`). `discard` must
@@ -355,6 +365,7 @@ impl BrowserWindow {
             webview: RefCell::new(None),
             saved: RefCell::new(None),
             veil: RefCell::new(None),
+            recovery: RefCell::new(None),
             discard_timer: RefCell::new(None),
             process_group: RefCell::new(None),
             app_id,
@@ -468,6 +479,41 @@ impl BrowserWindow {
             let daemon = self.daemon.clone();
             webview.connect_uri_notify(move |_| daemon.schedule_session_save());
         }
+        // A gray WebKit surface during a slow or wedged load used to look
+        // like hwatu itself had broken. Surface a low-priority overlay if
+        // the page is still blank after a short grace period, and clear it
+        // on commit/finish. Real load failures and crashes get stronger
+        // overlays below.
+        {
+            let this = self.clone();
+            webview.connect_load_changed(move |wv, event| match event {
+                webkit6::LoadEvent::Started => {
+                    this.clear_recovery_overlay();
+                    let this = this.clone();
+                    let wv = wv.clone();
+                    glib::timeout_add_local_once(std::time::Duration::from_secs(2), move || {
+                        if this.webview.borrow().as_ref() != Some(&wv) || !wv.is_loading() {
+                            return;
+                        }
+                        let title = wv.title().unwrap_or_default();
+                        if title.is_empty() {
+                            this.show_recovery_overlay(
+                                "Still loading",
+                                "If this stays gray, press Ctrl+r to reload or Ctrl+l to open a URL.",
+                                RecoveryOverlay::Loading,
+                            );
+                        }
+                    });
+                }
+                webkit6::LoadEvent::Committed => {
+                    this.clear_recovery_overlay();
+                }
+                webkit6::LoadEvent::Finished => {
+                    this.clear_loading_recovery_overlay();
+                }
+                _ => {}
+            });
+        }
         crate::downloads::wire_session(&self.daemon, &webview);
         // Permission requests (mic/cam/location/...) become bar
         // prompts; remembered decisions answer silently.
@@ -489,6 +535,15 @@ impl BrowserWindow {
         {
             let this = self.clone();
             webview.connect_load_failed_with_tls_errors(move |_, failing_uri, cert, flags| {
+                this.show_recovery_overlay(
+                    "TLS error",
+                    &format!(
+                        "{} ({})\nPress y in the bar to proceed for this session, or n/Esc to stop.",
+                        prompts::host_of(failing_uri),
+                        prompts::tls_reason(flags)
+                    ),
+                    RecoveryOverlay::Failure,
+                );
                 this.push_prompt(Prompt::Tls {
                     host: prompts::host_of(failing_uri),
                     failing_uri: failing_uri.to_string(),
@@ -496,6 +551,23 @@ impl BrowserWindow {
                     reason: prompts::tls_reason(flags).to_string(),
                 });
                 true // stop the default error page; the bar owns this
+            });
+        }
+        // Non-TLS load failures: replace mystery gray with a visible
+        // explanation and recovery keys. Returning false keeps WebKit's
+        // normal error handling if it has one; the overlay is just hwatu's
+        // persistent diagnostic layer.
+        {
+            let this = self.clone();
+            webview.connect_load_failed(move |_, _, failing_uri, error| {
+                this.show_recovery_overlay(
+                    "Page failed to load",
+                    &format!(
+                        "{failing_uri}\n{error}\nPress Ctrl+r to retry or Ctrl+l to open a new URL."
+                    ),
+                    RecoveryOverlay::Failure,
+                );
+                false
             });
         }
         // Crash containment: a dead web process (segfault, kernel OOM
@@ -517,6 +589,11 @@ impl BrowserWindow {
                     _ => "terminated unexpectedly",
                 };
                 eprintln!("hwatud: web process for window {} {reason}", this.id);
+                this.show_recovery_overlay(
+                    "Page crashed",
+                    &format!("The web process {reason}. Press y in the bar to reload, or Ctrl+l to open a URL."),
+                    RecoveryOverlay::Failure,
+                );
                 this.push_prompt(Prompt::Crash { reason });
             });
         }
@@ -742,6 +819,59 @@ impl BrowserWindow {
     fn drop_veil(&self) {
         if let Some(veil) = self.veil.borrow_mut().take() {
             self.overlay.remove_overlay(&veil);
+        }
+    }
+
+    fn show_recovery_overlay(&self, title: &str, detail: &str, kind: RecoveryOverlay) {
+        self.clear_recovery_overlay();
+        let panel = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .spacing(8)
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Center)
+            .css_classes(["hwatu-recovery"])
+            .build();
+        panel.append(
+            &gtk::Label::builder()
+                .label(title)
+                .css_classes(["title"])
+                .build(),
+        );
+        panel.append(
+            &gtk::Label::builder()
+                .label(detail)
+                .wrap(true)
+                .max_width_chars(72)
+                .justify(gtk::Justification::Center)
+                .css_classes(["detail"])
+                .build(),
+        );
+        panel.append(
+            &gtk::Label::builder()
+                .label("Recovery keys: Ctrl+r reload · Ctrl+l edit URL · Ctrl+w close")
+                .css_classes(["hint"])
+                .build(),
+        );
+
+        let widget: gtk::Widget = panel.upcast();
+        self.overlay.add_overlay(&widget);
+        self.recovery.replace(Some((widget, kind)));
+    }
+
+    fn clear_recovery_overlay(&self) {
+        if let Some((widget, _)) = self.recovery.borrow_mut().take() {
+            self.overlay.remove_overlay(&widget);
+        }
+    }
+
+    fn clear_loading_recovery_overlay(&self) {
+        let clear = self
+            .recovery
+            .borrow()
+            .as_ref()
+            .is_some_and(|(_, kind)| *kind == RecoveryOverlay::Loading);
+        if clear {
+            self.clear_recovery_overlay();
         }
     }
 

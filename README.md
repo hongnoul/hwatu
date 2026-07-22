@@ -193,8 +193,11 @@ Unfocused windows are suspended after `HWATU_DISCARD_SECS` (default
 120): navigation history is serialized to `~/.cache/hwatu/discard/`,
 the web process is killed, and the RAM comes back. Focusing the window
 restores it from the prewarm pool, so resume feels instant. If a page's
-web process crashes or is OOM-killed, the bar offers
-`page crashed, reload? [y/n]` instead of leaving a white window.
+web process crashes, is OOM-killed, fails to load, or sits blank long
+enough to look like a gray-screen hang, hwatu shows a centered recovery
+overlay with the cause and keys (`Ctrl+r` reload, `Ctrl+l` edit URL,
+`Ctrl+w` close); crash/TLS cases also get the y/n bar prompt when a
+session decision is possible.
 
 If the *daemon* dies uncleanly (crash, OOM kill, logout), the next
 `hwatud` reopens every window at its last URL: the open-window set is

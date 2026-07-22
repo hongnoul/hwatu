@@ -180,6 +180,26 @@ pub fn install_css() {
         .hwatu-bar label.prefix, .hwatu-bar label.status {
             color: #9a9a9a;
         }
+        .hwatu-recovery {
+            background-color: rgba(18, 18, 18, 0.88);
+            color: #e8e8e8;
+            border-radius: 12px;
+            padding: 20px 24px;
+            margin: 24px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+        }
+        .hwatu-recovery label.title {
+            font-size: 20px;
+            font-weight: 700;
+        }
+        .hwatu-recovery label.detail {
+            color: #d0d0d0;
+        }
+        .hwatu-recovery label.hint {
+            color: #9a9a9a;
+            font-family: monospace;
+            font-size: 12px;
+        }
     "#;
     let provider = gtk::CssProvider::new();
     provider.load_from_data(css);
