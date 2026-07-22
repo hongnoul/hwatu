@@ -28,9 +28,12 @@ machine the human is working on.
 - **No focus stealing.** `--background` maps a window without an
   activation request; `--headless` never maps one at all. The human
   keeps typing while the agent verifies. The CLI even defaults to
-  background when it detects a coding-agent environment (markers
+  headless when it detects a coding-agent environment (markers
   like `CLAUDECODE`, `JCODE_SOCKET`, `CURSOR_AGENT`), so a forgotten
-  flag does not cost the user their focus; `--focus` opts back in.
+  flag never puts a window in the user's WM; `--focus` opts back in,
+  and `HWATU_AGENT_MODE` / `"agent_mode"` in
+  `~/.config/hwatu/config.json` tune the agent default
+  (`normal` | `background` | `headless`).
 - **Human hand-off.** Every headless/background window is a live
   session. `hwatu focus <id>` promotes it to a normal window in the
   user's tiling WM: the human watches or takes over, then closes it.
