@@ -167,9 +167,16 @@ fn default_open_mode() -> OpenMode {
     ];
     // jcode tool subprocesses carry various JCODE_* vars (JCODE_SCRATCH_DIR,
     // JCODE_NON_INTERACTIVE, ...) but not always JCODE_SOCKET, so treat any
-    // JCODE_-prefixed var as an agent marker.
-    let from_jcode = std::env::vars_os()
-        .any(|(k, _)| k.to_str().map(|k| k.starts_with("JCODE_")).unwrap_or(false));
+    // JCODE_-prefixed var as an agent marker — except user-config knobs that
+    // people export session-wide from .profile/environment.d (those would
+    // make the whole desktop look like an agent and force every WM-keybind
+    // launch headless).
+    const JCODE_USER_CONFIG_VARS: &[&str] = &["JCODE_NO_AUTO_UPDATE", "JCODE_BING_API_KEY"];
+    let from_jcode = std::env::vars_os().any(|(k, _)| {
+        k.to_str()
+            .map(|k| k.starts_with("JCODE_") && !JCODE_USER_CONFIG_VARS.contains(&k))
+            .unwrap_or(false)
+    });
     if !from_jcode && !AGENT_MARKERS.iter().any(|k| std::env::var_os(k).is_some()) {
         return OpenMode::Normal;
     }
