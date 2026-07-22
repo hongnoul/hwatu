@@ -239,6 +239,108 @@ pub fn wait_load(daemon: &Rc<Daemon>, id: Option<u64>, timeout_ms: Option<u64>, 
     wire_load_finished(&view, move || reply.send(Response::window(win.info())));
 }
 
+/// Detect CAPTCHA / anti-bot challenge UI, and optionally wait for the
+/// human/user to clear it. This is intentionally detection-only: it does
+/// not call solver services, inject answer tokens, or alter browser
+/// fingerprints. The returned JSON is for agent orchestration: pause,
+/// present the window if needed, and resume after a manual solve.
+pub fn challenge(
+    daemon: &Rc<Daemon>,
+    id: Option<u64>,
+    wait: bool,
+    timeout_ms: Option<u64>,
+    reply: Reply,
+) {
+    let ms = timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS);
+    let js = if wait {
+        challenge_wait_js(ms)
+    } else {
+        challenge_detect_js()
+    };
+    eval(daemon, id, js, timeout_ms, reply);
+}
+
+fn challenge_wait_js(timeout_ms: u64) -> String {
+    format!(
+        r#"{detect}
+const started = Date.now();
+const timeoutMs = {timeout_ms};
+let current = detectHwatuChallenge();
+while (current.status === 'challenge' && (timeoutMs === 0 || Date.now() - started < timeoutMs)) {{
+  await new Promise(r => setTimeout(r, 500));
+  current = detectHwatuChallenge();
+}}
+current.elapsed_ms = Date.now() - started;
+if (current.status === 'challenge') {{
+  current.status = 'manual_required';
+  current.manual_required = true;
+  current.details = `challenge still present after ${{current.elapsed_ms}} ms; solve it in the browser, then retry or wait again`;
+}} else {{
+  current.status = 'cleared';
+  current.manual_required = false;
+  current.details = 'no challenge detected after waiting';
+}}
+return current;"#,
+        detect = challenge_detector_js(),
+        timeout_ms = timeout_ms,
+    )
+}
+
+fn challenge_detect_js() -> String {
+    format!(
+        "{}\nconst result = detectHwatuChallenge();\nresult.elapsed_ms = 0;\nreturn result;",
+        CHALLENGE_DETECTOR_JS
+    )
+}
+
+const CHALLENGE_DETECTOR_JS: &str = r#"
+function detectHwatuChallenge() {
+  const evidence = [];
+  const add = (kind, detail, weight) => evidence.push({ kind, detail: String(detail).slice(0, 160), weight });
+  const haystack = `${document.title || ''}\n${document.body ? document.body.innerText : ''}`.toLowerCase();
+  const textChecks = [
+    ['cloudflare', 'checking if the site connection is secure'],
+    ['cloudflare', 'verify you are human'],
+    ['generic', 'complete the security check'],
+    ['generic', 'prove you are human'],
+    ['generic', 'are you a robot'],
+  ];
+  for (const [kind, phrase] of textChecks) if (haystack.includes(phrase)) add(kind, phrase, 3);
+
+  const nodes = [...document.querySelectorAll('iframe, script, div, input, textarea')];
+  for (const el of nodes.slice(0, 400)) {
+    const tag = el.tagName.toLowerCase();
+    const attrs = ['src', 'title', 'name', 'id', 'class', 'data-sitekey', 'data-testid']
+      .map(a => el.getAttribute(a) || '').join(' ').toLowerCase();
+    if (!attrs) continue;
+    if (attrs.includes('turnstile')) add('turnstile', `${tag} ${attrs}`, 4);
+    if (attrs.includes('hcaptcha') || attrs.includes('h-captcha')) add('hcaptcha', `${tag} ${attrs}`, 4);
+    if (attrs.includes('recaptcha') || attrs.includes('g-recaptcha')) add('recaptcha', `${tag} ${attrs}`, 4);
+    if (attrs.includes('cf-challenge') || attrs.includes('challenge-platform')) add('cloudflare', `${tag} ${attrs}`, 4);
+  }
+
+  const weight = evidence.reduce((sum, e) => sum + e.weight, 0);
+  const firstStrong = evidence.find(e => e.weight >= 4) || evidence[0];
+  const challengeType = firstStrong ? firstStrong.kind : null;
+  const confidence = Math.max(0, Math.min(1, weight / 8));
+  const present = evidence.length > 0 && confidence >= 0.35;
+  return {
+    status: present ? 'challenge' : 'clear',
+    challenge_type: present ? challengeType : null,
+    confidence,
+    evidence: evidence.slice(0, 12),
+    actionable: present,
+    manual_required: present,
+    url: location.href,
+    title: document.title || '',
+  };
+}
+"#;
+
+fn challenge_detector_js() -> &'static str {
+    CHALLENGE_DETECTOR_JS
+}
+
 /// Call `done` once on the next `LoadEvent::Finished`, then disconnect.
 /// Finished fires for both successful and failed loads (WebKit follows
 /// load-failed with Finished), so callers always get an answer.
@@ -748,7 +850,7 @@ fn mime_from_extension(path: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::base64;
+    use super::{base64, challenge_detect_js, challenge_wait_js};
 
     #[test]
     fn base64_matches_rfc_vectors() {
@@ -759,5 +861,40 @@ mod tests {
         assert_eq!(base64(b"foob"), "Zm9vYg==");
         assert_eq!(base64(b"fooba"), "Zm9vYmE=");
         assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn challenge_detect_js_reports_structured_manual_state() {
+        let js = challenge_detect_js();
+        for field in [
+            "status",
+            "challenge_type",
+            "confidence",
+            "evidence",
+            "actionable",
+            "manual_required",
+            "elapsed_ms",
+        ] {
+            assert!(js.contains(field), "missing structured field {field}");
+        }
+        for signal in [
+            "turnstile",
+            "hcaptcha",
+            "recaptcha",
+            "checking if the site connection is secure",
+        ] {
+            assert!(js.contains(signal), "missing challenge signal {signal}");
+        }
+    }
+
+    #[test]
+    fn challenge_wait_js_times_out_to_manual_required_not_bypass() {
+        let js = challenge_wait_js(2500);
+        assert!(js.contains("const timeoutMs = 2500"));
+        assert!(js.contains("manual_required"));
+        assert!(js.contains("solve it in the browser"));
+        assert!(!js.contains("2captcha"));
+        assert!(!js.contains("anti-captcha"));
+        assert!(!js.contains("capsolver"));
     }
 }

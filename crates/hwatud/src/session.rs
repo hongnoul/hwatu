@@ -80,7 +80,10 @@ fn session_file() -> Option<PathBuf> {
         "session.json".to_string()
     } else {
         let socket = hwatu_ipc::socket_path();
-        format!("session-{:016x}.json", fnv1a(socket.to_string_lossy().as_bytes()))
+        format!(
+            "session-{:016x}.json",
+            fnv1a(socket.to_string_lossy().as_bytes())
+        )
     };
     Some(base.join("hwatu").join(name))
 }
@@ -299,7 +302,10 @@ mod tests {
         .unwrap();
         std::env::set_var("XDG_RUNTIME_DIR", &dir);
         assert!(take().is_empty());
-        assert!(path.exists(), "isolated daemon must not consume legacy snapshot");
+        assert!(
+            path.exists(),
+            "isolated daemon must not consume legacy snapshot"
+        );
         std::env::remove_var("XDG_RUNTIME_DIR");
         std::fs::remove_file(&path).unwrap();
 

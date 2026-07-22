@@ -94,6 +94,18 @@ pub enum Request {
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
+    /// Detect CAPTCHA / anti-bot challenge UI, and optionally wait for a
+    /// human to clear it. This does not solve or bypass the challenge; it
+    /// returns structured state so an agent can pause/resume safely.
+    Challenge {
+        #[serde(default)]
+        id: Option<u64>,
+        /// When true, poll until the challenge disappears or timeout fires.
+        #[serde(default)]
+        wait: bool,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
     /// Present (raise/focus) a window.
     Focus { id: u64 },
     /// Set a `<input type=file>`'s files from a path on disk. The

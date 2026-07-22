@@ -94,6 +94,13 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
         Request::WaitLoad { id, timeout_ms } => {
             return automation::wait_load(daemon, id, timeout_ms, reply);
         }
+        Request::Challenge {
+            id,
+            wait,
+            timeout_ms,
+        } => {
+            return automation::challenge(daemon, id, wait, timeout_ms, reply);
+        }
         Request::Upload {
             id,
             selector,
@@ -214,6 +221,7 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
         | Request::Navigate { .. }
         | Request::Screenshot { .. }
         | Request::WaitLoad { .. }
+        | Request::Challenge { .. }
         | Request::Upload { .. }
         | Request::Scroll { .. }
         | Request::Snapshot { .. }

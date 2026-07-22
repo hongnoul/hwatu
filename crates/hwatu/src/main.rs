@@ -187,12 +187,13 @@ fn config_agent_mode() -> Option<OpenMode> {
 }
 
 fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Request, String> {
-    // Flags (`--app-id`, `--id`, `--timeout-ms`, `--no-wait`) may
+    // Flags (`--app-id`, `--id`, `--timeout-ms`, `--no-wait`, `--wait`) may
     // appear anywhere relative to the subcommand/URL.
     let mut app_id: Option<String> = None;
     let mut id: Option<u64> = None;
     let mut timeout_ms: Option<u64> = None;
     let mut no_wait = false;
+    let mut wait = false;
     let mut full = false;
     let mut nth: Option<u32> = None;
     let mut contains: Option<String> = None;
@@ -237,6 +238,8 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             timeout_ms = Some(v.parse().map_err(|_| "usage: --timeout-ms=<ms>")?);
         } else if arg == "--no-wait" {
             no_wait = true;
+        } else if arg == "--wait" {
+            wait = true;
         } else if arg == "--full" {
             full = true;
         } else if arg == "--nth" {
@@ -354,6 +357,11 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             full,
         }),
         Some("wait-load") => Ok(Request::WaitLoad { id, timeout_ms }),
+        Some("challenge") | Some("detect-challenge") => Ok(Request::Challenge {
+            id,
+            wait,
+            timeout_ms,
+        }),
         Some("scroll") => {
             // hwatu scroll [--id <id>] [<selector> [nth]] | --to-y <px> | --by <pages>
             // Flags --nth/--contains/--to-y/--by were consumed above.
@@ -487,7 +495,8 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--foc
 \"agent_mode\" in ~/.config/hwatu/config.json to normal|background|headless) \
 | list [--json] | close <id> | focus <id> \
 | eval [--id <id>] [--timeout-ms <ms>] <js> | goto [--id <id>] [--no-wait] <url> \
-| shot [--id <id>] [--full] [path] | wait-load [--id <id>] | upload [--id <id>] <selector> <path> \
+    | shot [--id <id>] [--full] [path] | wait-load [--id <id>] | challenge [--id <id>] [--wait] \
+    | upload [--id <id>] <selector> <path> \
 | scroll [--id <id>] [<selector> [nth]] [--contains <text>] [--to-y <px>] [--by <pages>] \
 | snapshot [--id <id>] \
 | click [--id <id>] (<selector> [nth] [--contains <text>] | --ref <n>) \
@@ -677,6 +686,33 @@ mod tests {
         assert!(matches!(
             parse(&args(&["close", "3"])),
             Ok(Request::Close { id: 3 })
+        ));
+    }
+
+    #[test]
+    fn challenge_parses_detect_and_manual_wait() {
+        assert!(matches!(
+            parse(&args(&["challenge"])),
+            Ok(Request::Challenge {
+                id: None,
+                wait: false,
+                timeout_ms: None
+            })
+        ));
+        assert!(matches!(
+            parse(&args(&[
+                "detect-challenge",
+                "--id",
+                "7",
+                "--wait",
+                "--timeout-ms",
+                "2500"
+            ])),
+            Ok(Request::Challenge {
+                id: Some(7),
+                wait: true,
+                timeout_ms: Some(2500)
+            })
         ));
     }
 
