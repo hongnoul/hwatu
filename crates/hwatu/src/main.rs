@@ -98,6 +98,20 @@ fn main() {
             if let Some(v) = value {
                 // Eval results are machine-facing: always JSON.
                 println!("{v}");
+                // Ping is the version handshake: an old daemon serving
+                // a new client (or vice versa) is the root cause behind
+                // "feature X doesn't work" reports, so say it out loud.
+                if matches!(request, Request::Ping) {
+                    let daemon_build = v.get("build").and_then(|b| b.as_str()).unwrap_or("?");
+                    let client_build = env!("HWATU_GIT_HASH");
+                    if daemon_build != client_build {
+                        eprintln!(
+                            "hwatu: daemon build {daemon_build} != client build \
+                             {client_build}; restart the daemon to match: \
+                             hwatu quit && hwatu ping"
+                        );
+                    }
+                }
             } else if matches!(request, Request::Eval { .. }) {
                 // A null result serializes as `"value":null`, which
                 // deserializes to `None` here. Eval always answers, so
@@ -111,6 +125,17 @@ fn main() {
         }
         Ok(Response::Err { message }) => {
             eprintln!("hwatu: {message}");
+            // "unknown variant" means the running daemon predates this
+            // CLI's protocol: the classic stale-daemon failure after an
+            // upgrade. Name the fix instead of leaving agents guessing.
+            if message.contains("unknown variant") {
+                eprintln!(
+                    "hwatu: the running daemon is older than this client \
+                     (client build {}); restart it to pick up the new \
+                     protocol: hwatu quit && hwatu ping",
+                    env!("HWATU_GIT_HASH")
+                );
+            }
             std::process::exit(1);
         }
         Err(e) => {

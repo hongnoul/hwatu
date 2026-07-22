@@ -114,6 +114,24 @@ fn arm_timeout(reply: OnceReply, timeout_ms: Option<u64>, what: &'static str) {
     });
 }
 
+/// What a cross-document navigation during an eval means for the
+/// caller. The page committing a new document destroys the running
+/// script's JS context, so the eval can never resolve normally; the
+/// question is whether that navigation is a failure or the point.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum NavPolicy {
+    /// Navigation is an interruption (plain `eval`, `snapshot`,
+    /// `scroll`): reply with an error naming the destination, so the
+    /// agent re-targets the new document instead of reading `null`
+    /// or waiting out the full deadline.
+    Error,
+    /// Navigation is the expected outcome (`click` on a link, `type
+    /// --enter` submitting a form, `challenge --wait` where solving
+    /// reloads the page): wait for the load to finish, then reply
+    /// `{navigated: true, url}` as a success.
+    Success,
+}
+
 /// Run `js` in the page: as an *expression* when it parses as one (so
 /// `document.title` just works, the way every agent harness expects),
 /// else as an async *function body* (so `const x = ...; return x`
@@ -121,11 +139,29 @@ fn arm_timeout(reply: OnceReply, timeout_ms: Option<u64>, what: &'static str) {
 /// defines but never calls a function wrapping the expression, so
 /// user code runs exactly once regardless of form. A returned Promise
 /// is awaited by WebKit before the callback fires.
+///
+/// If the page navigates while the script runs (a click handler that
+/// follows a link, `location =`, a form submit), the document's JS
+/// context is destroyed and WebKit never fires the completion
+/// callback: without intervention the caller sees a silent `null` or
+/// a full deadline timeout. A load watcher resolves the reply per
+/// [`NavPolicy`] instead.
 pub fn eval(
     daemon: &Rc<Daemon>,
     id: Option<u64>,
     js: String,
     timeout_ms: Option<u64>,
+    reply: Reply,
+) {
+    eval_with(daemon, id, js, timeout_ms, NavPolicy::Error, reply)
+}
+
+pub fn eval_with(
+    daemon: &Rc<Daemon>,
+    id: Option<u64>,
+    js: String,
+    timeout_ms: Option<u64>,
+    nav: NavPolicy,
     reply: Reply,
 ) {
     let reply = OnceReply::new(reply);
@@ -150,6 +186,61 @@ pub fn eval(
             });
         }
     }
+
+    // Cross-document navigation destroys the JS context mid-eval.
+    // `Committed` is the moment the new document replaces the old one
+    // (same-document changes like pushState/hash never commit), so it
+    // is exactly when the pending completion callback becomes dead.
+    let nav_watch: Rc<RefCell<Option<glib::SignalHandlerId>>> = Rc::new(RefCell::new(None));
+    {
+        let reply = reply.clone();
+        let cancellable = cancellable.clone();
+        let nav_watch2 = nav_watch.clone();
+        let handler = view.connect_load_changed(move |view, event| {
+            if event != webkit6::LoadEvent::Committed {
+                return;
+            }
+            if let Some(id) = nav_watch2.borrow_mut().take() {
+                view.disconnect(id);
+            }
+            if reply.is_spent() {
+                return;
+            }
+            cancellable.cancel();
+            let uri = view.uri().map(|u| u.to_string()).unwrap_or_default();
+            match nav {
+                NavPolicy::Error => reply.send(Response::err(format!(
+                    "eval interrupted: the page navigated to {uri} while the script \
+                     was running, destroying its JS context. Wait for the load \
+                     (`hwatu wait-load`) and run the script against the new document."
+                ))),
+                NavPolicy::Success => {
+                    // The action triggered the navigation it was meant
+                    // to; hold the reply until the destination finishes
+                    // loading so a follow-up snapshot sees real content.
+                    let reply = reply.clone();
+                    wire_load_finished(view, move |view| {
+                        let url = view.uri().map(|u| u.to_string()).unwrap_or(uri);
+                        reply.send(Response::value(serde_json::json!({
+                            "navigated": true,
+                            "url": url,
+                        })));
+                    });
+                }
+            }
+        });
+        nav_watch.replace(Some(handler));
+    }
+    // Disconnect the watcher once the eval resolves by any path, so it
+    // cannot linger on the view and fire for unrelated future loads.
+    let unwire = {
+        let view = view.clone();
+        move || {
+            if let Some(id) = nav_watch.borrow_mut().take() {
+                view.disconnect(id);
+            }
+        }
+    };
 
     // Trailing semicolons are meaningless on an expression but would
     // break the `return ( ... )` wrapping; strip them for both the
@@ -178,13 +269,33 @@ pub fn eval(
                 None,
                 None,
                 Some(&cancellable2),
-                move |result| match result {
-                    Ok(value) => reply.send(Response::value(jsc_to_json(&value))),
-                    Err(e) => reply.send(Response::err(format!("eval failed: {e}"))),
+                move |result| {
+                    match result {
+                        Ok(value) => {
+                            unwire();
+                            reply.send(Response::value(jsc_to_json(&value)));
+                        }
+                        Err(e) => {
+                            // A cancelled eval means the timeout or the
+                            // nav watcher already owns the reply; do not
+                            // unwire, a Success-policy load may still be
+                            // waiting to resolve it.
+                            if !reply.is_spent() && nav_watch_untriggered(&e) {
+                                unwire();
+                                reply.send(Response::err(format!("eval failed: {e}")));
+                            }
+                        }
+                    }
                 },
             );
         },
     );
+}
+
+/// True when an eval error is a genuine script failure rather than
+/// the cancellation issued by the timeout / navigation watcher.
+fn nav_watch_untriggered(e: &glib::Error) -> bool {
+    !e.matches(gio::IOErrorEnum::Cancelled)
 }
 
 /// Navigate a window; with `wait`, reply only once the load finishes.
@@ -215,7 +326,7 @@ pub fn navigate(
     arm_timeout(reply.clone(), timeout_ms, "navigate");
     wire_load_finished(&view, {
         let reply = reply.clone();
-        move || reply.send(Response::window(win.info()))
+        move |_| reply.send(Response::window(win.info()))
     });
     view.load_uri(&url);
 }
@@ -236,7 +347,7 @@ pub fn wait_load(daemon: &Rc<Daemon>, id: Option<u64>, timeout_ms: Option<u64>, 
         return reply.send(Response::window(win.info()));
     }
     arm_timeout(reply.clone(), timeout_ms, "wait_load");
-    wire_load_finished(&view, move || reply.send(Response::window(win.info())));
+    wire_load_finished(&view, move |_| reply.send(Response::window(win.info())));
 }
 
 /// Detect CAPTCHA / anti-bot challenge UI, and optionally wait for the
@@ -257,7 +368,7 @@ pub fn challenge(
     } else {
         challenge_detect_js()
     };
-    eval(daemon, id, js, timeout_ms, reply);
+    eval_with(daemon, id, js, timeout_ms, NavPolicy::Success, reply);
 }
 
 fn challenge_wait_js(timeout_ms: u64) -> String {
@@ -344,7 +455,7 @@ fn challenge_detector_js() -> &'static str {
 /// Call `done` once on the next `LoadEvent::Finished`, then disconnect.
 /// Finished fires for both successful and failed loads (WebKit follows
 /// load-failed with Finished), so callers always get an answer.
-fn wire_load_finished(view: &webkit6::WebView, done: impl FnOnce() + 'static) {
+fn wire_load_finished(view: &webkit6::WebView, done: impl FnOnce(&webkit6::WebView) + 'static) {
     let done = RefCell::new(Some(done));
     let handler: Rc<RefCell<Option<glib::SignalHandlerId>>> = Rc::new(RefCell::new(None));
     let handler2 = handler.clone();
@@ -356,7 +467,7 @@ fn wire_load_finished(view: &webkit6::WebView, done: impl FnOnce() + 'static) {
             view.disconnect(id);
         }
         if let Some(done) = done.borrow_mut().take() {
-            done();
+            done(view);
         }
     });
     handler.replace(Some(id));
@@ -700,7 +811,7 @@ el.click ? el.click() : el.dispatchEvent(new MouseEvent('click', opts));
 await new Promise(r2 => setTimeout(r2, 0));
 return {{ clicked: matched, url: location.href }};"#
     );
-    eval(daemon, id, js, timeout_ms, reply);
+    eval_with(daemon, id, js, timeout_ms, NavPolicy::Success, reply);
 }
 
 /// Type into an input/textarea/select/contenteditable. Values go
@@ -765,7 +876,7 @@ return {{ typed: matched, value: String(value).slice(0, 200), url: location.href
         clear = clear,
         enter = enter,
     );
-    eval(daemon, id, js, timeout_ms, reply);
+    eval_with(daemon, id, js, timeout_ms, NavPolicy::Success, reply);
 }
 
 /// Read a window's console/error/network capture buffer. Synchronous

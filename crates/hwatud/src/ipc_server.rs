@@ -156,7 +156,14 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
     }
 
     let response = match req {
-        Request::Ping => Response::ok(),
+        // Ping doubles as the version handshake: the daemon reports
+        // the git commit and crate version it was built from, so the
+        // CLI (and agents) can detect a stale running daemon after an
+        // upgrade instead of hitting "unknown variant" errors blind.
+        Request::Ping => Response::value(serde_json::json!({
+            "build": env!("HWATU_GIT_HASH"),
+            "version": env!("CARGO_PKG_VERSION"),
+        })),
         Request::Console { id, clear, limit } => automation::console(daemon, id, clear, limit),
         Request::Open { url, app_id, mode } => {
             let url = url.map(normalize_url);
