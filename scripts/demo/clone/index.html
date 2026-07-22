@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stripe | Financial Infrastructure to Grow Your Revenue</title>
+<style>
+  /* Iteration-zero clone: deliberately imperfect. The demo agent's job is
+     to converge this toward the reference using hwatu diff/motion/seek. */
+  * { margin: 0; box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, sans-serif; color: #0a2540; background: #fff; }
+  header {
+    display: flex; align-items: center; gap: 32px;
+    padding: 14px 34px; position: sticky; top: 0; background: #fff;
+  }
+  .logo { font-weight: 700; font-size: 26px; letter-spacing: -0.5px; }
+  nav { display: flex; gap: 28px; flex: 1; }
+  nav a { color: #0a2540; text-decoration: none; font-size: 15px; font-weight: 500; }
+  .signin { color: #9aa5b1; font-size: 15px; }
+  .cta {
+    background: #5b4ee6; color: #fff; border: 0; border-radius: 20px;
+    padding: 10px 18px; font-size: 15px; font-weight: 500; cursor: pointer;
+    transition: background 200ms linear; /* wrong: ref uses cubic-bezier + 150ms */
+  }
+  .cta:hover { background: #4a3fd0; }
+  main { border-top: 1px solid #e6e9ee; }
+  .hero { padding: 66px 115px 56px; max-width: 940px; }
+  .kicker { font-size: 15px; font-weight: 600; margin-bottom: 28px; }
+  h1 {
+    font-size: 45px; line-height: 1.14; letter-spacing: -0.8px; font-weight: 600;
+    max-width: 700px;
+  }
+  h1 .sub { color: #4f6789; } /* slightly off: ref is closer to #425466 */
+  .buttons { display: flex; gap: 14px; margin-top: 44px; }
+  .btn-google {
+    background: #fff; border: 1px solid #cfd7df; color: #5b4ee6;
+    border-radius: 20px; padding: 10px 18px; font-size: 15px; font-weight: 500;
+    cursor: pointer;
+  }
+  .logos {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 28px 70px; border-top: 1px solid #e6e9ee; border-bottom: 1px solid #e6e9ee;
+    font-weight: 700; font-size: 22px; color: #222;
+  }
+  /* missing: NVIDIA + Ford + coinbase entries, and the animated section indicator */
+</style>
+</head>
+<body>
+<header>
+  <span class="logo">stripe</span>
+  <nav>
+    <a href="#">Products</a><a href="#">Solutions</a><a href="#">Developers</a>
+    <a href="#">Resources</a><a href="#">Pricing</a>
+  </nav>
+  <span class="signin">Sign in</span>
+  <button class="cta">Contact sales &rsaquo;</button>
+</header>
+<main>
+  <section class="hero">
+    <p class="kicker">Global GDP running on Stripe:</p>
+    <h1>Financial infrastructure to grow your revenue.
+      <span class="sub">Accept payments, offer financial services, and implement
+      custom revenue models&mdash;from your first transaction to your billionth.</span>
+    </h1>
+    <div class="buttons">
+      <button class="cta">Get started &rsaquo;</button>
+      <button class="btn-google">Sign up with Google</button>
+    </div>
+  </section>
+  <section class="logos">
+    <span>OpenAI</span><span>amazon</span><span>NVIDIA</span><span>Ford</span><span>coinbase</span><span>Google</span>
+  </section>
+</main>
+</body>
+</html>

@@ -1,0 +1,4 @@
+reference/
+clone/node_modules/
+/tmp-*
+*.png
