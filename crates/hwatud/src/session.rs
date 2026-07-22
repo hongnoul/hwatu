@@ -10,10 +10,12 @@
 //! - A clean `hwatu quit` deletes the file: intentional exits do not
 //!   restore. Anything else (crash, SIGKILL, compositor logout) leaves
 //!   the file behind, and the next `hwatud` reopens the windows.
-//! - Restored windows point at each page's last known URL. Scroll
-//!   position, form state, and per-tab history die with the web
-//!   process; a URL is what can honestly be brought back.
+//! - Restored windows point at each page's last known URL and reopen
+//!   in their original mode (normal/background); scroll position,
+//!   form state, and per-tab history die with the web process; a URL
+//!   is what can honestly be brought back.
 
+use hwatu_ipc::OpenMode;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -24,6 +26,13 @@ pub struct SessionEntry {
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub app_id: Option<String>,
+    /// How the window was opened. Restore must reopen with the same
+    /// mode: promoting an agent's background window to a focused
+    /// Normal one after a crash would steal the user's focus. Absent
+    /// in v1 files written before this field existed; those were all
+    /// effectively user windows, so Normal is the honest default.
+    #[serde(default)]
+    pub mode: OpenMode,
 }
 
 /// Versioned envelope so a future format change can migrate instead of
@@ -31,6 +40,15 @@ pub struct SessionEntry {
 #[derive(Debug, Serialize, Deserialize)]
 struct SessionFile {
     version: u32,
+    /// Socket path of the daemon that wrote the snapshot. A daemon on
+    /// a different socket (test harness, second instance with its own
+    /// XDG_RUNTIME_DIR) must not consume another daemon's crash
+    /// snapshot: doing so "restores" windows the original daemon still
+    /// owns, popping them onto the user's workspace. Absent in files
+    /// written before this field existed; those belonged to the
+    /// default daemon, so absence matches any reader.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    socket: Option<String>,
     windows: Vec<SessionEntry>,
 }
 
@@ -62,6 +80,7 @@ pub fn save(entries: &[SessionEntry]) {
     }
     let file = SessionFile {
         version: VERSION,
+        socket: Some(hwatu_ipc::socket_path().to_string_lossy().into_owned()),
         windows: entries.to_vec(),
     };
     let Ok(json) = serde_json::to_vec_pretty(&file) else {
@@ -83,14 +102,22 @@ pub fn take() -> Vec<SessionEntry> {
     let Ok(bytes) = std::fs::read(&path) else {
         return Vec::new();
     };
-    let _ = std::fs::remove_file(&path);
     match serde_json::from_slice::<SessionFile>(&bytes) {
-        Ok(file) if file.version == VERSION => file
-            .windows
-            .into_iter()
-            .filter(|w| !w.url.is_empty())
-            .collect(),
+        Ok(file) if file.version == VERSION => {
+            let ours = hwatu_ipc::socket_path().to_string_lossy().into_owned();
+            if file.socket.as_ref().is_some_and(|s| *s != ours) {
+                // Another daemon's snapshot (different socket). Leave
+                // the file for its owner; restore nothing here.
+                return Vec::new();
+            }
+            let _ = std::fs::remove_file(&path);
+            file.windows
+                .into_iter()
+                .filter(|w| !w.url.is_empty())
+                .collect()
+        }
         Ok(file) => {
+            let _ = std::fs::remove_file(&path);
             eprintln!(
                 "hwatud: session file version {} unsupported; ignoring",
                 file.version
@@ -98,6 +125,7 @@ pub fn take() -> Vec<SessionEntry> {
             Vec::new()
         }
         Err(e) => {
+            let _ = std::fs::remove_file(&path);
             eprintln!("hwatud: unreadable session file ({e}); ignoring");
             Vec::new()
         }
@@ -133,11 +161,13 @@ mod tests {
                 url: "https://example.com/".into(),
                 title: "Example".into(),
                 app_id: Some("mail".into()),
+                mode: OpenMode::Normal,
             },
             SessionEntry {
                 url: "https://rust-lang.org/".into(),
                 title: String::new(),
                 app_id: None,
+                mode: OpenMode::Background,
             },
         ];
         save(&entries);
@@ -145,7 +175,22 @@ mod tests {
         assert_eq!(restored.len(), 2);
         assert_eq!(restored[0].url, "https://example.com/");
         assert_eq!(restored[0].app_id.as_deref(), Some("mail"));
+        assert_eq!(restored[0].mode, OpenMode::Normal);
         assert_eq!(restored[1].url, "https://rust-lang.org/");
+        // Modes round-trip: a background window must not be promoted
+        // to a focused Normal window by a crash restore.
+        assert_eq!(restored[1].mode, OpenMode::Background);
+
+        // A pre-mode v1 file (no "mode" field) defaults to Normal.
+        let path = dir.join("hwatu").join("session.json");
+        std::fs::write(
+            &path,
+            br#"{"version": 1, "windows": [{"url": "https://old.example/"}]}"#,
+        )
+        .unwrap();
+        let legacy = take();
+        assert_eq!(legacy.len(), 1);
+        assert_eq!(legacy[0].mode, OpenMode::Normal);
 
         // take() consumes: a second call restores nothing (no loops on
         // a session that crashes the daemon during restore).
@@ -156,17 +201,38 @@ mod tests {
             url: String::new(),
             title: "blank".into(),
             app_id: None,
+            mode: OpenMode::Normal,
         }]);
         assert!(take().is_empty());
 
         // A corrupt file is ignored, not fatal.
-        let path = dir.join("hwatu").join("session.json");
         std::fs::write(&path, b"not json").unwrap();
         assert!(take().is_empty());
 
         // A future version is ignored, not misparsed.
         std::fs::write(&path, br#"{"version": 999, "windows": []}"#).unwrap();
         assert!(take().is_empty());
+
+        // Another daemon's snapshot (different socket) is left alone:
+        // consuming it would "restore" windows that daemon still owns.
+        std::fs::write(
+            &path,
+            br#"{"version": 1, "socket": "/somewhere/else/hwatu.sock",
+                 "windows": [{"url": "https://foreign.example/"}]}"#,
+        )
+        .unwrap();
+        assert!(take().is_empty());
+        assert!(path.exists(), "foreign snapshot must not be consumed");
+        std::fs::remove_file(&path).unwrap();
+
+        // A pre-socket file (no "socket" field) belongs to the default
+        // daemon and is restored by any reader.
+        std::fs::write(
+            &path,
+            br#"{"version": 1, "windows": [{"url": "https://presocket.example/"}]}"#,
+        )
+        .unwrap();
+        assert_eq!(take().len(), 1);
 
         // clear() removes the file.
         save(&entries);

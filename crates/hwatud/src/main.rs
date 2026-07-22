@@ -134,6 +134,7 @@ impl Daemon {
                     url: w.url,
                     title: w.title,
                     app_id: w.app_id,
+                    mode: w.mode,
                 })
                 .collect()
         };
@@ -208,7 +209,10 @@ fn main() -> glib::ExitCode {
                 leftovers.len()
             );
             for entry in leftovers {
-                BrowserWindow::open(&daemon, Some(entry.url), entry.app_id, OpenMode::Normal);
+                // Reopen in the saved mode: a background window (agent
+                // verification, WM-rule-hidden) must not come back as a
+                // focused Normal window after a crash.
+                BrowserWindow::open(&daemon, Some(entry.url), entry.app_id, entry.mode);
             }
         }
         println!(
