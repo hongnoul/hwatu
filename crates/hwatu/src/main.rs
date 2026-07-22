@@ -126,9 +126,11 @@ fn parse(args: &[String]) -> Result<Request, String> {
 
 /// Coding agents mark their subprocess environment; a human's shell or
 /// WM keybind has none of these. Opens from an agent default to
-/// `Background` so verification flows never steal the user's focus,
-/// while human entries keep Normal. Explicit flags always win, and
-/// `--focus` opts an agent back into Normal deliberately.
+/// `Headless` so verification flows never appear in the WM at all,
+/// while human entries keep Normal. Explicit flags always win
+/// (`--focus` opts an agent back into Normal deliberately), and the
+/// agent default is configurable: `HWATU_AGENT_MODE` env, then
+/// `agent_mode` in `~/.config/hwatu/config.json`, then headless.
 fn default_open_mode() -> OpenMode {
     const AGENT_MARKERS: &[&str] = &[
         "JCODE_SOCKET",  // jcode
@@ -139,11 +141,47 @@ fn default_open_mode() -> OpenMode {
         "OPENCODE",      // opencode
         "GEMINI_CLI",    // Gemini CLI
     ];
-    if AGENT_MARKERS.iter().any(|k| std::env::var_os(k).is_some()) {
-        OpenMode::Background
-    } else {
-        OpenMode::Normal
+    if !AGENT_MARKERS.iter().any(|k| std::env::var_os(k).is_some()) {
+        return OpenMode::Normal;
     }
+    if let Ok(v) = std::env::var("HWATU_AGENT_MODE") {
+        if let Some(mode) = parse_open_mode(&v) {
+            return mode;
+        }
+        eprintln!("hwatu: ignoring invalid HWATU_AGENT_MODE={v:?} (want normal|background|headless)");
+    }
+    config_agent_mode().unwrap_or(OpenMode::Headless)
+}
+
+/// Parse a user-facing mode name. `focus` is accepted as an alias for
+/// `normal` to match the `--focus` flag.
+fn parse_open_mode(value: &str) -> Option<OpenMode> {
+    match value.trim() {
+        "normal" | "focus" => Some(OpenMode::Normal),
+        "background" => Some(OpenMode::Background),
+        "headless" => Some(OpenMode::Headless),
+        _ => None,
+    }
+}
+
+/// `agent_mode` from `~/.config/hwatu/config.json` (the same file the
+/// daemon uses for adblock state). Absent/invalid values fall through
+/// to the built-in headless default.
+fn config_agent_mode() -> Option<OpenMode> {
+    let base = std::env::var("XDG_CONFIG_HOME")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var("HOME")
+                .ok()
+                .map(|h| std::path::PathBuf::from(h).join(".config"))
+        })?;
+    let raw = std::fs::read_to_string(base.join("hwatu").join("config.json")).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    json.get("agent_mode")
+        .and_then(|v| v.as_str())
+        .and_then(parse_open_mode)
 }
 
 fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Request, String> {
@@ -248,6 +286,18 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             mode = OpenMode::Headless;
         } else if arg == "--focus" {
             mode = OpenMode::Normal;
+        } else if arg.starts_with("--") {
+            // An unknown flag must not fall through to the URL/search
+            // path: `hwatu --version` used to open a web search for
+            // "--version" in a visible window. Free-text tails (eval
+            // JS, typed text) may legitimately contain `--tokens`, so
+            // only those subcommands keep collecting them.
+            let free_text_tail = matches!(rest.first().map(|s| s.as_str()), Some("eval") | Some("type"));
+            if free_text_tail {
+                rest.push(arg);
+            } else {
+                return Err(format!("unknown flag {arg:?}\n{USAGE}"));
+            }
         } else {
             rest.push(arg);
         }
@@ -428,7 +478,8 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
 }
 
 const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--focus] [url] \
-(agent environments default to --background) \
+(agent environments default to --headless; set HWATU_AGENT_MODE or \
+\"agent_mode\" in ~/.config/hwatu/config.json to normal|background|headless) \
 | list [--json] | close <id> | focus <id> \
 | eval [--id <id>] [--timeout-ms <ms>] <js> | goto [--id <id>] [--no-wait] <url> \
 | shot [--id <id>] [--full] [path] | wait-load [--id <id>] | upload [--id <id>] <selector> <path> \
@@ -487,19 +538,57 @@ mod tests {
     }
 
     #[test]
-    fn agent_default_is_background_and_focus_overrides() {
+    fn agent_default_applies_and_focus_overrides() {
         let Ok(Request::Open { mode, .. }) =
-            parse_with_default_mode(&args(&["example.com"]), OpenMode::Background)
+            parse_with_default_mode(&args(&["example.com"]), OpenMode::Headless)
         else {
             panic!("expected Open");
         };
-        assert_eq!(mode, OpenMode::Background);
+        assert_eq!(mode, OpenMode::Headless);
         let Ok(Request::Open { mode, .. }) =
-            parse_with_default_mode(&args(&["--focus", "example.com"]), OpenMode::Background)
+            parse_with_default_mode(&args(&["--focus", "example.com"]), OpenMode::Headless)
         else {
             panic!("expected Open");
         };
         assert_eq!(mode, OpenMode::Normal);
+    }
+
+    #[test]
+    fn mode_names_parse() {
+        use super::parse_open_mode;
+        assert_eq!(parse_open_mode("normal"), Some(OpenMode::Normal));
+        assert_eq!(parse_open_mode("focus"), Some(OpenMode::Normal));
+        assert_eq!(parse_open_mode("background"), Some(OpenMode::Background));
+        assert_eq!(parse_open_mode(" headless "), Some(OpenMode::Headless));
+        assert_eq!(parse_open_mode("visible"), None);
+        assert_eq!(parse_open_mode(""), None);
+    }
+
+    /// `hwatu --version` (or any typo'd flag) must error out, not open
+    /// a visible window searching the web for the flag text.
+    #[test]
+    fn unknown_flag_is_rejected_not_searched() {
+        let err = parse(&args(&["--version"])).unwrap_err();
+        assert!(err.contains("unknown flag"), "got: {err}");
+        let err = parse(&args(&["--headles", "example.com"])).unwrap_err();
+        assert!(err.contains("unknown flag"), "got: {err}");
+    }
+
+    /// Eval JS and typed text may legitimately contain `--tokens`.
+    #[test]
+    fn eval_and_type_keep_double_dash_tokens() {
+        let Ok(Request::Eval { js, .. }) =
+            parse(&args(&["eval", "return", "'--version'"]))
+        else {
+            panic!("expected Eval");
+        };
+        assert!(js.contains("--version"));
+        let Ok(Request::Type { text, .. }) =
+            parse(&args(&["type", "input", "--verbose", "output"]))
+        else {
+            panic!("expected Type");
+        };
+        assert_eq!(text, "--verbose output");
     }
 
     #[test]

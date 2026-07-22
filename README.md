@@ -120,13 +120,18 @@ A `--headless` window is a live session the WM never sees: an agent
 can drive and screenshot it, and `hwatu focus <id>` later materializes
 that exact session as a normal window for the human to inspect.
 
-Agents get `--background` without asking for it: when `hwatu` runs
+Agents get `--headless` without asking for it: when `hwatu` runs
 inside a coding-agent environment (detected by markers like
 `CLAUDECODE`, `JCODE_SOCKET`, `CURSOR_AGENT`), opens default to
-background so a verification flow never steals the human's focus.
+headless so a verification flow never appears in the WM at all.
 Human entries (shells, WM keybinds) keep the normal focused open, and
 an agent can pass `--focus` to deliberately show the user a window.
-Because most tilers focus new windows regardless, the installer offers
+The agent default is configurable: set `HWATU_AGENT_MODE` or
+`"agent_mode": "normal" | "background" | "headless"` in
+`~/.config/hwatu/config.json` (e.g. `background` for users who want
+verification windows visible-but-unfocused in their tiler).
+For the background mode, because most tilers focus new windows
+regardless, the installer offers
 (default yes) to add a no-initial-focus rule for app-id
 `hwatu-background` to your niri/Hyprland/sway config; preseed
 `HWATU_WM_RULE=no` to skip.

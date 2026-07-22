@@ -67,13 +67,20 @@ impl Default for Adblock {
 struct Config {
     #[serde(default = "default_true")]
     adblock: bool,
+    /// Keys owned by other components (e.g. the client's `agent_mode`)
+    /// must survive an adblock toggle's read-modify-write.
+    #[serde(flatten)]
+    extra: serde_json::Map<String, serde_json::Value>,
 }
 
 /// On by default: derive(Default) would give `false` when no config
 /// file exists yet, silently shipping adblock disabled.
 impl Default for Config {
     fn default() -> Self {
-        Self { adblock: true }
+        Self {
+            adblock: true,
+            extra: serde_json::Map::new(),
+        }
     }
 }
 
