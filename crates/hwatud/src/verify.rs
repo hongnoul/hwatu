@@ -324,7 +324,7 @@ fn mismatch_regions(diff: &DiffResult) -> Vec<serde_json::Value> {
         }
         regions.push((x0, y0, x1, y1, count));
     }
-    regions.sort_by(|a, b| b.4.cmp(&a.4));
+    regions.sort_by_key(|r| std::cmp::Reverse(r.4));
     regions
         .into_iter()
         .take(MAX_REGIONS)
