@@ -2,6 +2,14 @@
 
 > Daemon-based WebKitGTK browser for tiling WMs: real rendering, ~13ms median window spawn
 
+Current agent-facing features include headless/background windows,
+snapshot/click/type/console automation, file upload, full-page
+screenshots, and safe CAPTCHA/anti-bot challenge hand-off via
+`hwatu challenge` / `hwatu challenge --wait` for manual user
+resolution. hwatu detects and waits for challenges; it does not provide
+automatic CAPTCHA bypass, solver API integration, token injection, or
+fingerprint stealth.
+
 A daemon-based web browser for tiling window managers. Real WebKit rendering,
 terminal-emulator spawn times.
 

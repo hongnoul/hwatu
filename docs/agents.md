@@ -67,6 +67,8 @@ hwatu click a --contains "Sign in"  # real pointer-event click
 hwatu click --ref 4                 # click interactable #4 from the snapshot
 hwatu type 'input[name=q]' hi --enter   # fill and submit
 hwatu console                       # console.*, exceptions, failed requests
+hwatu challenge                     # detect CAPTCHA / anti-bot UI, as JSON
+hwatu challenge --wait --timeout-ms 30000  # wait while the user clears it
 hwatu shot /tmp/check.png           # PNG of the rendered viewport
 hwatu shot --full /tmp/page.png     # PNG of the whole document
 hwatu scroll h2 --contains Pricing  # scroll into view, reports what it hit
@@ -88,6 +90,7 @@ hwatu close 3
 | `navigate` | `id?`, `url`, `wait?`, `timeout_ms?` | navigate, optionally wait for the load |
 | `screenshot` | `id?`, `path?`, `full?` | PNG of the viewport (`full: true` = whole document), returns the file path |
 | `wait_load` | `id?`, `timeout_ms?` | block until loading settles |
+| `challenge` | `id?`, `wait?`, `timeout_ms?` | detect CAPTCHA/anti-bot UI; optionally wait for manual/user resolution |
 | `scroll` | `id?`, `selector?`, `nth?`, `contains?`, `to_y?`, `by_pages?` | scroll and report where it landed |
 | `snapshot` | `id?` | token-cheap page state: url, title, text, indexed interactables |
 | `click` | `id?`, `selector?`, `nth?`, `contains?`, `ref?` | click an element (real pointer events), reports what it hit |
@@ -102,6 +105,37 @@ the only window. So `open` → `eval` → `shot` chains never need an id.
 Only genuine ambiguity (several windows, none focused, none driven
 yet) is an error: an agent driving the wrong window is worse than a
 retry.
+
+### Challenge hand-off
+
+`hwatu challenge` detects common CAPTCHA and anti-bot surfaces and
+returns structured JSON for an agent workflow:
+
+```sh
+hwatu challenge
+{"status":"challenge","challenge_type":"turnstile","confidence":0.5,
+ "evidence":[{"kind":"turnstile","detail":"iframe ...","weight":4}],
+ "actionable":true,"manual_required":true,"elapsed_ms":0,
+ "url":"https://example.com/","title":"Just a moment..."}
+```
+
+With `--wait`, hwatu polls until the challenge disappears or the
+timeout expires:
+
+```sh
+id=$(hwatu --headless --json https://example.com | jq .id)
+hwatu challenge --id "$id" --wait --timeout-ms 60000
+```
+
+If the page needs a human, the agent can `hwatu focus $id`, tell the
+user what to solve, and call `challenge --wait` again or continue once
+the returned status is `cleared`. This keeps the same live window and
+cookies, so the assigned workflow can resume after the manual step.
+
+This command is detection and hand-off only. It does not solve
+CAPTCHAs automatically, call third-party solver APIs, inject challenge
+response tokens, change browser fingerprints, or bypass access
+controls.
 
 ### Eval semantics
 

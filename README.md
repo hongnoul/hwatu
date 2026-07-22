@@ -109,6 +109,8 @@ hwatu shot /tmp/page.png                    # screenshot the viewport (PNG)
 hwatu shot --full /tmp/page.png             # screenshot the whole document
 hwatu scroll h2 --contains Pricing          # scroll an element into view
 hwatu wait-load                             # block until the current load settles
+hwatu challenge                             # detect CAPTCHA / anti-bot UI, as JSON
+hwatu challenge --wait --timeout-ms 30000   # wait while the user clears it manually
 hwatu upload 'input[type=file]' ./pic.png   # set a file input's files from disk
 hwatu focus 2                               # raise/focus window 2 (materializes
                                             # background/headless windows)
@@ -121,6 +123,17 @@ JSON. Without `--id`, commands target the focused window, the window
 your last automation command touched, or the only window. Everything
 is one JSON request over the Unix socket
 (`$XDG_RUNTIME_DIR/hwatu.sock`), so any language can drive it directly.
+
+`challenge` is for workflow hand-off, not bypass. It detects common
+CAPTCHA and anti-bot surfaces (Turnstile, reCAPTCHA, hCaptcha,
+Cloudflare-style interstitial text) and returns JSON with `status`,
+`challenge_type`, `confidence`, `evidence`, `actionable`,
+`manual_required`, and `elapsed_ms`. With `--wait`, hwatu polls until
+the challenge disappears or `--timeout-ms` expires, so an agent can
+focus/materialize the window, let the human solve it, then continue the
+same assigned workflow. hwatu does not solve CAPTCHAs automatically,
+call solver APIs, inject challenge tokens, or perform fingerprint
+stealth.
 
 A `--headless` window is a live session the WM never sees: an agent
 can drive and screenshot it, and `hwatu focus <id>` later materializes
@@ -307,6 +320,7 @@ Crates:
 - [x] Text/a11y page snapshot (`hwatu snapshot`): token-cheap page state for agents
 - [x] First-class interaction: `hwatu click` / `hwatu type` (selector or snapshot ref)
 - [x] Console + network capture for verification loops (`hwatu console`)
+- [x] Challenge detection + manual wait/resume (`hwatu challenge --wait`)
 - [ ] Link hints
 - [ ] Profiles (separate cookie jars / web contexts); per-agent isolation
 - [ ] Displayless operation (nested headless compositor) for CI
