@@ -4,12 +4,18 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![CI](https://github.com/hongnoul/hwatu/actions/workflows/ci.yml/badge.svg)](https://github.com/hongnoul/hwatu/actions/workflows/ci.yml)
 
-A daemon-based web browser for tiling window managers. Real WebKit rendering,
-terminal-emulator spawn times.
+A daemon-based WebKit browser built for AI coding agents: visual
+verification with real rendering at terminal-emulator spawn times.
+Opening, driving, screenshotting, and closing a rendered page costs
+milliseconds, so an agent can check its work dozens of times an hour
+on the machine you are working on.
 
-hwatu treats the browser window as a resource that other programs manage.
-For humans, that program is your tiling WM. For coding agents, it's the
-agent harness: see [docs/agents.md](docs/agents.md).
+hwatu treats the browser window as a resource that other programs
+manage. For coding agents, that program is the agent harness
+([docs/agents.md](docs/agents.md)); for the human the agent hands off
+to, it's your tiling WM. hwatu is AI-first by design: the human side
+exists so an agent can say "come look at this" and materialize its
+live session in your WM ([roadmap](docs/roadmap.md)).
 
 ![hwatu spawning windows in ~48ms from a warm daemon](docs/assets/spawn-demo.svg)
 
@@ -46,9 +52,27 @@ loading window on a warm daemon; `--background` and `--headless` land at
 16 ms and 14 ms medians. The first-ever window pays a one-time engine/GPU
 init (~200-400 ms). Full data and methodology: [docs/benchmarks.md](docs/benchmarks.md).
 
+## hwatu vs Playwright, chrome-devtools-mcp
+
+For the agent verification loop, the incumbents pay for generality:
+
+| | hwatu | headless Chrome + Playwright | chrome-devtools-mcp |
+|---|---|---|---|
+| Spawn per check | 13-16 ms (warm daemon) | seconds | seconds |
+| Memory | one shared engine, ~56 MB/window | hundreds of MB per context | a full Chrome |
+| Headed↔headless | per window, switchable live | fixed at launch | fixed at launch |
+| Human hand-off | `hwatu focus <id>`: same session, real window | none | none |
+| Protocol | 1-line JSON over a Unix socket | CDP / Playwright API | MCP over CDP |
+| Best at | dev-loop verification | cross-browser E2E, CI | DevTools introspection |
+
+Engine caveat: hwatu renders with WebKit; end users mostly run
+Chromium. For "did my change render, is the text right, did the
+request fire" this is irrelevant. Keep a Playwright matrix in CI for
+engine-specific bugs.
+
 ## hwatu vs surf, qutebrowser, luakit
 
-If you want a minimal browser for a tiling window manager (Hyprland, sway, i3,
+As a minimal human browser for a tiling WM (Hyprland, sway, i3,
 river), the usual suspects trade differently:
 
 | | hwatu | surf | qutebrowser | luakit |
@@ -59,8 +83,17 @@ river), the usual suspects trade differently:
 | Keyboard-driven UI | your WM's binds | patches | first-class vim binds | lua config |
 | Memory model | one shared engine, N views | one process per window | one big process | one process |
 
+Be aware of the scope, though: hwatu's human UI is deliberately kept
+at "receive an agent hand-off, browse a bit, close" quality. If you
+want link hints, per-site zoom memory, password-manager integration,
+or URL history completion, qutebrowser is the better daily driver;
+those are explicit non-goals here ([roadmap](docs/roadmap.md)).
+
 ## Philosophy
 
+- **Agent-first.** The primary user opens windows over a socket and
+  reads pages as JSON. The human UI serves the hand-off, not the
+  other way around.
 - **No tabs.** A tab is a window. Your tiling WM is the tab manager.
 - **No chrome.** The WebView is the whole window.
 - **Real rendering.** Full WebKit: JS, CSS, media, WebGL, as the frontend
@@ -85,11 +118,11 @@ hwatu update               # self-update to the latest release
 hwatu quit                 # stop the daemon
 ```
 
-### Automation (for coding agents)
+### Automation (the main event)
 
 The daemon speaks a small automation protocol, built for AI coding
 agents (jcode has a native hwatu backend) and scripts that need to
-verify web UIs. A full verification pass (open headless, wait for
+verify web UIs. This is hwatu's primary use case. A full verification pass (open headless, wait for
 load, eval, screenshot, close) measures **216 ms median**, ~75 ms
 without the screenshot ([docs/benchmarks.md](docs/benchmarks.md)).
 Full guide: [docs/agents.md](docs/agents.md).
@@ -324,6 +357,14 @@ Crates:
 - [x] First-class interaction: `hwatu click` / `hwatu type` (selector or snapshot ref)
 - [x] Console + network capture for verification loops (`hwatu console`)
 - [x] Challenge detection + manual wait/resume (`hwatu challenge --wait`)
-- [ ] Link hints
+- [ ] MCP server (`hwatu mcp`, stdio transport) so any harness can adopt hwatu
+- [ ] Published head-to-head benchmark vs Playwright / chrome-devtools-mcp
+- [ ] Snapshot diffing (`snapshot --diff`): only what changed, fewer tokens
+- [ ] Assertion primitives (`hwatu expect`, `shot --diff baseline.png`)
 - [ ] Profiles (separate cookie jars / web contexts); per-agent isolation
 - [ ] Displayless operation (nested headless compositor) for CI
+- [ ] Generalized human hand-off (agent flags "needs human" with a reason)
+
+The full plan of record, including what is deliberately *not* built
+(link hints, history, sync, extensions), lives in
+[docs/roadmap.md](docs/roadmap.md).

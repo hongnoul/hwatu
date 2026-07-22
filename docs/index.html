@@ -5,13 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
-      content="hwatu is a daemon-based web browser for tiling window managers. Real WebKit rendering, terminal-emulator spawn times."
+      content="hwatu is a visual verification browser for AI coding agents: daemon-based WebKitGTK, real rendering, ~13ms window spawn, built for tiling WMs and human hand-off."
     />
     <link rel="canonical" href="https://hongnoul.github.io/hwatu/" />
     <meta property="og:title" content="hwatu" />
     <meta
       property="og:description"
-      content="A daemon-based web browser for tiling window managers."
+      content="Visual verification browser for AI coding agents."
     />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://hongnoul.github.io/hwatu/" />
@@ -216,8 +216,9 @@
         />
         <h1>hwatu</h1>
         <p class="tagline">
-          A daemon-based web browser for tiling window managers.<br />
-          Real WebKit rendering, terminal-emulator spawn times.
+          A browser built for AI coding agents.<br />
+          Real WebKit rendering, terminal-emulator spawn times, human
+          hand-off into your tiling WM.
         </p>
         <div class="install">
           <code id="install-cmd"
@@ -294,10 +295,43 @@
       </section>
 
       <section>
+        <h2>For coding agents</h2>
+        <p>
+          This is the primary use case. The daemon is a verification
+          harness for AI coding agents: real WebKit, 14 ms headless
+          windows, a 216 ms open→wait→eval→screenshot→close loop, one
+          JSON protocol over the Unix socket. Full guide:
+          <a href="https://github.com/hongnoul/hwatu/blob/main/docs/agents.md"
+            >docs/agents.md</a
+          >; plan of record:
+          <a href="https://github.com/hongnoul/hwatu/blob/main/docs/roadmap.md"
+            >docs/roadmap.md</a
+          >.
+        </p>
+        <pre><code>hwatu --headless localhost:3000    # live session, no window at all
+hwatu --background localhost:3000  # window mapped, focus stays put
+hwatu eval 'document.title'        # run JS in the page, JSON out
+hwatu goto /checkout               # navigate + wait for the load
+hwatu shot /tmp/page.png           # screenshot (--full = whole document)
+hwatu scroll h2 --contains Total   # scroll into view, reports what it hit
+hwatu upload 'input[type=file]' ./fixture.png
+hwatu focus 3                      # hand the session to the human</code></pre>
+        <p class="muted">
+          Agent CLIs (jcode, Claude Code, Codex, Cursor, ...) are
+          auto-detected and default to <code>--background</code>, so
+          verification never steals your focus. <code>focus</code> promotes
+          any headless or background window to a normal one, session
+          intact.
+        </p>
+      </section>
+
+      <section>
         <h2>Compared</h2>
         <p>
-          If you want a minimal browser for a tiling WM (Hyprland, sway, i3,
-          river), the usual suspects trade differently:
+          As a minimal human browser for a tiling WM (Hyprland, sway, i3,
+          river), the usual suspects trade differently. hwatu's human UI
+          is deliberately scoped to receiving agent hand-offs; for a
+          keyboard-maximalist daily driver, qutebrowser remains the pick.
         </p>
         <table>
           <tr>
@@ -349,6 +383,11 @@
         <h2>Philosophy</h2>
         <ul>
           <li>
+            <strong>Agent-first.</strong> The primary user opens windows over
+            a socket and reads pages as JSON. The human UI serves the
+            hand-off.
+          </li>
+          <li>
             <strong>No tabs.</strong> A tab is a window. Your tiling WM is the
             tab manager.
           </li>
@@ -377,34 +416,6 @@ hwatu quit                 # stop the daemon</code></pre>
           <code>Ctrl+Shift+j</code> / <code>Ctrl+Shift+k</code> scroll the
           page down/up by half a viewport. The daemon and engine
           stay warm.
-        </p>
-      </section>
-
-      <section>
-        <h2>For coding agents</h2>
-        <p>
-          The same daemon doubles as a verification harness for AI coding
-          agents: real WebKit, 14 ms headless windows, a 216 ms
-          open→wait→eval→screenshot→close loop, one JSON protocol over the
-          Unix socket. Full guide:
-          <a href="https://github.com/hongnoul/hwatu/blob/main/docs/agents.md"
-            >docs/agents.md</a
-          >.
-        </p>
-        <pre><code>hwatu --headless localhost:3000    # live session, no window at all
-hwatu --background localhost:3000  # window mapped, focus stays put
-hwatu eval 'document.title'        # run JS in the page, JSON out
-hwatu goto /checkout               # navigate + wait for the load
-hwatu shot /tmp/page.png           # screenshot (--full = whole document)
-hwatu scroll h2 --contains Total   # scroll into view, reports what it hit
-hwatu upload 'input[type=file]' ./fixture.png
-hwatu focus 3                      # hand the session to the human</code></pre>
-        <p class="muted">
-          Agent CLIs (jcode, Claude Code, Codex, Cursor, ...) are
-          auto-detected and default to <code>--background</code>, so
-          verification never steals your focus. <code>focus</code> promotes
-          any headless or background window to a normal one, session
-          intact.
         </p>
       </section>
 

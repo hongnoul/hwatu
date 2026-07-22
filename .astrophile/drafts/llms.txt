@@ -1,11 +1,26 @@
 # hwatu
 
-> Daemon-based WebKitGTK browser for tiling WMs: real rendering, ~45ms window spawn
+> Visual verification browser for AI coding agents: daemon-based WebKitGTK, real rendering, ~13ms median window spawn, ~216ms full verify pass
 
-A daemon-based web browser for tiling window managers. Real WebKit rendering,
-terminal-emulator spawn times.
+hwatu is AI-first: the primary user is a coding agent verifying web
+UIs in its inner loop. Agent-facing features include headless/background
+windows, snapshot/click/type/console automation, file upload, full-page
+screenshots, and safe CAPTCHA/anti-bot challenge hand-off via
+`hwatu challenge` / `hwatu challenge --wait` for manual user
+resolution. hwatu detects and waits for challenges; it does not provide
+automatic CAPTCHA bypass, solver API integration, token injection, or
+fingerprint stealth.
+
+The human side serves the hand-off: `hwatu focus <id>` materializes an
+agent's live headless session as a normal window in the user's tiling
+WM, so a person can solve a challenge or inspect a page, then the
+agent resumes the same session. As a standalone minimal browser for
+tiling WMs it works, but that is intentionally not the focus.
 
 ## Links
 
 - [Repository](https://github.com/hongnoul/hwatu): source code, issues, releases
+- [Agents guide](https://github.com/hongnoul/hwatu/blob/main/docs/agents.md): automation protocol for coding agents (the primary doc)
+- [Benchmarks](https://github.com/hongnoul/hwatu/blob/main/docs/benchmarks.md): measured spawn latency, verification-loop cost, memory
+- [Roadmap](https://github.com/hongnoul/hwatu/blob/main/docs/roadmap.md): AI-first plan of record, non-goals
 - [README](https://github.com/hongnoul/hwatu/blob/main/README.md): install and usage

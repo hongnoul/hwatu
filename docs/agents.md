@@ -2,7 +2,9 @@
 
 hwatu is a visual verification harness for coding agents: a warm
 WebKit daemon where opening, driving, and closing a real rendered
-browser window costs about as much as running `ls`.
+browser window costs about as much as running `ls`. This is hwatu's
+primary use case, not a side feature; the plan of record is
+[roadmap.md](roadmap.md).
 
 It is not a scraping browser. If you need to crawl the web at scale,
 use a headless-Chrome fleet or Lightpanda. hwatu is for the inner
@@ -314,10 +316,13 @@ removes focus/WM noise on a desktop; running with no display at all
 
 - **jcode** has a native hwatu backend for its `browser` tool
   (engine: `hwatu`), speaking the socket directly.
-- **Anything else**: the socket protocol above is the integration.
-  An MCP shim would be a thin translation layer; for coding agents,
+- **MCP**: an MCP server (`hwatu mcp`, stdio transport) is the top
+  roadmap item ([roadmap](roadmap.md)), so Claude Code, Cursor, and
+  other MCP-speaking harnesses can adopt hwatu without custom
+  integration. Until it ships, note that for coding agents,
   CLI-style invocation of `hwatu` subcommands is usually more
-  token-efficient than MCP tool schemas.
+  token-efficient than MCP tool schemas anyway.
+- **Anything else**: the socket protocol above is the integration.
 
 ## Paste into your AGENTS.md / CLAUDE.md
 
