@@ -509,6 +509,16 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             })
         }
         Some("motion") => Ok(Request::Motion { id, timeout_ms }),
+        Some("resize") => {
+            let usage = "usage: hwatu resize [--id <id>] <width>x<height>";
+            let size = rest.get(1).ok_or(usage)?;
+            let (w, h) = size.split_once(['x', 'X']).ok_or(usage)?;
+            Ok(Request::Resize {
+                id,
+                width: w.trim().parse().map_err(|_| usage)?,
+                height: h.trim().parse().map_err(|_| usage)?,
+            })
+        }
         Some("seek") => Ok(Request::Seek {
             id,
             time_ms,
@@ -637,6 +647,7 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--foc
 | type [--id <id>] (<selector> | --ref <n>) <text> [--enter] [--no-clear] \
 | console [--id <id>] [--clear] [--limit <n>] \
 | motion [--id <id>] \
+| resize [--id <id>] <width>x<height> \
 | seek [--id <id>] (--time-ms <ms> | --progress <0..1> | --resume) \
 | diff --id <id> (--other <id> | --baseline <png>) [--tolerance <0-255>] [--heatmap <png>] [--full] \
 | adblock [on|off|status|update] | mcp | update | ping | quit";

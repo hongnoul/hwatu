@@ -10,9 +10,9 @@ publish = false
 
 [dependencies]
 hwatu-ipc = { path = "../ipc" }
-# v4_10 for TextureDownloader (pixel access for `diff`); still below
-# the practical floor set by webkitgtk 2.42 (GNOME 45 ships GTK 4.12).
-gtk = { package = "gtk4", version = "0.9", features = ["v4_10"] }
+# v4_14 for TextureDownloader (diff pixel access) and Monitor::scale
+# (fractional-scale-aware CSS-px viewports); GTK 4.14 = GNOME 46.
+gtk = { package = "gtk4", version = "0.9", features = ["v4_14"] }
 # Per-window Wayland app_id (xdg_toplevel), for tiling-WM window rules.
 gdk-wayland = { package = "gdk4-wayland", version = "0.9" }
 # v2_42 for the WebKitFeature API (enable-what-exists scroll features);

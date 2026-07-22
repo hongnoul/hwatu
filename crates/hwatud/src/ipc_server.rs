@@ -168,6 +168,9 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
         Request::Motion { id, timeout_ms } => {
             return crate::verify::motion(daemon, id, timeout_ms, reply);
         }
+        Request::Resize { id, width, height } => {
+            return crate::verify::resize(daemon, id, width, height, reply);
+        }
         Request::Seek {
             id,
             time_ms,
@@ -275,6 +278,7 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
         | Request::Motion { .. }
         | Request::Seek { .. }
         | Request::Diff { .. }
+        | Request::Resize { .. }
         | Request::Expect { .. } => Response::err("internal: async request in sync path"),
     };
     reply(response);

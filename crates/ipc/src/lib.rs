@@ -308,6 +308,18 @@ pub enum Request {
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
+    /// Set a window's viewport size (CSS pixels). For headless windows
+    /// this re-allocates the offscreen toplevel; for mapped windows it
+    /// resizes the window (compositor policy permitting). The point is
+    /// matrix verification: responsive pages must be checked at several
+    /// widths, and a resize on a warm window costs milliseconds while a
+    /// fresh browser context costs seconds.
+    Resize {
+        #[serde(default)]
+        id: Option<u64>,
+        width: i32,
+        height: i32,
+    },
 }
 
 fn default_true() -> bool {

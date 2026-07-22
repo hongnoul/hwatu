@@ -175,6 +175,80 @@ return {{ animations: anims.length, touched, resumed: resume }};"#,
     automation::eval(daemon, id, js, timeout_ms, reply);
 }
 
+// ---- resize ---------------------------------------------------------
+
+/// Resize a window so the *page* sees `w x h` CSS pixels. The widget
+/// allocation is in logical pixels, which WebKit divides by the
+/// surface's fractional scale before exposing them as CSS px; that
+/// scale is not reliably readable for unmapped (headless) surfaces,
+/// so measure devicePixelRatio from the page itself, allocate
+/// w * dpr, and confirm with a second measurement in the reply.
+pub fn resize(daemon: &Rc<Daemon>, id: Option<u64>, w: i32, h: i32, reply: Reply) {
+    if !(1..=16384).contains(&w) || !(1..=16384).contains(&h) {
+        return reply(Response::err(format!("bad viewport {w}x{h}")));
+    }
+    let win = match resolve_window(daemon, id) {
+        Ok(win) => win,
+        Err(resp) => return reply(*resp),
+    };
+    let daemon2 = daemon.clone();
+    let win_id = win.id;
+    // Ask the page for its dpr (1.0 fallback if the eval fails, e.g.
+    // about:blank early in load).
+    automation::eval(
+        daemon,
+        Some(win_id),
+        "return window.devicePixelRatio || 1".into(),
+        Some(2000),
+        Box::new(move |resp| {
+            let dpr = match &resp {
+                Response::Ok { value: Some(v), .. } => v.as_f64().unwrap_or(1.0),
+                _ => 1.0,
+            };
+            let (aw, ah) = (
+                (w as f64 * dpr).round() as i32,
+                (h as f64 * dpr).round() as i32,
+            );
+            let win = match daemon2.windows.borrow().get(&win_id).cloned() {
+                Some(w) => w,
+                None => return reply(Response::err(format!("no window {win_id}"))),
+            };
+            win.resize_viewport(aw, ah);
+            // Confirm from the page: the reply carries what the page
+            // actually sees, so the caller never has to trust us.
+            automation::eval(
+                &daemon2,
+                Some(win_id),
+                "return { css_width: innerWidth, css_height: innerHeight, dpr: window.devicePixelRatio }".into(),
+                Some(2000),
+                reply,
+            );
+        }),
+    );
+}
+
+/// Window by id, or the sole window. (Same contract as the ipc_server
+/// sync path used before Resize became async.)
+fn resolve_window(
+    daemon: &Rc<Daemon>,
+    id: Option<u64>,
+) -> Result<Rc<crate::window::BrowserWindow>, Box<Response>> {
+    let windows = daemon.windows.borrow();
+    match id {
+        Some(id) => windows
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| Box::new(Response::err(format!("no window {id}")))),
+        None => {
+            if windows.len() == 1 {
+                Ok(windows.values().next().cloned().expect("len checked"))
+            } else {
+                Err(Box::new(Response::err("pass --id (several windows open)")))
+            }
+        }
+    }
+}
+
 // ---- pixel diff -----------------------------------------------------
 
 /// RGBA pixels of one captured frame.
@@ -439,6 +513,22 @@ pub fn diff(
             }
             heatmap_path = Some(path);
         }
+        // The envelope: exactly what this score is a claim about, and
+        // nothing more. A diff verifies one engine at one viewport at
+        // one moment; scores quoted without their envelope get read as
+        // "the page is pixel-perfect everywhere", which is how broken
+        // responsive layouts sail through verification.
+        let envelope = serde_json::json!({
+            "engine": format!(
+                "webkitgtk {}.{}.{}",
+                webkit6::functions::major_version(),
+                webkit6::functions::minor_version(),
+                webkit6::functions::micro_version(),
+            ),
+            "viewport": { "width": a.width, "height": a.height },
+            "region": if full { "full_document" } else { "visible" },
+            "caveat": "score covers only this engine/viewport/frame; other widths, engines, and animation times are unverified",
+        });
         let mut value = serde_json::json!({
             "match_percent": (match_percent * 100.0).round() / 100.0,
             "mismatched_pixels": result.mismatched,
@@ -447,6 +537,7 @@ pub fn diff(
             "b": { "width": b.width, "height": b.height },
             "tolerance": tolerance,
             "regions": regions,
+            "envelope": envelope,
         });
         if let Some(p) = heatmap_path {
             value["heatmap"] = serde_json::Value::String(p);

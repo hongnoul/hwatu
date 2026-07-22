@@ -131,6 +131,11 @@ pub struct BrowserWindow {
     /// it spawns inherit it so a headless page can't steal focus. A
     /// `focus` request promotes the window to Normal.
     mode: std::cell::Cell<OpenMode>,
+    /// Per-window viewport override (CSS px), set by `hwatu resize`.
+    /// None means the headless_size() default. Headless allocation and
+    /// ensure_viewport() re-assert whichever is current, so a resized
+    /// window keeps its size across navigations.
+    viewport: std::cell::Cell<Option<(i32, i32)>>,
     /// URI of a requested-but-not-yet-Started navigation. `is_loading`
     /// is false between `load_uri` and WebKit's LoadEvent::Started, so
     /// `wait_load` needs this to not answer early and let the caller's
@@ -295,7 +300,7 @@ impl BrowserWindow {
     /// Map the window according to its open mode. `present` asks the
     /// compositor for focus; `set_visible` maps without an activation
     /// request, so the user's focus stays put; headless never maps.
-    fn show(&self) {
+    fn show(self: &Rc<Self>) {
         match self.mode.get() {
             OpenMode::Normal => self.window.present(),
             OpenMode::Background => {
@@ -317,12 +322,31 @@ impl BrowserWindow {
                 // fail). Realizing the toplevel creates its GDK surface
                 // without mapping, and a manual allocation pushes a real
                 // viewport into the web process.
-                gtk::prelude::WidgetExt::realize(&self.window);
-                let (w, h) = headless_size();
-                self.window
-                    .allocate(w, h, -1, None::<gtk::gsk::Transform>);
+                self.allocate_viewport();
             }
         }
+    }
+
+    /// Set the window's viewport allocation (logical px). The verify
+    /// layer converts CSS px to logical px using the page's own
+    /// devicePixelRatio (fractional scale is not readable on unmapped
+    /// surfaces), so this just stores and applies the allocation. For
+    /// matrix verification: responsive pages are only "verified" at
+    /// the widths actually sampled, so agents step a warm window
+    /// through widths instead of paying a context spawn per size.
+    pub fn resize_viewport(self: &Rc<Self>, w: i32, h: i32) {
+        self.viewport.set(Some((w, h)));
+        match self.mode.get() {
+            OpenMode::Headless => self.allocate_viewport(),
+            _ => self.window.set_default_size(w, h),
+        }
+    }
+
+    /// (Re-)allocate the headless toplevel at the current viewport.
+    fn allocate_viewport(self: &Rc<Self>) {
+        gtk::prelude::WidgetExt::realize(&self.window);
+        let (w, h) = self.viewport.get().unwrap_or_else(headless_size);
+        self.window.allocate(w, h, -1, None::<gtk::gsk::Transform>);
     }
 
     /// Open a window for a popup requested by the page (`window.open`,
@@ -418,6 +442,7 @@ impl BrowserWindow {
             process_group: RefCell::new(None),
             app_id,
             mode: std::cell::Cell::new(mode),
+            viewport: std::cell::Cell::new(None),
             nav_pending: RefCell::new(None),
             console: crate::console::Buffer::default(),
         });
@@ -985,7 +1010,7 @@ impl BrowserWindow {
     /// enough) re-allocates the unmapped toplevel to 0x0, collapsing
     /// the page layout and breaking snapshots. Automation calls this
     /// before touching the view, so headless windows self-heal.
-    pub(crate) fn ensure_viewport(&self) {
+    pub(crate) fn ensure_viewport(self: &Rc<Self>) {
         if self.mode.get() != OpenMode::Headless {
             return;
         }
@@ -999,10 +1024,7 @@ impl BrowserWindow {
             .map(|v| v.width() <= 0 || v.height() <= 0)
             .unwrap_or(false);
         if collapsed {
-            gtk::prelude::WidgetExt::realize(&self.window);
-            let (w, h) = headless_size();
-            self.window
-                .allocate(w, h, -1, None::<gtk::gsk::Transform>);
+            self.allocate_viewport();
         }
     }
 
