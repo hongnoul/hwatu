@@ -331,6 +331,15 @@ await new Promise((r) => setTimeout(r, 500));
   await hwatu("close", String(id));
 
   // -- 4. memory with 5 pages -------------------------------------------
+  // Fresh engines on both sides: WebKit caches terminated web
+  // processes for reuse, so a daemon that just served ~60 benchmark
+  // windows reports several GB of PSS that a real 5-window session
+  // never sees. Measure what a user/agent actually gets.
+  await browser.close();
+  await hwatu("quit").catch(() => {});
+  await new Promise((r) => setTimeout(r, 800));
+  await hwatu("ping");
+  const browser2 = await chromium.launch();
   const ids = [];
   for (let i = 0; i < 5; i++) {
     const o = await hwatu("--headless", "--json", url);
@@ -339,7 +348,7 @@ await new Promise((r) => setTimeout(r, 500));
   await hwatu("wait-load", "--id", String(ids[4]));
   const contexts = [];
   for (let i = 0; i < 5; i++) {
-    const c = await browser.newContext();
+    const c = await browser2.newContext();
     const pg = await c.newPage();
     await pg.goto(url, { waitUntil: "load" });
     contexts.push(c);
@@ -359,7 +368,7 @@ await new Promise((r) => setTimeout(r, 500));
 
   for (const c of contexts) await c.close();
   for (const id of ids) await hwatu("close", String(id)).catch(() => {});
-  await browser.close();
+  await browser2.close();
 }
 
 fs.writeFileSync(path.join(tmp, "results.json"), JSON.stringify(results, null, 2));

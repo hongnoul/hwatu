@@ -64,14 +64,65 @@ letting each state settle:
 | 10 windows | 1016 MB |
 
 That's roughly **56 MB per additional window**, because windows share
-one engine, one network process, and one GPU context. For contrast, a
-single headless Chromium context via Playwright typically starts in
-the 300-500 MB range *per browser*.
+one engine, one network process, and one GPU context. (Chromium's
+shared-browser contexts are similarly cheap; see the head-to-head
+section below for the honest comparison.)
 
 The idle floor is WebKit itself (prewarmed WebView, network process,
 sandboxes), which is the price of instant spawns. Unfocused windows
 are additionally suspended after `HWATU_DISCARD_SECS` (default 120 s),
 which kills their web process and returns that ~56 MB until refocus.
+
+## Head-to-head: hwatu vs Playwright + headless Chromium
+
+`scripts/bench-vs-playwright.mjs` runs both tools against the same
+local fixture page (40 cards, no network), same machine, same clock.
+Medians over 12 runs, measured 2026-07-22 (hwatu ec4ebeb, Playwright
+1.5x headless-shell Chromium):
+
+| scenario | hwatu | Playwright |
+|---|---|---|
+| verify pass, cold engine (start, open, load, eval, shot, teardown) | 494 ms | 143 ms |
+| open + full load, warm engine | 74 ms | 24 ms |
+| verify pass, warm engine (open, load, eval, shot, close) | 163 ms | 75 ms |
+| verify pass, warm, no screenshot | 70 ms | 34 ms |
+| page-state payload (snapshot JSON vs ARIA snapshot) | 7.3 KB | 5.1 KB |
+| memory, 5 pages open (tree PSS, fresh engine) | 737 MB | 238 MB |
+
+Read it honestly: **a warm Playwright server beats hwatu on raw
+latency and memory for this fixture.** Two widespread claims about
+the incumbent are simply outdated and hwatu's docs no longer repeat
+them: headless-shell Chromium cold-starts in ~150 ms (not seconds),
+and 5 shared-browser contexts cost ~240 MB (not GBs).
+
+What the table does not capture, and why hwatu still exists:
+
+- **Real windows.** hwatu renders every page GPU-composited and
+  WM-mappable; headless-shell renders offscreen only. `hwatu focus`
+  can hand any session to a human mid-run. Playwright headless has no
+  equivalent at any price; headed Chromium costs far more than the
+  table shows.
+- **No runtime dependency.** hwatu is one static binary + the distro's
+  webkitgtk. The Playwright number requires Node, the Playwright
+  package, and a ~170 MB browser download per version bump.
+- **Token-shaped interface.** hwatu is driven by short CLI commands or
+  one-line JSON, no client library or session objects; for coding
+  agents the invocation cost (tokens, not milliseconds) is the scarce
+  resource.
+- **Absolute cost is tiny either way.** 163 ms per screenshot-included
+  check is far below any agent's thinking time. The fight is not won
+  on 90 ms.
+
+Known optimization targets from this data: screenshot encode
+(~90 ms of hwatu's warm pass) and load-settle latency (WebKitGTK
+finishes this fixture ~50 ms behind Chromium). Tracked in
+[roadmap.md](roadmap.md).
+
+Caveat on method: hwatu steps go through CLI process spawns (5 per
+pass, the worst case for it) except in the socket variants, while
+Playwright runs in-process over a persistent CDP connection (its best
+case). Numbers for hwatu are therefore ceilings, not floors. Rerun
+with `node scripts/bench-vs-playwright.mjs`.
 
 ## Ad blocking
 

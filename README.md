@@ -58,12 +58,19 @@ For the agent verification loop, the incumbents pay for generality:
 
 | | hwatu | headless Chrome + Playwright | chrome-devtools-mcp |
 |---|---|---|---|
-| Spawn per check | 13-16 ms (warm daemon) | seconds | seconds |
-| Memory | one shared engine, ~56 MB/window | hundreds of MB per context | a full Chrome |
+| Verify pass w/ screenshot (warm) | 163 ms | 75 ms | comparable to Playwright |
+| Runtime deps | one binary + distro webkitgtk | Node + package + ~170 MB browser | Node + Chrome |
+| Rendering | GPU-composited, real WM windows | offscreen only (headless-shell) | offscreen or a visible Chrome |
 | Headed↔headless | per window, switchable live | fixed at launch | fixed at launch |
 | Human hand-off | `hwatu focus <id>`: same session, real window | none | none |
-| Protocol | 1-line JSON over a Unix socket | CDP / Playwright API | MCP over CDP |
-| Best at | dev-loop verification | cross-browser E2E, CI | DevTools introspection |
+| Protocol | 1-line JSON / CLI / MCP | CDP / Playwright API | MCP over CDP |
+| Best at | dev-loop verification + hand-off | cross-browser E2E, CI | DevTools introspection |
+
+Raw latency is honestly a wash at agent timescales (both are far
+below a model's thinking time; full head-to-head data in
+[docs/benchmarks.md](docs/benchmarks.md)). hwatu's edge is
+structural: real windows a human can be handed mid-session, no
+Node/browser-download supply chain, and a token-shaped interface.
 
 Engine caveat: hwatu renders with WebKit; end users mostly run
 Chromium. For "did my change render, is the text right, did the
@@ -359,7 +366,7 @@ Crates:
 - [x] Console + network capture for verification loops (`hwatu console`)
 - [x] Challenge detection + manual wait/resume (`hwatu challenge --wait`)
 - [x] MCP server (`hwatu mcp`, stdio) so any MCP client can adopt hwatu
-- [ ] Published head-to-head benchmark vs Playwright / chrome-devtools-mcp
+- [x] Head-to-head benchmark vs Playwright (scripts/bench-vs-playwright.mjs, honest numbers in docs/benchmarks.md)
 - [ ] Snapshot diffing (`snapshot --diff`): only what changed, fewer tokens
 - [ ] Assertion primitives (`hwatu expect`, `shot --diff baseline.png`)
 - [ ] Profiles (separate cookie jars / web contexts); per-agent isolation

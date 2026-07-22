@@ -11,9 +11,9 @@ URL: https://github.com/hongnoul/hwatu
 
 First comment (post immediately after submitting):
 
-> I built hwatu because my coding agent's verification loop was absurd:
-> every "did my change render" check paid a multi-second headless-Chrome
-> start and hundreds of MB, on the same laptop I was working on.
+> I built hwatu because my coding agent's verification loop deserved a
+> browser shaped like a terminal emulator: a daemon owns the engine,
+> and "give me a rendered window" is one Unix-socket roundtrip.
 >
 > hwatu splits the browser the way emacsclient/wezterm split the editor: a
 > daemon (hwatud) owns WebKitGTK 6 and a prewarmed WebView pool; the client

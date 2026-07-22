@@ -17,13 +17,12 @@ machine the human is working on.
 - **13-16 ms window spawn** from a warm daemon, measured medians
   across focused/background/headless modes
   ([benchmarks](benchmarks.md)). Verification loops spawn and
-  discard windows constantly; Chrome's multi-second cold start is
-  the tax hwatu removes.
-- **One shared engine.** N windows share one WebKit network process
-  and a prewarm pool: measured, each extra window costs ~56 MB PSS
-  on top of the daemon's floor, instead of one multi-hundred-MB
-  Chrome per Playwright context. It fits on the dev machine next to
-  the editor, the LSP, and the agent itself.
+  discard windows constantly; hwatu keeps the whole loop (open,
+  load, read, screenshot, close) under ~200 ms with zero setup.
+- **One shared engine, zero supply chain.** N windows share one
+  WebKit network process and a prewarm pool (~56 MB per extra
+  window). One static binary plus the distro's webkitgtk: no Node,
+  no npm package, no per-version browser download.
 - **Real rendering.** Full WebKit: layout, CSS, WebGL, media.
   Screenshots show what a user would see. (Contrast with
   render-less automation engines, which are fast but blind.)
@@ -370,13 +369,19 @@ Daemon-based WebKitGTK browser: ~15ms window spawn, full rendering.
 
 | | hwatu | headless Chrome + Playwright | Lightpanda |
 |---|---|---|---|
-| Spawn per check | 13-16 ms (warm) | seconds | fast |
-| Rendering / screenshots | full WebKit | full Chromium | none |
-| Memory | one shared engine, ~56 MB/window | ~GBs per browser | very low |
+| Verify pass w/ screenshot (warm) | 163 ms | 75 ms | n/a (no rendering) |
+| Rendering / screenshots | full WebKit, real WM windows | full Chromium, offscreen | none |
+| Runtime deps | one binary + distro webkitgtk | Node + package + browser download | one binary |
 | Headed↔headless | per window, switchable live | fixed at launch | headless only |
 | Human hand-off | `hwatu focus <id>` | none | none |
-| Protocol | 1-line JSON over Unix socket | CDP / Playwright API | CDP subset |
-| Best at | dev-loop verification | cross-browser E2E, CI | scraping at scale |
+| Protocol | 1-line JSON / CLI / MCP | CDP / Playwright API | CDP subset |
+| Best at | dev-loop verification + hand-off | cross-browser E2E, CI | scraping at scale |
+
+Latency honesty: a warm Playwright server is faster on raw
+milliseconds ([full head-to-head data](benchmarks.md)); both are far
+below an agent's thinking time. hwatu's advantages are structural
+(real windows, hand-off, no Node supply chain, token-cheap CLI), not
+a stopwatch win.
 
 Engine caveat: hwatu renders with WebKit, end users mostly run
 Chromium. For "did my change render / is the text right / did the

@@ -26,11 +26,13 @@ human for a minute.
 
 ## Why this is winnable
 
-- The agent-verification incumbents (Playwright, chrome-devtools-mcp)
-  pay hundreds of MB and seconds of startup per browser context.
-  hwatu's measured numbers: 13 ms median window spawn, 216 ms full
-  verify pass with screenshot, ~56 MB per extra window on one shared
-  engine ([benchmarks](benchmarks.md)).
+- The measured head-to-head ([benchmarks](benchmarks.md)) says raw
+  latency is NOT the moat: a warm Playwright server beats hwatu on
+  milliseconds, and both are far below agent thinking time. The
+  structural advantages are: real WM-mappable windows (headless-shell
+  cannot map one at any price), live headed↔headless switching, zero
+  Node/browser-download supply chain, and a token-shaped CLI/JSON
+  interface.
 - Headed/headless as a *window property*, switchable live, is
   structurally impossible for launch-time-headless tools. The human
   hand-off loop is the moat.
@@ -48,9 +50,11 @@ human for a minute.
    protocol, which stays the source of truth. Claude Code, Cursor,
    and other MCP clients adopt hwatu with one config entry.
 2. **Published head-to-head benchmark** vs Playwright and
-   chrome-devtools-mcp: spawn time, RAM per concurrent session,
-   tokens per snapshot, full-verify-loop latency. Agent harness
-   authors pick tools off exactly this table.
+   chrome-devtools-mcp. **Shipped:** `scripts/bench-vs-playwright.mjs`,
+   results and honest analysis in [benchmarks.md](benchmarks.md). It
+   found real optimization targets: screenshot encode (~90 ms of the
+   warm verify pass) and load-settle latency (~50 ms behind Chromium
+   on the fixture). Those are now the performance workstream.
 
 ### P1 — the agent-facing "UI" (snapshot quality)
 
