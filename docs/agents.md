@@ -97,7 +97,7 @@ hwatu close 3
 | `type` | `id?`, `selector?`/`ref?`, `text`, `clear?`, `enter?` | fill input/textarea/select/contenteditable |
 | `console` | `id?`, `clear?`, `limit?` | read the console/error/network capture buffer |
 | `upload` | `id?`, `selector`, `path` | set a file input's files from disk |
-| `ping` | | health check |
+| `ping` | | health check; returns `{build, version}` and the CLI warns when the running daemon's build differs from the client's (restart with `hwatu quit && hwatu ping`) |
 
 When `id` is omitted, commands target the focused window, else the
 window your last automation command targeted (including `open`), else
@@ -152,6 +152,15 @@ hwatu eval 'const n = 6*7; return n'      # statements need return
 `await` works in both forms and a returned Promise is awaited before
 the response. `undefined` maps to JSON `null`. Default timeout 15 s,
 override with `timeout_ms`.
+
+If the page **navigates while the script runs** (a click handler that
+follows a link, `location =`, form submit), the document's JS context
+is destroyed and the eval can never resolve. Instead of a silent
+`null` or a full timeout, the daemon replies immediately with an
+error naming the destination URL; `wait-load` then re-syncs you with
+the new document. For `click`, `type --enter`, and `challenge --wait`
+the same navigation is treated as success: the reply waits for the
+load to finish and returns `{"navigated": true, "url": ...}`.
 
 ```sh
 hwatu eval 'return {
