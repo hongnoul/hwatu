@@ -137,6 +137,76 @@ pub enum Request {
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
+    /// Token-cheap structured page state: url, title, visible text
+    /// (bounded), and an indexed list of interactable elements. The
+    /// indices ("refs") are remembered by the page, so a follow-up
+    /// [`Request::Click`]/[`Request::Type`] can target `ref: n`
+    /// without a selector. The cheap alternative to a screenshot.
+    Snapshot {
+        #[serde(default)]
+        id: Option<u64>,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
+    /// Click an element: by CSS `selector` (disambiguated by
+    /// `nth`/`contains`, like Scroll) or by a `ref` from the last
+    /// [`Request::Snapshot`]. Dispatches real pointer/mouse events;
+    /// the response reports what was hit (match count, tag, text).
+    Click {
+        #[serde(default)]
+        id: Option<u64>,
+        #[serde(default)]
+        selector: Option<String>,
+        #[serde(default)]
+        nth: Option<u32>,
+        #[serde(default)]
+        contains: Option<String>,
+        /// Interactable index from the last snapshot of this window.
+        #[serde(default)]
+        r#ref: Option<u32>,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
+    /// Type text into an input/textarea/select/contenteditable,
+    /// targeted like [`Request::Click`]. Values are set through the
+    /// native setter and followed by `input`/`change` events, so
+    /// framework-controlled inputs (React et al.) see the change.
+    Type {
+        #[serde(default)]
+        id: Option<u64>,
+        #[serde(default)]
+        selector: Option<String>,
+        #[serde(default)]
+        nth: Option<u32>,
+        #[serde(default)]
+        contains: Option<String>,
+        /// Interactable index from the last snapshot of this window.
+        #[serde(default)]
+        r#ref: Option<u32>,
+        text: String,
+        /// Replace the current value (default) instead of appending.
+        #[serde(default = "default_true")]
+        clear: bool,
+        /// Press Enter afterwards (submits the enclosing form if the
+        /// page did not handle the keydown itself).
+        #[serde(default)]
+        enter: bool,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
+    /// Read the window's console/error/network capture buffer:
+    /// console.* calls, uncaught exceptions, unhandled rejections,
+    /// failed resource loads, and HTTP >= 400 responses. `clear`
+    /// drains what was read, so a verify loop can diff runs.
+    Console {
+        #[serde(default)]
+        id: Option<u64>,
+        #[serde(default)]
+        clear: bool,
+        /// Return at most the last N entries.
+        #[serde(default)]
+        limit: Option<usize>,
+    },
 }
 
 fn default_true() -> bool {

@@ -451,6 +451,235 @@ fn json_or_null(s: Option<&str>) -> String {
     s.map_or("null".into(), js_string)
 }
 
+/// Token-cheap page state: url, title, bounded visible text, and an
+/// indexed list of interactable elements (links, buttons, inputs...).
+/// The elements are remembered on `window.__hwatu_refs`, so a
+/// follow-up click/type can target `ref: n` without a selector. The
+/// designed alternative to screenshot-and-squint for agents.
+pub fn snapshot(daemon: &Rc<Daemon>, id: Option<u64>, timeout_ms: Option<u64>, reply: Reply) {
+    const JS: &str = r#"
+const MAX_TEXT = 4000;
+const MAX_ELS = 120;
+const clip = (s, n) => {
+  s = (s || '').replace(/\s+/g, ' ').trim();
+  return s.length > n ? s.slice(0, n - 1) + '…' : s;
+};
+const visible = (el) => {
+  const r = el.getBoundingClientRect();
+  if (r.width === 0 && r.height === 0) return false;
+  const st = getComputedStyle(el);
+  return st.visibility !== 'hidden' && st.display !== 'none';
+};
+const label = (el) => {
+  const aria = el.getAttribute('aria-label');
+  if (aria) return aria;
+  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) {
+    if (el.labels && el.labels.length) return el.labels[0].textContent;
+    return el.placeholder || el.name || el.value || '';
+  }
+  if (el instanceof HTMLImageElement) return el.alt;
+  return el.textContent;
+};
+const sel = 'a[href], button, input, textarea, select, [role=button], [role=link], [role=tab], [role=menuitem], [role=checkbox], [contenteditable=""], [contenteditable=true], [onclick]';
+const els = [...document.querySelectorAll(sel)].filter(visible).slice(0, MAX_ELS);
+window.__hwatu_refs = els;
+const interactables = els.map((el, i) => {
+  const out = { ref: i, tag: el.tagName.toLowerCase() };
+  const text = clip(label(el), 80);
+  if (text) out.text = text;
+  if (el.id) out.id = el.id;
+  if (el instanceof HTMLInputElement) {
+    out.type = el.type;
+    if (el.value && el.type !== 'password') out.value = clip(el.value, 40);
+    if (el.checked) out.checked = true;
+  }
+  if (el.name) out.name = el.name;
+  if (el instanceof HTMLAnchorElement && el.href) out.href = clip(el.href, 120);
+  if (el.disabled) out.disabled = true;
+  return out;
+});
+const doc = document.documentElement;
+return {
+  url: location.href,
+  title: document.title,
+  text: clip(document.body ? document.body.innerText : '', MAX_TEXT),
+  interactables,
+  scroll: {
+    y: window.scrollY,
+    max_y: Math.max(0, doc.scrollHeight - window.innerHeight),
+  },
+};"#;
+    eval(daemon, id, JS.to_string(), timeout_ms, reply);
+}
+
+/// JS prelude that resolves a click/type target: by snapshot `ref` or
+/// by selector + nth/contains (same disambiguation as scroll). Leaves
+/// `el` (the element) and `matched` (the landing report) in scope, or
+/// throws with an explanation an agent can act on.
+fn target_prelude(
+    selector: Option<&str>,
+    nth: Option<u32>,
+    contains: Option<&str>,
+    ref_idx: Option<u32>,
+) -> Result<String, Box<Response>> {
+    if selector.is_some() == ref_idx.is_some() {
+        return Err(Box::new(Response::err(
+            "pass exactly one of a CSS selector or --ref <n> (from `hwatu snapshot`)",
+        )));
+    }
+    Ok(format!(
+        r#"const selector = {selector};
+const nth = {nth};
+const contains = {contains};
+const refIdx = {ref_idx};
+let el;
+if (refIdx !== null) {{
+  const refs = window.__hwatu_refs;
+  if (!refs) throw new Error('no snapshot taken; run `hwatu snapshot` first or use a selector');
+  el = refs[refIdx];
+  if (!el) throw new Error(`ref ${{refIdx}} out of range (snapshot had ${{refs.length}} interactables)`);
+  if (!el.isConnected) throw new Error(`ref ${{refIdx}} is no longer in the document; re-run snapshot`);
+  var matched = {{ ref: refIdx }};
+}} else {{
+  let els = [...document.querySelectorAll(selector)];
+  const total = els.length;
+  if (contains !== null)
+    els = els.filter(e => (e.textContent || '').includes(contains));
+  el = els[nth];
+  if (!el) {{
+    const filt = contains === null ? '' : ` (${{els.length}} after contains filter)`;
+    throw new Error(`no match: ${{total}} element(s) for selector${{filt}}, nth=${{nth}}`);
+  }}
+  var matched = {{ matches: els.length }};
+}}
+matched.tag = el.tagName.toLowerCase();
+matched.text = (el.textContent || el.value || '').trim().slice(0, 120);
+"#,
+        selector = json_or_null(selector),
+        nth = nth.unwrap_or(0),
+        contains = json_or_null(contains),
+        ref_idx = ref_idx.map_or("null".into(), |v| v.to_string()),
+    ))
+}
+
+/// Click an element with a real pointer-event sequence at the
+/// element's center (pages listening on pointerdown/mousedown see the
+/// same shape as a human click). Reports what was hit.
+#[allow(clippy::too_many_arguments)]
+pub fn click(
+    daemon: &Rc<Daemon>,
+    id: Option<u64>,
+    selector: Option<String>,
+    nth: Option<u32>,
+    contains: Option<String>,
+    ref_idx: Option<u32>,
+    timeout_ms: Option<u64>,
+    reply: Reply,
+) {
+    let prelude = match target_prelude(selector.as_deref(), nth, contains.as_deref(), ref_idx) {
+        Ok(p) => p,
+        Err(resp) => return OnceReply::new(reply).send(*resp),
+    };
+    let js = format!(
+        r#"{prelude}
+el.scrollIntoView({{ block: 'center', behavior: 'instant' }});
+const r = el.getBoundingClientRect();
+const x = r.left + r.width / 2, y = r.top + r.height / 2;
+const opts = {{ bubbles: true, cancelable: true, composed: true, view: window,
+                clientX: x, clientY: y, button: 0, detail: 1 }};
+el.dispatchEvent(new PointerEvent('pointerdown', {{ ...opts, pointerId: 1, isPrimary: true }}));
+el.dispatchEvent(new MouseEvent('mousedown', opts));
+if (el.focus) el.focus();
+el.dispatchEvent(new PointerEvent('pointerup', {{ ...opts, pointerId: 1, isPrimary: true }}));
+el.dispatchEvent(new MouseEvent('mouseup', opts));
+el.click ? el.click() : el.dispatchEvent(new MouseEvent('click', opts));
+// Give a same-document reaction (SPA routing, form handlers) one
+// macrotask to run, so the reported url reflects the click.
+await new Promise(r2 => setTimeout(r2, 0));
+return {{ clicked: matched, url: location.href }};"#
+    );
+    eval(daemon, id, js, timeout_ms, reply);
+}
+
+/// Type into an input/textarea/select/contenteditable. Values go
+/// through the native setter so framework-controlled inputs (React)
+/// observe the change, followed by input/change events. `enter`
+/// presses Enter, which submits the enclosing form when the page
+/// leaves the keydown unhandled.
+#[allow(clippy::too_many_arguments)]
+pub fn type_text(
+    daemon: &Rc<Daemon>,
+    id: Option<u64>,
+    selector: Option<String>,
+    nth: Option<u32>,
+    contains: Option<String>,
+    ref_idx: Option<u32>,
+    text: String,
+    clear: bool,
+    enter: bool,
+    timeout_ms: Option<u64>,
+    reply: Reply,
+) {
+    let prelude = match target_prelude(selector.as_deref(), nth, contains.as_deref(), ref_idx) {
+        Ok(p) => p,
+        Err(resp) => return OnceReply::new(reply).send(*resp),
+    };
+    let js = format!(
+        r#"{prelude}
+const text = {text};
+const clear = {clear};
+const enter = {enter};
+el.scrollIntoView({{ block: 'center', behavior: 'instant' }});
+if (el.focus) el.focus();
+const fire = (t) => el.dispatchEvent(new Event(t, {{ bubbles: true }}));
+if (el instanceof HTMLSelectElement) {{
+  const opt = [...el.options].find(o => o.value === text || o.textContent.trim() === text);
+  if (!opt) throw new Error(`no <option> matching ${{JSON.stringify(text)}} (values: ${{[...el.options].map(o => o.value).slice(0, 20).join(', ')}})`);
+  el.value = opt.value;
+  fire('input'); fire('change');
+}} else if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {{
+  const proto = el instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
+  const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+  setter.call(el, clear ? text : el.value + text);
+  fire('input'); fire('change');
+}} else if (el.isContentEditable) {{
+  if (clear) el.textContent = '';
+  el.dispatchEvent(new InputEvent('beforeinput', {{ bubbles: true, cancelable: true, inputType: 'insertText', data: text }}));
+  document.execCommand ? document.execCommand('insertText', false, text) : el.textContent += text;
+  fire('input');
+}} else {{
+  throw new Error(`element <${{el.tagName.toLowerCase()}}> is not typeable (need input, textarea, select, or contenteditable)`);
+}}
+if (enter) {{
+  const key = {{ bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', keyCode: 13, which: 13 }};
+  const handled = !el.dispatchEvent(new KeyboardEvent('keydown', key));
+  el.dispatchEvent(new KeyboardEvent('keyup', key));
+  if (!handled && el.form) el.form.requestSubmit ? el.form.requestSubmit() : el.form.submit();
+}}
+await new Promise(r2 => setTimeout(r2, 0));
+const value = el.value !== undefined ? el.value : el.textContent;
+return {{ typed: matched, value: String(value).slice(0, 200), url: location.href }};"#,
+        text = js_string(&text),
+        clear = clear,
+        enter = enter,
+    );
+    eval(daemon, id, js, timeout_ms, reply);
+}
+
+/// Read a window's console/error/network capture buffer. Synchronous
+/// (the buffer lives daemon-side), but routed here for target
+/// resolution. Works on suspended windows: the buffer outlives the
+/// page.
+pub fn console(daemon: &Rc<Daemon>, id: Option<u64>, clear: bool, limit: Option<usize>) -> Response {
+    match resolve(daemon, id) {
+        Ok(win) => {
+            let entries = win.console.read(clear, limit);
+            Response::value(serde_json::to_value(entries).unwrap_or_default())
+        }
+        Err(resp) => *resp,
+    }
+}
+
 /// JSON string literal, which is also a valid JS string literal.
 fn js_string(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())

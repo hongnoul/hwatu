@@ -158,6 +158,11 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
     let mut contains: Option<String> = None;
     let mut to_y: Option<f64> = None;
     let mut by_pages: Option<f64> = None;
+    let mut r#ref: Option<u32> = None;
+    let mut clear = false;
+    let mut no_clear = false;
+    let mut enter = false;
+    let mut limit: Option<usize> = None;
     let mut mode = default_mode;
     let mut rest: Vec<&String> = Vec::new();
     let mut it = args.iter();
@@ -206,6 +211,24 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                     .filter(|v| !v.is_empty())
                     .ok_or("usage: --contains <text>")?
                     .clone(),
+            );
+        } else if arg == "--ref" {
+            r#ref = Some(
+                it.next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("usage: --ref <n> (from `hwatu snapshot`)")?,
+            );
+        } else if arg == "--clear" {
+            clear = true;
+        } else if arg == "--no-clear" {
+            no_clear = true;
+        } else if arg == "--enter" || arg == "--submit" {
+            enter = true;
+        } else if arg == "--limit" {
+            limit = Some(
+                it.next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("usage: --limit <n>")?,
             );
         } else if arg == "--to-y" {
             to_y = Some(
@@ -305,6 +328,67 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 timeout_ms,
             })
         }
+        Some("snapshot") => Ok(Request::Snapshot { id, timeout_ms }),
+        Some("click") => {
+            let selector = rest.get(1).map(|s| s.to_string());
+            if selector.is_none() && r#ref.is_none() {
+                return Err(
+                    "usage: hwatu click [--id <id>] <selector> [--nth <n>] [--contains <text>] \
+                     | --ref <n>"
+                        .into(),
+                );
+            }
+            Ok(Request::Click {
+                id,
+                selector,
+                nth: rest.get(2).and_then(|s| s.parse().ok()).or(nth),
+                contains,
+                r#ref,
+                timeout_ms,
+            })
+        }
+        Some("type") => {
+            // hwatu type <selector> <text...> | --ref <n> <text...>
+            let (selector, text_args) = if r#ref.is_some() {
+                (None, &rest[1..])
+            } else {
+                (
+                    Some(
+                        rest.get(1)
+                            .ok_or(
+                                "usage: hwatu type [--id <id>] (<selector> | --ref <n>) <text> \
+                                 [--enter] [--no-clear]",
+                            )?
+                            .to_string(),
+                    ),
+                    &rest[2.min(rest.len())..],
+                )
+            };
+            let text = text_args
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            if text.is_empty() {
+                return Err(
+                    "usage: hwatu type [--id <id>] (<selector> | --ref <n>) <text> [--enter] \
+                     [--no-clear]"
+                        .into(),
+                );
+            }
+            Ok(Request::Type {
+                id,
+                selector,
+                nth,
+                contains,
+                r#ref,
+                text,
+                clear: !no_clear,
+                enter,
+                timeout_ms,
+            })
+        }
+        Some("console") => Ok(Request::Console { id, clear, limit }),
         Some("focus") => {
             let id = rest
                 .get(1)
@@ -349,6 +433,10 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--foc
 | eval [--id <id>] [--timeout-ms <ms>] <js> | goto [--id <id>] [--no-wait] <url> \
 | shot [--id <id>] [--full] [path] | wait-load [--id <id>] | upload [--id <id>] <selector> <path> \
 | scroll [--id <id>] [<selector> [nth]] [--contains <text>] [--to-y <px>] [--by <pages>] \
+| snapshot [--id <id>] \
+| click [--id <id>] (<selector> [nth] [--contains <text>] | --ref <n>) \
+| type [--id <id>] (<selector> | --ref <n>) <text> [--enter] [--no-clear] \
+| console [--id <id>] [--clear] [--limit <n>] \
 | adblock [on|off|status|update] | update | ping | quit";
 
 fn connect_or_spawn() -> std::io::Result<UnixStream> {
@@ -563,5 +651,106 @@ mod tests {
         };
         // All None: the daemon treats this as by_pages = 1.0.
         assert!(selector.is_none() && to_y.is_none() && by_pages.is_none());
+    }
+
+    #[test]
+    fn snapshot_parses() {
+        assert!(matches!(
+            parse(&args(&["snapshot"])),
+            Ok(Request::Snapshot { id: None, .. })
+        ));
+        assert!(matches!(
+            parse(&args(&["snapshot", "--id", "3"])),
+            Ok(Request::Snapshot { id: Some(3), .. })
+        ));
+    }
+
+    #[test]
+    fn click_selector_with_disambiguation() {
+        let Ok(Request::Click {
+            selector,
+            nth,
+            contains,
+            r#ref,
+            ..
+        }) = parse(&args(&["click", "a", "2", "--contains", "Docs"]))
+        else {
+            panic!("expected Click");
+        };
+        assert_eq!(selector.as_deref(), Some("a"));
+        assert_eq!(nth, Some(2));
+        assert_eq!(contains.as_deref(), Some("Docs"));
+        assert!(r#ref.is_none());
+    }
+
+    #[test]
+    fn click_by_ref_and_bare_click_errors() {
+        let Ok(Request::Click {
+            selector, r#ref, ..
+        }) = parse(&args(&["click", "--ref", "7"]))
+        else {
+            panic!("expected Click");
+        };
+        assert!(selector.is_none());
+        assert_eq!(r#ref, Some(7));
+        assert!(parse(&args(&["click"])).is_err());
+    }
+
+    #[test]
+    fn type_joins_text_and_flags() {
+        let Ok(Request::Type {
+            selector,
+            text,
+            clear,
+            enter,
+            ..
+        }) = parse(&args(&["type", "input[name=q]", "rust", "borrow", "checker", "--enter"]))
+        else {
+            panic!("expected Type");
+        };
+        assert_eq!(selector.as_deref(), Some("input[name=q]"));
+        assert_eq!(text, "rust borrow checker");
+        assert!(clear);
+        assert!(enter);
+    }
+
+    #[test]
+    fn type_by_ref_no_clear_and_missing_text_errors() {
+        let Ok(Request::Type {
+            selector,
+            r#ref,
+            text,
+            clear,
+            ..
+        }) = parse(&args(&["type", "--ref", "4", "--no-clear", "hello"]))
+        else {
+            panic!("expected Type");
+        };
+        assert!(selector.is_none());
+        assert_eq!(r#ref, Some(4));
+        assert_eq!(text, "hello");
+        assert!(!clear);
+        assert!(parse(&args(&["type", "input"])).is_err());
+        assert!(parse(&args(&["type"])).is_err());
+    }
+
+    #[test]
+    fn console_flags() {
+        assert!(matches!(
+            parse(&args(&["console"])),
+            Ok(Request::Console {
+                clear: false,
+                limit: None,
+                ..
+            })
+        ));
+        assert!(matches!(
+            parse(&args(&["console", "--clear", "--limit", "20"])),
+            Ok(Request::Console {
+                clear: true,
+                limit: Some(20),
+                ..
+            })
+        ));
     }
 }

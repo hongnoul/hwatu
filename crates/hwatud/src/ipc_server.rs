@@ -115,11 +115,40 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
                 daemon, id, selector, nth, contains, to_y, by_pages, timeout_ms, reply,
             );
         }
+        Request::Snapshot { id, timeout_ms } => {
+            return automation::snapshot(daemon, id, timeout_ms, reply);
+        }
+        Request::Click {
+            id,
+            selector,
+            nth,
+            contains,
+            r#ref,
+            timeout_ms,
+        } => {
+            return automation::click(daemon, id, selector, nth, contains, r#ref, timeout_ms, reply);
+        }
+        Request::Type {
+            id,
+            selector,
+            nth,
+            contains,
+            r#ref,
+            text,
+            clear,
+            enter,
+            timeout_ms,
+        } => {
+            return automation::type_text(
+                daemon, id, selector, nth, contains, r#ref, text, clear, enter, timeout_ms, reply,
+            );
+        }
         _ => {}
     }
 
     let response = match req {
         Request::Ping => Response::ok(),
+        Request::Console { id, clear, limit } => automation::console(daemon, id, clear, limit),
         Request::Open { url, app_id, mode } => {
             let url = url.map(normalize_url);
             let info = BrowserWindow::open(daemon, url, app_id, mode);
@@ -184,7 +213,10 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
         | Request::Screenshot { .. }
         | Request::WaitLoad { .. }
         | Request::Upload { .. }
-        | Request::Scroll { .. } => Response::err("internal: async request in sync path"),
+        | Request::Scroll { .. }
+        | Request::Snapshot { .. }
+        | Request::Click { .. }
+        | Request::Type { .. } => Response::err("internal: async request in sync path"),
     };
     reply(response);
 }
