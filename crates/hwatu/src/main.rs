@@ -148,7 +148,9 @@ fn default_open_mode() -> OpenMode {
         if let Some(mode) = parse_open_mode(&v) {
             return mode;
         }
-        eprintln!("hwatu: ignoring invalid HWATU_AGENT_MODE={v:?} (want normal|background|headless)");
+        eprintln!(
+            "hwatu: ignoring invalid HWATU_AGENT_MODE={v:?} (want normal|background|headless)"
+        );
     }
     config_agent_mode().unwrap_or(OpenMode::Headless)
 }
@@ -292,7 +294,10 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             // "--version" in a visible window. Free-text tails (eval
             // JS, typed text) may legitimately contain `--tokens`, so
             // only those subcommands keep collecting them.
-            let free_text_tail = matches!(rest.first().map(|s| s.as_str()), Some("eval") | Some("type"));
+            let free_text_tail = matches!(
+                rest.first().map(|s| s.as_str()),
+                Some("eval") | Some("type")
+            );
             if free_text_tail {
                 rest.push(arg);
             } else {
@@ -577,9 +582,7 @@ mod tests {
     /// Eval JS and typed text may legitimately contain `--tokens`.
     #[test]
     fn eval_and_type_keep_double_dash_tokens() {
-        let Ok(Request::Eval { js, .. }) =
-            parse(&args(&["eval", "return", "'--version'"]))
-        else {
+        let Ok(Request::Eval { js, .. }) = parse(&args(&["eval", "return", "'--version'"])) else {
             panic!("expected Eval");
         };
         assert!(js.contains("--version"));
@@ -793,7 +796,14 @@ mod tests {
             clear,
             enter,
             ..
-        }) = parse(&args(&["type", "input[name=q]", "rust", "borrow", "checker", "--enter"]))
+        }) = parse(&args(&[
+            "type",
+            "input[name=q]",
+            "rust",
+            "borrow",
+            "checker",
+            "--enter",
+        ]))
         else {
             panic!("expected Type");
         };

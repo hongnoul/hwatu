@@ -670,7 +670,12 @@ return {{ typed: matched, value: String(value).slice(0, 200), url: location.href
 /// (the buffer lives daemon-side), but routed here for target
 /// resolution. Works on suspended windows: the buffer outlives the
 /// page.
-pub fn console(daemon: &Rc<Daemon>, id: Option<u64>, clear: bool, limit: Option<usize>) -> Response {
+pub fn console(
+    daemon: &Rc<Daemon>,
+    id: Option<u64>,
+    clear: bool,
+    limit: Option<usize>,
+) -> Response {
     match resolve(daemon, id) {
         Ok(win) => {
             let entries = win.console.read(clear, limit);

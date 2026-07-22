@@ -126,7 +126,9 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
             r#ref,
             timeout_ms,
         } => {
-            return automation::click(daemon, id, selector, nth, contains, r#ref, timeout_ms, reply);
+            return automation::click(
+                daemon, id, selector, nth, contains, r#ref, timeout_ms, reply,
+            );
         }
         Request::Type {
             id,
