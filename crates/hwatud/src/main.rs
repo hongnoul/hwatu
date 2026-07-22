@@ -17,6 +17,7 @@ mod launcher;
 mod prompts;
 mod search;
 mod session;
+mod verify;
 mod window;
 
 use gtk::prelude::*;

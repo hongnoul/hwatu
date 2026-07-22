@@ -244,6 +244,13 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
     let mut no_clear = false;
     let mut enter = false;
     let mut limit: Option<usize> = None;
+    let mut time_ms: Option<f64> = None;
+    let mut progress: Option<f64> = None;
+    let mut resume = false;
+    let mut other: Option<u64> = None;
+    let mut baseline: Option<String> = None;
+    let mut tolerance: Option<u8> = None;
+    let mut heatmap: Option<String> = None;
     let mut mode = default_mode;
     let mut rest: Vec<&String> = Vec::new();
     let mut it = args.iter();
@@ -312,6 +319,46 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 it.next()
                     .and_then(|v| v.parse().ok())
                     .ok_or("usage: --limit <n>")?,
+            );
+        } else if arg == "--time-ms" {
+            time_ms = Some(
+                it.next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("usage: --time-ms <ms>")?,
+            );
+        } else if arg == "--progress" {
+            progress = Some(
+                it.next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("usage: --progress <0..1>")?,
+            );
+        } else if arg == "--resume" {
+            resume = true;
+        } else if arg == "--other" {
+            other = Some(
+                it.next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("usage: --other <window-id>")?,
+            );
+        } else if arg == "--baseline" {
+            baseline = Some(
+                it.next()
+                    .filter(|v| !v.is_empty())
+                    .ok_or("usage: --baseline <png-path>")?
+                    .clone(),
+            );
+        } else if arg == "--tolerance" {
+            tolerance = Some(
+                it.next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("usage: --tolerance <0-255>")?,
+            );
+        } else if arg == "--heatmap" {
+            heatmap = Some(
+                it.next()
+                    .filter(|v| !v.is_empty())
+                    .ok_or("usage: --heatmap <png-path>")?
+                    .clone(),
             );
         } else if arg == "--to-y" {
             to_y = Some(
@@ -432,6 +479,23 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             })
         }
         Some("snapshot") => Ok(Request::Snapshot { id, timeout_ms }),
+        Some("motion") => Ok(Request::Motion { id, timeout_ms }),
+        Some("seek") => Ok(Request::Seek {
+            id,
+            time_ms,
+            progress,
+            resume,
+            timeout_ms,
+        }),
+        Some("diff") => Ok(Request::Diff {
+            id: id.ok_or("usage: hwatu diff --id <id> (--other <id> | --baseline <png>) [--tolerance <n>] [--heatmap <png>] [--full]")?,
+            other,
+            baseline,
+            tolerance,
+            heatmap,
+            full,
+            timeout_ms,
+        }),
         Some("click") => {
             let selector = rest.get(1).map(|s| s.to_string());
             if selector.is_none() && r#ref.is_none() {
@@ -542,6 +606,9 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--foc
 | click [--id <id>] (<selector> [nth] [--contains <text>] | --ref <n>) \
 | type [--id <id>] (<selector> | --ref <n>) <text> [--enter] [--no-clear] \
 | console [--id <id>] [--clear] [--limit <n>] \
+| motion [--id <id>] \
+| seek [--id <id>] (--time-ms <ms> | --progress <0..1> | --resume) \
+| diff --id <id> (--other <id> | --baseline <png>) [--tolerance <0-255>] [--heatmap <png>] [--full] \
 | adblock [on|off|status|update] | mcp | update | ping | quit";
 
 fn connect_or_spawn() -> std::io::Result<UnixStream> {

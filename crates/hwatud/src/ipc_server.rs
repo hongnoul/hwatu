@@ -152,6 +152,31 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
                 daemon, id, selector, nth, contains, r#ref, text, clear, enter, timeout_ms, reply,
             );
         }
+        Request::Motion { id, timeout_ms } => {
+            return crate::verify::motion(daemon, id, timeout_ms, reply);
+        }
+        Request::Seek {
+            id,
+            time_ms,
+            progress,
+            resume,
+            timeout_ms,
+        } => {
+            return crate::verify::seek(daemon, id, time_ms, progress, resume, timeout_ms, reply);
+        }
+        Request::Diff {
+            id,
+            other,
+            baseline,
+            tolerance,
+            heatmap,
+            full,
+            timeout_ms: _,
+        } => {
+            return crate::verify::diff(
+                daemon, id, other, baseline, tolerance, heatmap, full, reply,
+            );
+        }
         _ => {}
     }
 
@@ -233,7 +258,10 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
         | Request::Scroll { .. }
         | Request::Snapshot { .. }
         | Request::Click { .. }
-        | Request::Type { .. } => Response::err("internal: async request in sync path"),
+        | Request::Type { .. }
+        | Request::Motion { .. }
+        | Request::Seek { .. }
+        | Request::Diff { .. } => Response::err("internal: async request in sync path"),
     };
     reply(response);
 }

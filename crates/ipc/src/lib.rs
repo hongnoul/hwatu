@@ -219,6 +219,67 @@ pub enum Request {
         #[serde(default)]
         limit: Option<usize>,
     },
+    /// Extract the page's motion spec: every CSS animation, transition
+    /// and Web-Animations-API animation as structured JSON (keyframes,
+    /// duration, delay, easing, iteration count), plus `@keyframes`
+    /// rules and declared-but-idle `transition-*` styles from CSSOM.
+    /// Motion is numbers, not pixels: an agent copies/verifies easing
+    /// curves exactly instead of eyeballing frames.
+    Motion {
+        #[serde(default)]
+        id: Option<u64>,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
+    /// Freeze animation time: pause every animation on the page and
+    /// set its currentTime, so the page renders a deterministic frame
+    /// for screenshot/diff. `time_ms` seeks to an absolute time;
+    /// `progress` (0.0–1.0) seeks each animation proportionally to its
+    /// own duration. `resume` unpauses everything instead.
+    Seek {
+        #[serde(default)]
+        id: Option<u64>,
+        /// Absolute animation time in ms (applied to every animation).
+        #[serde(default)]
+        time_ms: Option<f64>,
+        /// Per-animation fractional progress (0.0 = start, 1.0 = end).
+        #[serde(default)]
+        progress: Option<f64>,
+        /// Unpause all animations, restoring live playback.
+        #[serde(default)]
+        resume: bool,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
+    /// Perceptual pixel diff of two windows (or a window against a
+    /// baseline PNG). Returns a match score (percent of pixels within
+    /// tolerance), the bounding boxes of the largest mismatched
+    /// regions, and optionally writes a heatmap PNG highlighting the
+    /// differences. This is the feedback signal that lets an agent
+    /// *converge* on pixel-perfect instead of eyeballing screenshots.
+    Diff {
+        /// First window.
+        id: u64,
+        /// Second window to compare against...
+        #[serde(default)]
+        other: Option<u64>,
+        /// ...or a baseline PNG on disk (exactly one of the two).
+        #[serde(default)]
+        baseline: Option<String>,
+        /// Per-channel tolerance 0-255 before a pixel counts as
+        /// different (default 8, forgiving of AA/compression noise).
+        #[serde(default)]
+        tolerance: Option<u8>,
+        /// Write a heatmap PNG (mismatches in red over a dimmed base)
+        /// to this path.
+        #[serde(default)]
+        heatmap: Option<String>,
+        /// Diff the full document instead of the visible viewport.
+        #[serde(default)]
+        full: bool,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
 }
 
 fn default_true() -> bool {
