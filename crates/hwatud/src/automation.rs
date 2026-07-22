@@ -326,7 +326,7 @@ pub fn navigate(
 
     arm_timeout(reply.clone(), timeout_ms, "navigate");
     win.mark_nav_pending();
-    wire_load_finished(&view, {
+    wire_load_settled(&view, win.clone(), {
         let reply = reply.clone();
         move |_| reply.send(Response::window(win.info()))
     });
@@ -355,7 +355,9 @@ pub fn wait_load(daemon: &Rc<Daemon>, id: Option<u64>, timeout_ms: Option<u64>, 
         return reply.send(Response::window(win.info()));
     }
     arm_timeout(reply.clone(), timeout_ms, "wait_load");
-    wire_load_finished(&view, move |_| reply.send(Response::window(win.info())));
+    wire_load_settled(&view, win.clone(), move |_| {
+        reply.send(Response::window(win.info()))
+    });
 }
 
 /// Detect CAPTCHA / anti-bot challenge UI, and optionally wait for the
@@ -470,6 +472,39 @@ fn wire_load_finished(view: &webkit6::WebView, done: impl FnOnce(&webkit6::WebVi
     let id = view.connect_load_changed(move |view, event| {
         if event != webkit6::LoadEvent::Finished {
             return;
+        }
+        if let Some(id) = handler2.borrow_mut().take() {
+            view.disconnect(id);
+        }
+        if let Some(done) = done.borrow_mut().take() {
+            done(view);
+        }
+    });
+    handler.replace(Some(id));
+}
+
+/// Like [`wire_load_finished`], but only fires once the window is
+/// actually *settled*: no live load and no requested-but-unstarted
+/// navigation. A prewarmed view adopted mid-`about:blank` load emits a
+/// Finished for that stale load before the real navigation even
+/// Starts; counting one Finished there releases the caller into the
+/// real page's commit (destroying its evals). Checking quiescence at
+/// each Finished instead makes the wait navigation-shaped, not
+/// event-shaped.
+fn wire_load_settled(
+    view: &webkit6::WebView,
+    win: Rc<crate::window::BrowserWindow>,
+    done: impl FnOnce(&webkit6::WebView) + 'static,
+) {
+    let done = RefCell::new(Some(done));
+    let handler: Rc<RefCell<Option<glib::SignalHandlerId>>> = Rc::new(RefCell::new(None));
+    let handler2 = handler.clone();
+    let id = view.connect_load_changed(move |view, event| {
+        if event != webkit6::LoadEvent::Finished {
+            return;
+        }
+        if win.nav_pending() || view.is_loading() {
+            return; // a stale load finished; the requested one is still coming
         }
         if let Some(id) = handler2.borrow_mut().take() {
             view.disconnect(id);

@@ -77,6 +77,18 @@ const median = (xs) => {
 const fmt = (xs) =>
   `median ${median(xs).toFixed(0)} ms  (min ${Math.min(...xs).toFixed(0)}, max ${Math.max(...xs).toFixed(0)}, n=${xs.length})`;
 
+/** Run one benchmark iteration, retrying once on a transient failure
+ * (either tool can hiccup under system load); a second failure is
+ * real and aborts the run. */
+async function attempt(fn) {
+  try { return await fn(); }
+  catch (e) {
+    console.error(`  (retrying after transient failure: ${String(e).split("\n")[0]})`);
+    await new Promise((r) => setTimeout(r, 1000));
+    return fn();
+  }
+}
+
 async function hwatu(...args) {
   const { stdout } = await execFileP("hwatu", args);
   return stdout.trim();
@@ -274,8 +286,8 @@ await new Promise((r) => setTimeout(r, 500));
 // -- 1. cold verify ----------------------------------------------------
 {
   const h = [], p = [];
-  for (let i = 0; i < RUNS; i++) h.push(await hwatuColdVerify(url, shot("hc")));
-  for (let i = 0; i < RUNS; i++) p.push(await pwColdVerify(chromium, url, shot("pc")));
+  for (let i = 0; i < RUNS; i++) h.push(await attempt(() => hwatuColdVerify(url, shot("hc"))));
+  for (let i = 0; i < RUNS; i++) p.push(await attempt(() => pwColdVerify(chromium, url, shot("pc"))));
   results.cold = { hwatu: h, playwright: p };
   console.log(`cold verify   hwatu:      ${fmt(h)}`);
   console.log(`cold verify   playwright: ${fmt(p)}`);
@@ -289,13 +301,13 @@ await new Promise((r) => setTimeout(r, 500));
   await pwWarmVerify(browser, url, shot("w1"));
 
   const h = [], hs = [], hd = [], p = [], pd = [], ho = [], po = [];
-  for (let i = 0; i < RUNS; i++) ho.push(await hwatuOpenLoaded(url));
-  for (let i = 0; i < RUNS; i++) po.push(await pwOpenLoaded(browser, url));
-  for (let i = 0; i < RUNS; i++) h.push(await hwatuWarmVerify(url, shot("hw")));
-  for (let i = 0; i < RUNS; i++) hs.push(await hwatuWarmVerifySock(url, shot("hs")));
-  for (let i = 0; i < RUNS; i++) hd.push(await hwatuWarmVerifySock(url, null));
-  for (let i = 0; i < RUNS; i++) p.push(await pwWarmVerify(browser, url, shot("pw")));
-  for (let i = 0; i < RUNS; i++) pd.push(await pwWarmVerify(browser, url, null));
+  for (let i = 0; i < RUNS; i++) ho.push(await attempt(() => hwatuOpenLoaded(url)));
+  for (let i = 0; i < RUNS; i++) po.push(await attempt(() => pwOpenLoaded(browser, url)));
+  for (let i = 0; i < RUNS; i++) h.push(await attempt(() => hwatuWarmVerify(url, shot("hw"))));
+  for (let i = 0; i < RUNS; i++) hs.push(await attempt(() => hwatuWarmVerifySock(url, shot("hs"))));
+  for (let i = 0; i < RUNS; i++) hd.push(await attempt(() => hwatuWarmVerifySock(url, null)));
+  for (let i = 0; i < RUNS; i++) p.push(await attempt(() => pwWarmVerify(browser, url, shot("pw"))));
+  for (let i = 0; i < RUNS; i++) pd.push(await attempt(() => pwWarmVerify(browser, url, null)));
   results.warm = { hwatu_open: ho, playwright_open: po, hwatu_cli: h, hwatu_socket: hs, hwatu_socket_noshot: hd, playwright: p, playwright_noshot: pd };
   console.log(`open loaded   hwatu (socket):     ${fmt(ho)}`);
   console.log(`open loaded   playwright:         ${fmt(po)}`);
