@@ -228,6 +228,17 @@ pub enum Request {
     Motion {
         #[serde(default)]
         id: Option<u64>,
+        /// Observe the live page instead of only reading declared
+        /// animation: sample moving elements per frame for
+        /// `observe_ms`, then fit motion models (linear velocity,
+        /// loop period, easing curve) in the daemon. Catches
+        /// script-driven motion (requestAnimationFrame marquees,
+        /// JS tickers) that `getAnimations()` cannot see.
+        #[serde(default)]
+        observe: bool,
+        /// Observation window in ms (default 2500).
+        #[serde(default)]
+        observe_ms: Option<u64>,
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
