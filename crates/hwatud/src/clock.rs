@@ -1,0 +1,281 @@
+//! Virtual time for a page: `hwatu clock pause|resume|step|set`.
+//!
+//! [`crate::verify::seek`] pins declarative animation (CSS/WAAPI)
+//! because the Web Animations API exposes their timeline. Script-driven
+//! motion has no such handle: a `requestAnimationFrame` loop that
+//! integrates timestamp deltas (the classic marquee/physics pattern)
+//! keeps running through a seek, so the frame is never deterministic.
+//!
+//! This module injects a user script at document start (before any
+//! page code runs) that puts every clock the page can read behind one
+//! controllable virtual timeline:
+//!
+//! - `performance.now()` and `Date.now()` return virtual time,
+//! - `setTimeout`/`setInterval` fire on virtual deadlines (delegated
+//!   1:1 to native timers while the clock is live, so real pages keep
+//!   their real behavior until an agent takes control),
+//! - `requestAnimationFrame` callbacks are held in a registry and
+//!   flushed by a native rAF pump while live, or by `step` while
+//!   paused, always with a virtual timestamp,
+//! - CSS/WAAPI animations are paused and their `currentTime` advanced
+//!   from the same timeline, so declarative and script motion share
+//!   one clock.
+//!
+//! `pause` freezes all of it; `step <ms>` advances deterministically in
+//! 60 fps ticks (due timers fire, one rAF batch per tick); `set <ms>`
+//! steps to an absolute virtual time; `resume` returns to real time
+//! monotonically. Two screenshots at the same virtual time are
+//! byte-identical, which is what turns "the page moves" from a flake
+//! into a measurement.
+
+use crate::automation::{self, Reply};
+use crate::Daemon;
+use hwatu_ipc::{ClockAction, Response};
+use std::rc::Rc;
+
+/// User script injected at document start in every frame. Installs the
+/// virtual clock *dormant*: all wrapped clocks delegate to the native
+/// ones (virtual time == real time) until the first `pause`/`step`/
+/// `set`, so pages that never use `hwatu clock` behave natively.
+/// Idempotent per realm.
+const CLOCK_JS: &str = r#"(() => {
+  if (window.__hwatu_clock) return;
+  const g = window;
+  const realPerf = performance;
+  const realNow = performance.now.bind(performance);
+  const nativeSetTimeout = g.setTimeout.bind(g);
+  const nativeClearTimeout = g.clearTimeout.bind(g);
+  const nativeSetInterval = g.setInterval.bind(g);
+  const nativeClearInterval = g.clearInterval.bind(g);
+  const nativeRaf = g.requestAnimationFrame.bind(g);
+  const nativeCaf = g.cancelAnimationFrame.bind(g);
+  const dateBase = Date.now() - realNow();
+
+  // Virtual timeline: continuous with the performance timeline until
+  // the first pause (vnow() === realNow() while never paused).
+  let paused = false;
+  let vbase = realNow(); // virtual time at the last sync point
+  let rbase = vbase;     // realNow() at the last sync point
+  const vnow = () => (paused ? vbase : vbase + (realNow() - rbase));
+
+  // ---- timers: one registry, native delegation while live ---------
+  // Entry: { cb, args, deadline (virtual ms), interval (ms|null),
+  //          native (native timer id | null) }
+  const timers = new Map();
+  let nextTimerId = 1_000_000_000; // far from native ids
+  const armNative = (id, entry) => {
+    const delay = Math.max(0, entry.deadline - vnow());
+    entry.native = nativeSetTimeout(() => fireTimer(id), delay);
+  };
+  const fireTimer = (id) => {
+    const entry = timers.get(id);
+    if (!entry) return;
+    if (entry.interval !== null) {
+      entry.deadline += entry.interval;
+      entry.native = null;
+      if (!paused) armNative(id, entry);
+    } else {
+      timers.delete(id);
+    }
+    try { entry.cb(...entry.args); } catch (e) { nativeSetTimeout(() => { throw e; }, 0); }
+  };
+  const schedule = (cb, delay, interval, args) => {
+    const id = nextTimerId++;
+    const entry = {
+      cb, args,
+      deadline: vnow() + Math.max(Number(delay) || 0, 0),
+      interval, native: null,
+    };
+    timers.set(id, entry);
+    if (!paused) armNative(id, entry);
+    return id;
+  };
+  g.setTimeout = function (cb, delay, ...args) {
+    if (typeof cb !== 'function') return nativeSetTimeout(cb, delay, ...args);
+    return schedule(cb, delay, null, args);
+  };
+  g.setInterval = function (cb, delay, ...args) {
+    if (typeof cb !== 'function') return nativeSetInterval(cb, delay, ...args);
+    const ms = Math.max(Number(delay) || 0, 1);
+    return schedule(cb, ms, ms, args);
+  };
+  const clearAny = (id) => {
+    const entry = timers.get(id);
+    if (entry) {
+      if (entry.native !== null) nativeClearTimeout(entry.native);
+      timers.delete(id);
+    }
+  };
+  g.clearTimeout = (id) => { clearAny(id); nativeClearTimeout(id); };
+  g.clearInterval = (id) => { clearAny(id); nativeClearInterval(id); };
+
+  // ---- requestAnimationFrame: registry + pump ----------------------
+  const rafCallbacks = new Map();
+  let nextRafId = 1;
+  let rafPump = null; // native rAF id driving the live flush
+  const flushRaf = () => {
+    const batch = [...rafCallbacks.values()];
+    rafCallbacks.clear();
+    const ts = vnow();
+    for (const cb of batch) {
+      try { cb(ts); } catch (e) { nativeSetTimeout(() => { throw e; }, 0); }
+    }
+  };
+  const armPump = () => {
+    if (paused || rafPump !== null || rafCallbacks.size === 0) return;
+    rafPump = nativeRaf(() => { rafPump = null; flushRaf(); armPump(); });
+  };
+  g.requestAnimationFrame = (cb) => {
+    const id = nextRafId++;
+    rafCallbacks.set(id, cb);
+    armPump();
+    return id;
+  };
+  g.cancelAnimationFrame = (id) => { rafCallbacks.delete(id); };
+
+  // ---- clocks the page reads ---------------------------------------
+  realPerf.now = () => vnow();
+  Date.now = () => Math.round(dateBase + vnow());
+
+  // ---- declarative animations share the timeline --------------------
+  // Animations we paused (vs. paused by the page itself): only these
+  // are resumed by `resume`.
+  const pausedByUs = new WeakSet();
+  const pauseAnimations = () => {
+    for (const a of document.getAnimations()) {
+      try {
+        if (a.playState === 'running') { a.pause(); pausedByUs.add(a); }
+      } catch (e) { /* infinite timeline etc. */ }
+    }
+  };
+  const advanceAnimations = (ms) => {
+    for (const a of document.getAnimations()) {
+      try {
+        if (a.playState === 'running') { a.pause(); pausedByUs.add(a); }
+        if (a.currentTime !== null) a.currentTime = Number(a.currentTime) + ms;
+      } catch (e) { /* not seekable */ }
+    }
+  };
+
+  // ---- control surface ----------------------------------------------
+  const status = () => ({
+    installed: true,
+    paused,
+    virtual_ms: Math.round(vnow() * 1000) / 1000,
+    pending_timers: timers.size,
+    pending_rafs: rafCallbacks.size,
+  });
+  const pause = () => {
+    if (paused) return status();
+    vbase = vnow();
+    paused = true;
+    for (const entry of timers.values()) {
+      if (entry.native !== null) { nativeClearTimeout(entry.native); entry.native = null; }
+    }
+    if (rafPump !== null) { nativeCaf(rafPump); rafPump = null; }
+    pauseAnimations();
+    return status();
+  };
+  const resume = () => {
+    if (!paused) return status();
+    paused = false;
+    rbase = realNow();
+    for (const [id, entry] of timers) armNative(id, entry);
+    armPump();
+    for (const a of document.getAnimations()) {
+      try { if (pausedByUs.has(a)) { pausedByUs.delete(a); a.play(); } } catch (e) {}
+    }
+    return status();
+  };
+  const TICK = 1000 / 60;
+  const MAX_TIMER_FIRES_PER_TICK = 1000;
+  const step = (ms) => {
+    ms = Number(ms);
+    if (!Number.isFinite(ms) || ms < 0) return { error: 'step needs a finite ms >= 0' };
+    pause();
+    let remaining = ms;
+    while (remaining > 1e-9) {
+      const dt = Math.min(TICK, remaining);
+      remaining -= dt;
+      vbase += dt;
+      // Fire due timers, earliest first; intervals may refire within
+      // the tick, capped so a 0 ms interval cannot hang the page.
+      for (let fired = 0; fired < MAX_TIMER_FIRES_PER_TICK; fired++) {
+        let dueId = null;
+        let dueAt = Infinity;
+        for (const [id, entry] of timers) {
+          if (entry.deadline <= vbase + 1e-9 && entry.deadline < dueAt) {
+            dueAt = entry.deadline;
+            dueId = id;
+          }
+        }
+        if (dueId === null) break;
+        fireTimer(dueId);
+      }
+      flushRaf();
+    }
+    advanceAnimations(ms);
+    return status();
+  };
+  const set = (ms) => {
+    ms = Number(ms);
+    if (!Number.isFinite(ms) || ms < 0) return { error: 'set needs a finite ms >= 0' };
+    pause();
+    const cur = vnow();
+    if (ms < cur - 1e-6) {
+      return { error: `cannot go backwards: virtual time is ${Math.round(cur)} ms, requested ${ms} ms`, ...status() };
+    }
+    return step(ms - cur);
+  };
+  window.__hwatu_clock = { pause, resume, step, set, status };
+})();"#;
+
+/// Register the virtual-clock user script on a WebView's content
+/// manager. Must run on every view (prewarmed pool, popups) before it
+/// loads page content, because the wrappers must win the race against
+/// page scripts capturing the native clocks.
+pub fn wire_view(view: &webkit6::WebView) {
+    use webkit6::prelude::WebViewExt;
+    let Some(ucm) = view.user_content_manager() else {
+        return;
+    };
+    let script = webkit6::UserScript::new(
+        CLOCK_JS,
+        webkit6::UserContentInjectedFrames::AllFrames,
+        webkit6::UserScriptInjectionTime::Start,
+        &[],
+        &[],
+    );
+    ucm.add_script(&script);
+}
+
+/// Dispatch one clock command to the page's installed control surface.
+pub fn clock(
+    daemon: &Rc<Daemon>,
+    id: Option<u64>,
+    action: ClockAction,
+    ms: Option<f64>,
+    timeout_ms: Option<u64>,
+    reply: Reply,
+) {
+    let call = match (action, ms) {
+        (ClockAction::Pause, _) => "c.pause()".to_string(),
+        (ClockAction::Resume, _) => "c.resume()".to_string(),
+        (ClockAction::Status, _) => "c.status()".to_string(),
+        (ClockAction::Step, Some(ms)) if ms.is_finite() && ms >= 0.0 => format!("c.step({ms})"),
+        (ClockAction::Step, _) => {
+            return reply(Response::err("usage: hwatu clock step <ms>"));
+        }
+        (ClockAction::Set, Some(ms)) if ms.is_finite() && ms >= 0.0 => format!("c.set({ms})"),
+        (ClockAction::Set, _) => {
+            return reply(Response::err("usage: hwatu clock set <ms>"));
+        }
+    };
+    let js = format!(
+        r#"
+const c = window.__hwatu_clock;
+if (!c) return {{ error: "virtual clock not installed in this page (page predates this daemon build; reload it)" }};
+return {call};"#
+    );
+    automation::eval(daemon, id, js, timeout_ms, reply);
+}
