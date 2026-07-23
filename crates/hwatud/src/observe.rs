@@ -645,7 +645,7 @@ fn bezier_progress(p: [f64; 4], t: f64) -> f64 {
 }
 
 /// Fit cubic-bezier control points to a sampled progress curve
-/// (progress[i] over uniform normalized time). Coarse grid search
+/// (`progress[i]` over uniform normalized time). Coarse grid search
 /// refined twice: robust, dependency-free, and fast enough for ≤600
 /// samples. Returns ([p1x, p1y, p2x, p2y], SSE).
 fn fit_bezier(progress: &[f64]) -> ([f64; 4], f64) {
