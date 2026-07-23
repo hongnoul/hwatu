@@ -319,6 +319,25 @@ pub enum Request {
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
+    /// Control a page's *virtual clock*. Where [`Request::Seek`] pins
+    /// declarative animations (CSS/WAAPI), Clock also freezes the
+    /// clocks script-driven animation reads: `requestAnimationFrame`,
+    /// `performance.now`, `Date.now`, `setTimeout`/`setInterval` are
+    /// wrapped at document start behind one controllable timeline, and
+    /// `document.getAnimations()` is driven from the same timeline. A
+    /// rAF-driven marquee that Seek cannot touch freezes under
+    /// `pause` and advances deterministically under `step`.
+    Clock {
+        #[serde(default)]
+        id: Option<u64>,
+        action: ClockAction,
+        /// Milliseconds: the amount for `step`, the absolute virtual
+        /// time for `set`. Ignored by `pause`/`resume`.
+        #[serde(default)]
+        ms: Option<f64>,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
     /// Set a window's viewport size (CSS pixels). For headless windows
     /// this re-allocates the offscreen toplevel; for mapped windows it
     /// resizes the window (compositor policy permitting). The point is
@@ -355,6 +374,29 @@ pub enum OpenMode {
     /// driven by WebKit itself, so eval/goto/upload work and `shot`
     /// captures the page. Invisible to the WM entirely.
     Headless,
+}
+
+/// What to do with a page's virtual clock (see [`Request::Clock`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClockAction {
+    /// Freeze virtual time. rAF stops firing, timers stop expiring,
+    /// `performance.now()`/`Date.now()` stop advancing, and running
+    /// CSS/WAAPI animations are paused at the current virtual time.
+    Pause,
+    /// Return to real time. Wrapped clocks resume advancing from the
+    /// current virtual time (monotonic: no backwards jumps).
+    Resume,
+    /// Advance a paused clock by `ms` virtual milliseconds: due timers
+    /// fire, one rAF batch runs per 16.67 ms tick, and CSS/WAAPI
+    /// currentTime advances by the same amount. Deterministic.
+    Step,
+    /// Pause and set absolute virtual time to `ms` (milliseconds since
+    /// the clock was installed). Stepping semantics as `step`, from
+    /// the current virtual time; going backwards is an error.
+    Set,
+    /// Report the clock's state without changing it.
+    Status,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -208,6 +208,7 @@ pub fn build_webview() -> webkit6::WebView {
     let view = webkit6::WebView::new();
     apply_view_settings(&view);
     crate::console::wire_view(&view);
+    crate::clock::wire_view(&view);
     view
 }
 
@@ -361,6 +362,7 @@ impl BrowserWindow {
         let webview = webkit6::WebView::builder().related_view(related).build();
         apply_view_settings(&webview);
         crate::console::wire_view(&webview);
+        crate::clock::wire_view(&webview);
         self.daemon.adblock.apply_to(&webview);
         let popup = Self::build(
             &self.daemon,

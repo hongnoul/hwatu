@@ -6,7 +6,7 @@
 mod mcp;
 mod update;
 
-use hwatu_ipc::{AdblockCmd, OpenMode, Request, Response};
+use hwatu_ipc::{AdblockCmd, ClockAction, OpenMode, Request, Response};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::process::Command;
@@ -526,6 +526,32 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             resume,
             timeout_ms,
         }),
+        Some("clock") => {
+            const USAGE_CLOCK: &str =
+                "usage: hwatu clock [--id <id>] (pause | resume | step <ms> | set <ms> | status)";
+            let (action, ms) = match rest.get(1).map(|s| s.as_str()) {
+                Some("pause") => (ClockAction::Pause, None),
+                Some("resume") => (ClockAction::Resume, None),
+                None | Some("status") => (ClockAction::Status, None),
+                Some("step") => (
+                    ClockAction::Step,
+                    Some(rest.get(2).and_then(|s| s.parse().ok()).ok_or(USAGE_CLOCK)?),
+                ),
+                Some("set") => (
+                    ClockAction::Set,
+                    Some(rest.get(2).and_then(|s| s.parse().ok()).ok_or(USAGE_CLOCK)?),
+                ),
+                Some(other) => {
+                    return Err(format!("unknown clock action {other:?}\n{USAGE_CLOCK}"))
+                }
+            };
+            Ok(Request::Clock {
+                id,
+                action,
+                ms,
+                timeout_ms,
+            })
+        }
         Some("diff") => Ok(Request::Diff {
             id: id.ok_or("usage: hwatu diff --id <id> (--other <id> | --baseline <png>) [--tolerance <n>] [--heatmap <png>] [--full]")?,
             other,
@@ -649,6 +675,7 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--foc
 | motion [--id <id>] \
 | resize [--id <id>] <width>x<height> \
 | seek [--id <id>] (--time-ms <ms> | --progress <0..1> | --resume) \
+| clock [--id <id>] (pause | resume | step <ms> | set <ms> | status) \
 | diff --id <id> (--other <id> | --baseline <png>) [--tolerance <0-255>] [--heatmap <png>] [--full] \
 | adblock [on|off|status|update] | mcp | update | ping | quit";
 

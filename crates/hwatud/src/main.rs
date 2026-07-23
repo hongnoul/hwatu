@@ -9,6 +9,7 @@ mod abp;
 mod adblock;
 mod automation;
 mod bar;
+mod clock;
 mod console;
 mod downloads;
 mod ipc_server;
