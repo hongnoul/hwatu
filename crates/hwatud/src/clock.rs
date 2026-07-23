@@ -157,6 +157,63 @@ const CLOCK_JS: &str = r#"(() => {
     }
   };
 
+  // ---- IntersectionObserver: pumped under virtual stepping ----------
+  // WebKit delivers IO callbacks on rendering opportunities, and a
+  // hidden/unmapped (headless) page never gets one, so script gated on
+  // "am I in view" (lazy loads, marquee starts) never runs headless.
+  // Track registrations and, on each `step` tick, compute viewport
+  // intersections manually and deliver entries with virtual timestamps.
+  // While live, the native observer delivers as usual; the pump only
+  // fires under step, and only when the observed state changed.
+  const NativeIO = g.IntersectionObserver;
+  const ioInstances = new Set();
+  if (NativeIO) {
+    g.IntersectionObserver = class IntersectionObserver extends NativeIO {
+      constructor(cb, options) {
+        super(cb, options);
+        this.__hwatu = { cb, options: options || {}, targets: new Set(), last: new WeakMap() };
+        ioInstances.add(this);
+      }
+      observe(t) { this.__hwatu.targets.add(t); return super.observe(t); }
+      unobserve(t) { this.__hwatu.targets.delete(t); return super.unobserve(t); }
+      disconnect() { this.__hwatu.targets.clear(); ioInstances.delete(this); return super.disconnect(); }
+    };
+  }
+  const ioRect = (root) => {
+    if (root && root.getBoundingClientRect) return root.getBoundingClientRect();
+    return { left: 0, top: 0, right: g.innerWidth, bottom: g.innerHeight,
+             width: g.innerWidth, height: g.innerHeight };
+  };
+  const pumpIO = () => {
+    for (const io of ioInstances) {
+      const state = io.__hwatu;
+      const rb = ioRect(state.options.root);
+      const entries = [];
+      for (const target of state.targets) {
+        if (!target.isConnected) continue;
+        const r = target.getBoundingClientRect();
+        const ileft = Math.max(r.left, rb.left), itop = Math.max(r.top, rb.top);
+        const iright = Math.min(r.right, rb.right), ibottom = Math.min(r.bottom, rb.bottom);
+        const iw = Math.max(0, iright - ileft), ih = Math.max(0, ibottom - itop);
+        const area = r.width * r.height;
+        const ratio = area > 0 ? (iw * ih) / area : (iw >= 0 && ih >= 0 ? 1 : 0);
+        const intersecting = iw > 0 && ih > 0;
+        const last = state.last.get(target);
+        if (last !== undefined && last === intersecting) continue;
+        state.last.set(target, intersecting);
+        entries.push({
+          target, isIntersecting: intersecting, intersectionRatio: ratio,
+          boundingClientRect: r,
+          intersectionRect: { left: ileft, top: itop, width: iw, height: ih },
+          rootBounds: rb, time: vnow(),
+        });
+      }
+      if (entries.length) {
+        try { state.cb(entries, io); } catch (e) { nativeSetTimeout(() => { throw e; }, 0); }
+      }
+    }
+  };
+
   // ---- control surface ----------------------------------------------
   const status = () => ({
     installed: true,
@@ -212,6 +269,7 @@ const CLOCK_JS: &str = r#"(() => {
         if (dueId === null) break;
         fireTimer(dueId);
       }
+      pumpIO();
       flushRaf();
     }
     advanceAnimations(ms);
@@ -227,7 +285,19 @@ const CLOCK_JS: &str = r#"(() => {
     }
     return step(ms - cur);
   };
-  window.__hwatu_clock = { pause, resume, step, set, status };
+  window.__hwatu_clock = {
+    pause, resume, step, set, status,
+    // Native escape hatch for the harness's own plumbing: hwatu's
+    // scroll/click/type/expect/challenge JS must keep running in real
+    // time while the *page's* clocks are frozen, or pausing the page
+    // would deadlock the tool driving it.
+    native: {
+      setTimeout: nativeSetTimeout,
+      clearTimeout: nativeClearTimeout,
+      now: () => realNow(),
+      dateNow: () => Math.round(dateBase + realNow()),
+    },
+  };
 })();"#;
 
 /// Register the virtual-clock user script on a WebView's content

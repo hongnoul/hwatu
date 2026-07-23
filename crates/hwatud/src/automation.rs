@@ -40,6 +40,17 @@ impl OnceReply {
 /// Default deadline for eval / navigate / wait_load.
 const DEFAULT_TIMEOUT_MS: u64 = 15_000;
 
+/// JS prelude giving harness scripts clocks that keep running while
+/// the page's virtual clock (crate::clock) is paused. Falls back to
+/// the page globals when the clock script is absent (old pages loaded
+/// before a daemon upgrade).
+const NATIVE_TIME_JS: &str = r#"
+const __hwatuNative = (window.__hwatu_clock && window.__hwatu_clock.native) || null;
+const hwatuSleep = (ms) => new Promise((r) =>
+  __hwatuNative ? __hwatuNative.setTimeout(r, ms) : setTimeout(r, ms));
+const hwatuNow = () => (__hwatuNative ? __hwatuNative.dateNow() : Date.now());
+"#;
+
 /// Pick the target window: explicit id, else the focused window, else
 /// the last window an automation command targeted (if still open),
 /// else the only window. Every successful resolution records the
@@ -386,15 +397,15 @@ pub fn challenge(
 
 fn challenge_wait_js(timeout_ms: u64) -> String {
     format!(
-        r#"{detect}
-const started = Date.now();
+        r#"{native}{detect}
+const started = hwatuNow();
 const timeoutMs = {timeout_ms};
 let current = detectHwatuChallenge();
-while (current.status === 'challenge' && (timeoutMs === 0 || Date.now() - started < timeoutMs)) {{
-  await new Promise(r => setTimeout(r, 500));
+while (current.status === 'challenge' && (timeoutMs === 0 || hwatuNow() - started < timeoutMs)) {{
+  await hwatuSleep(500);
   current = detectHwatuChallenge();
 }}
-current.elapsed_ms = Date.now() - started;
+current.elapsed_ms = hwatuNow() - started;
 if (current.status === 'challenge') {{
   current.status = 'manual_required';
   current.manual_required = true;
@@ -405,6 +416,7 @@ if (current.status === 'challenge') {{
   current.details = 'no challenge detected after waiting';
 }}
 return current;"#,
+        native = NATIVE_TIME_JS,
         detect = challenge_detector_js(),
         timeout_ms = timeout_ms,
     )
@@ -704,7 +716,7 @@ pub fn scroll(
         ));
     }
     let js = format!(
-        r#"const selector = {selector};
+        r#"{native}const selector = {selector};
 const nth = {nth};
 const contains = {contains};
 const toY = {to_y};
@@ -734,7 +746,8 @@ if (selector !== null) {{
 // never fire in headless/unmapped windows, which are exactly where
 // agent scrolls run. scrollTo/scrollBy with behavior:'instant'
 // update scrollY synchronously; one macrotask covers layout shifts.
-await new Promise(r => setTimeout(r, 0));
+// Native-clock sleep so a paused virtual clock cannot stall it.
+await hwatuSleep(0);
 const doc = document.documentElement;
 const maxY = Math.max(0, doc.scrollHeight - window.innerHeight);
 return {{
@@ -744,6 +757,7 @@ return {{
   at_bottom: window.scrollY >= maxY - 1,
   ...(typeof matched === 'undefined' ? {{}} : {{ matched }}),
 }};"#,
+        native = NATIVE_TIME_JS,
         selector = json_or_null(selector.as_deref()),
         nth = nth.unwrap_or(0),
         contains = json_or_null(contains.as_deref()),
@@ -777,13 +791,13 @@ pub fn expect(
 ) {
     let deadline = timeout_ms.unwrap_or(5000);
     let js = format!(
-        r#"const selector = {selector};
+        r#"{native}const selector = {selector};
 const nth = {nth};
 const contains = {contains};
 const wantText = {want_text};
 const absent = {absent};
 const deadline = {deadline};
-const started = Date.now();
+const started = hwatuNow();
 
 function check() {{
   let els = [...document.querySelectorAll(selector)];
@@ -813,13 +827,14 @@ function check() {{
 }}
 
 let result = check();
-while (!result.ok && Date.now() - started < deadline) {{
-  await new Promise(r => setTimeout(r, 100));
+while (!result.ok && hwatuNow() - started < deadline) {{
+  await hwatuSleep(100);
   result = check();
 }}
-result.elapsed_ms = Date.now() - started;
+result.elapsed_ms = hwatuNow() - started;
 if (!result.ok) throw new Error(`expect failed after ${{result.elapsed_ms}} ms: ${{result.why}}`);
 return result;"#,
+        native = NATIVE_TIME_JS,
         selector = js_string(&selector),
         nth = nth.unwrap_or(0),
         contains = json_or_null(contains.as_deref()),
@@ -963,7 +978,7 @@ pub fn click(
         Err(resp) => return OnceReply::new(reply).send(*resp),
     };
     let js = format!(
-        r#"{prelude}
+        r#"{native}{prelude}
 el.scrollIntoView({{ block: 'center', behavior: 'instant' }});
 const r = el.getBoundingClientRect();
 const x = r.left + r.width / 2, y = r.top + r.height / 2;
@@ -976,9 +991,11 @@ el.dispatchEvent(new PointerEvent('pointerup', {{ ...opts, pointerId: 1, isPrima
 el.dispatchEvent(new MouseEvent('mouseup', opts));
 el.click ? el.click() : el.dispatchEvent(new MouseEvent('click', opts));
 // Give a same-document reaction (SPA routing, form handlers) one
-// macrotask to run, so the reported url reflects the click.
-await new Promise(r2 => setTimeout(r2, 0));
-return {{ clicked: matched, url: location.href }};"#
+// macrotask to run, so the reported url reflects the click. Uses the
+// native clock so a paused virtual clock cannot stall it.
+await hwatuSleep(0);
+return {{ clicked: matched, url: location.href }};"#,
+        native = NATIVE_TIME_JS,
     );
     eval_with(daemon, id, js, timeout_ms, NavPolicy::Success, reply);
 }
@@ -1007,7 +1024,7 @@ pub fn type_text(
         Err(resp) => return OnceReply::new(reply).send(*resp),
     };
     let js = format!(
-        r#"{prelude}
+        r#"{native}{prelude}
 const text = {text};
 const clear = {clear};
 const enter = {enter};
@@ -1038,9 +1055,10 @@ if (enter) {{
   el.dispatchEvent(new KeyboardEvent('keyup', key));
   if (!handled && el.form) el.form.requestSubmit ? el.form.requestSubmit() : el.form.submit();
 }}
-await new Promise(r2 => setTimeout(r2, 0));
+await hwatuSleep(0);
 const value = el.value !== undefined ? el.value : el.textContent;
 return {{ typed: matched, value: String(value).slice(0, 200), url: location.href }};"#,
+        native = NATIVE_TIME_JS,
         text = js_string(&text),
         clear = clear,
         enter = enter,
