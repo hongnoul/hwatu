@@ -35,6 +35,12 @@ use webkit6::prelude::WebViewExt;
 /// declared-but-idle `transition`/`animation` shorthands that only
 /// fire on interaction (hover transitions nobody hovered yet).
 pub fn motion(daemon: &Rc<Daemon>, id: Option<u64>, timeout_ms: Option<u64>, reply: Reply) {
+    motion_value(daemon, id, timeout_ms, reply)
+}
+
+/// The declared-inventory eval behind [`motion`], reusable by
+/// [`crate::observe`] so `--observe` merges into the same shape.
+pub fn motion_value(daemon: &Rc<Daemon>, id: Option<u64>, timeout_ms: Option<u64>, reply: Reply) {
     const JS: &str = r#"
 const MAX = 200;
 const sel = (el) => {

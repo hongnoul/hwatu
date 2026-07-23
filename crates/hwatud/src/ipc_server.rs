@@ -165,7 +165,15 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
                 daemon, id, selector, nth, contains, r#ref, text, clear, enter, timeout_ms, reply,
             );
         }
-        Request::Motion { id, timeout_ms } => {
+        Request::Motion {
+            id,
+            observe,
+            observe_ms,
+            timeout_ms,
+        } => {
+            if observe {
+                return crate::observe::motion_observe(daemon, id, observe_ms, timeout_ms, reply);
+            }
             return crate::verify::motion(daemon, id, timeout_ms, reply);
         }
         Request::Resize { id, width, height } => {

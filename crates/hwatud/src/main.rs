@@ -10,6 +10,7 @@ mod adblock;
 mod automation;
 mod bar;
 mod clock;
+mod observe;
 mod console;
 mod downloads;
 mod ipc_server;

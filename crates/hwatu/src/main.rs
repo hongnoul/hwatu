@@ -247,6 +247,8 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
     let mut time_ms: Option<f64> = None;
     let mut progress: Option<f64> = None;
     let mut resume = false;
+    let mut observe = false;
+    let mut observe_ms: Option<u64> = None;
     let mut other: Option<u64> = None;
     let mut baseline: Option<String> = None;
     let mut tolerance: Option<u8> = None;
@@ -336,6 +338,16 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             );
         } else if arg == "--resume" {
             resume = true;
+        } else if arg == "--observe" {
+            observe = true;
+        } else if arg == "--ms" {
+            observe_ms = Some(
+                it.next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("usage: --ms <milliseconds>")?,
+            );
+        } else if let Some(v) = arg.strip_prefix("--ms=") {
+            observe_ms = Some(v.parse().map_err(|_| "usage: --ms=<milliseconds>")?);
         } else if arg == "--other" {
             other = Some(
                 it.next()
@@ -508,7 +520,12 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 timeout_ms,
             })
         }
-        Some("motion") => Ok(Request::Motion { id, timeout_ms }),
+        Some("motion") => Ok(Request::Motion {
+            id,
+            observe,
+            observe_ms,
+            timeout_ms,
+        }),
         Some("resize") => {
             let usage = "usage: hwatu resize [--id <id>] <width>x<height>";
             let size = rest.get(1).ok_or(usage)?;
@@ -672,7 +689,7 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--foc
 | click [--id <id>] (<selector> [nth] [--contains <text>] | --ref <n>) \
 | type [--id <id>] (<selector> | --ref <n>) <text> [--enter] [--no-clear] \
 | console [--id <id>] [--clear] [--limit <n>] \
-| motion [--id <id>] \
+| motion [--id <id>] [--observe [--ms <ms>]] \
 | resize [--id <id>] <width>x<height> \
 | seek [--id <id>] (--time-ms <ms> | --progress <0..1> | --resume) \
 | clock [--id <id>] (pause | resume | step <ms> | set <ms> | status) \

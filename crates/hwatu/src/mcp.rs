@@ -280,7 +280,12 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
             wait: opt_bool(args, "wait").unwrap_or(false),
             timeout_ms,
         }),
-        "motion" => Ok(Request::Motion { id, timeout_ms }),
+        "motion" => Ok(Request::Motion {
+            id,
+            observe: opt_bool(args, "observe").unwrap_or(false),
+            observe_ms: opt_u64(args, "observe_ms"),
+            timeout_ms,
+        }),
         "clock" => {
             let action = match req_str(args, "action")?.as_str() {
                 "pause" => ClockAction::Pause,
@@ -541,8 +546,15 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
             "Extract the page's motion spec as JSON: every CSS animation, \
              transition, and Web-Animations-API animation (keyframes, \
              durations, delays, easings), plus @keyframes rules from CSSOM. \
+             With `observe`, also samples the live page under virtual time \
+             and fits models to script-driven motion (rAF marquees, JS \
+             tickers): velocity px/s, loop period, easing, fit r2. \
              Motion as numbers instead of eyeballed frames.",
-            json!({ "id": prop("integer", ID_DESC) }),
+            json!({
+                "id": prop("integer", ID_DESC),
+                "observe": prop("boolean", "Also observe and model script-driven motion."),
+                "observe_ms": prop("integer", "Observation window in virtual ms (default 2500)."),
+            }),
             &[],
         ),
         tool(
