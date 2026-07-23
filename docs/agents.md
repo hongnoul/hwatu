@@ -100,6 +100,7 @@ hwatu close 3
 | `type` | `id?`, `selector?`/`ref?`, `text`, `clear?`, `enter?` | fill input/textarea/select/contenteditable |
 | `console` | `id?`, `clear?`, `limit?` | read the console/error/network capture buffer |
 | `upload` | `id?`, `selector`, `path` | set a file input's files from disk |
+| `clock` | `id?`, `action` (`pause`/`resume`/`step`/`set`/`status`), `ms?` | control the page's virtual clock: freeze, step, or scrub every time source the page can read |
 | `ping` | | health check; returns `{build, version}` and the CLI warns when the running daemon's build differs from the client's (restart with `hwatu quit && hwatu ping`) |
 
 When `id` is omitted, commands target the focused window, else the
@@ -256,6 +257,49 @@ hwatu console --limit 10       # just the tail
 
 A tight verify loop: `hwatu console --clear` before the action,
 act, then `hwatu console` shows only what the action caused.
+
+### Virtual time: `hwatu clock`
+
+`hwatu seek` pins declarative animation (CSS/WAAPI) by pausing it and
+setting `currentTime`. Script-driven motion has no such handle: a
+`requestAnimationFrame` loop that integrates timestamp deltas (the
+classic marquee/carousel/physics pattern) sails straight through a
+seek. `hwatu clock` fixes that by putting *every clock the page can
+read* behind one controllable virtual timeline: `performance.now`,
+`Date.now`, `setTimeout`/`setInterval`, `requestAnimationFrame` (a
+user script wraps them at document start, before any page code runs),
+with CSS/WAAPI `currentTime` driven from the same clock.
+
+```sh
+hwatu clock pause        # freeze: rAF stops, timers stop, now() stops
+hwatu clock step 1000    # advance exactly 1000 virtual ms (60fps ticks:
+                         #   due timers fire, one rAF batch per tick)
+hwatu clock set 5000     # step to absolute virtual time 5000 ms
+hwatu clock resume       # back to real time, monotonic
+hwatu clock status       # {installed, paused, virtual_ms, pending_*}
+```
+
+Until the first `pause`/`step`/`set` the clock is dormant passthrough:
+timers delegate 1:1 to native timers, virtual time equals real time,
+and pages behave natively. After `pause`, equal steps give equal
+frames: two `hwatu shot`s at the same virtual time are byte-identical,
+so animated pages become diffable stills even mid-flight. In headless
+windows, where the engine never grants rendering opportunities,
+`step` is also what *drives* rAF and IntersectionObserver callbacks,
+so visibility-gated animation runs at all.
+
+Caveats, in the same spirit as the eval-navigation note: the clock
+controls time *after* page scripts start reading it, not the page's
+load. Two loads of the same URL reach `clock pause` at slightly
+different real moments (network, decode), so `set 5000` on two fresh
+loads is not pixel-reproducible unless you pause before the motion
+starts and step from there; within one loaded page, determinism is
+exact. The harness's own commands (`expect` polling, `challenge
+--wait`, click settle delays) run on the native clock, so a paused
+page never deadlocks the tool driving it. Pages that captured
+`performance.now` into a closure before the wrapper ran (impossible
+for normal loads, possible for pages loaded by a pre-clock daemon
+build) report `installed: false` errors; reload the page.
 
 ## A verification loop
 

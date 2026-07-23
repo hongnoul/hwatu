@@ -71,6 +71,13 @@ a human browser polishes rendering:
    [--text X] [--absent]` polls until the assertion holds (failure
    names what WAS found), and `hwatu diff` covers pixel comparison
    against windows or baselines.
+6. **Virtual time.** **Prototyped (proto/clock):** `hwatu clock
+   pause|resume|step <ms>|set <ms>` puts rAF, `performance.now`,
+   `Date.now`, and timers behind one controllable timeline (plus
+   CSS/WAAPI from the same clock), so script-driven motion that `seek`
+   cannot pin becomes deterministic and diffable. Also the missing
+   piece for animation verification in headless windows, where rAF
+   and IntersectionObserver never fire natively.
 
 ### P2 — concurrency and isolation
 
