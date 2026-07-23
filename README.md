@@ -4,332 +4,166 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![CI](https://github.com/hongnoul/hwatu/actions/workflows/ci.yml/badge.svg)](https://github.com/hongnoul/hwatu/actions/workflows/ci.yml)
 
-A daemon-based WebKit browser built for AI coding agents: visual
-verification with real rendering at terminal-emulator spawn times.
-Opening, driving, screenshotting, and closing a rendered page costs
-milliseconds, so an agent can check its work dozens of times an hour
-on the machine you are working on.
+**The verification browser for coding agents.** hwatu turns "does the
+page look right" into a number an agent can climb, and turns invisible
+agent sessions into real windows on your screen the moment a human is
+needed.
 
-hwatu treats the browser window as a resource that other programs
-manage. For coding agents, that program is the agent harness
-([docs/agents.md](docs/agents.md)); for the human the agent hands off
-to, it's your tiling WM. hwatu is AI-first by design: the human side
-exists so an agent can say "come look at this" and materialize its
-live session in your WM ([roadmap](docs/roadmap.md)).
+Your agent works in windows that don't exist on your desktop: no focus
+stolen, no WM pollution, at any parallelism. It measures what it
+builds: pixel-diff scores, animation curves as numbers, screenshots of
+the *middle* of an animation. And when it hits a CAPTCHA or a judgment
+call, `hwatu focus` materializes its live session, cookies, state and
+all, in your tiling WM. You act for ten seconds. It takes back over.
 
 ![hwatu spawning windows in ~48ms from a warm daemon](docs/assets/spawn-demo.svg)
 
-## Installation
+## The loop
+
+An agent iterating a page toward a design reference, real commands,
+real output:
+
+```sh
+hwatu --headless localhost:3000        # its window; you never see it
+hwatu --headless staging.example.com   # the reference
+
+hwatu diff --id 2 --other 1 --heatmap /tmp/heat.png
+# {"match_percent":85.13,"regions":[{"x":0,"y":160,"w":2048,...}]}
+
+hwatu motion --id 1                    # the reference's animations, as numbers
+# easing cubic-bezier(0.25,1,0.5,1), 300ms, marquee 29.78px/s ...
+
+# ...agent edits code...
+
+hwatu diff --id 2 --other 1
+# {"match_percent":97.49}              # climbing beats guessing
+```
+
+We ran this loop against a clone of stripe.com's landing page: an
+agent took it from **85.1% to 98.8% pixel match**, reading easings
+from `hwatu motion` and comparing animation frames pinned with
+`hwatu seek`. Reproduce it yourself: [scripts/demo/](scripts/demo/).
+
+A full verification pass (open headless, wait for load, eval,
+screenshot, close) is **87 ms median**. Windows spawn in **13 ms**
+from the warm daemon. Numbers and methodology:
+[docs/benchmarks.md](docs/benchmarks.md).
+
+## Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/hongnoul/hwatu/main/scripts/install.sh | bash
 ```
 
-Requires `webkitgtk-6.0` at runtime (the installer checks and tells you the
-package for your distro). On Arch, install from the [AUR](https://aur.archlinux.org/packages/hwatu):
+One static binary plus your distro's `webkitgtk-6.0` (the installer
+checks). No Node, no npm package, no 170 MB browser download. On Arch:
+`yay -S hwatu`. From source: `cargo build --release`.
 
-```sh
-yay -S hwatu   # or paru -S hwatu
+Wire it into any MCP client (Claude Code, Cursor, ...) with one entry:
+
+```json
+{ "mcpServers": { "hwatu": { "command": "hwatu", "args": ["mcp"] } } }
 ```
 
-Or build from source:
+jcode drives hwatu natively. Everything is also one newline-delimited
+JSON request over a Unix socket, so any language and any script can
+drive it with zero client library. Full agent guide:
+[docs/agents.md](docs/agents.md).
+
+## What the agent gets
+
+| primitive | what it answers |
+|---|---|
+| `snapshot` | what's on this page, what can I click (JSON, ~tokens not pixels) |
+| `diff --other/--baseline` | how close are these two renders, where do they differ, as a score + regions + heatmap |
+| `motion` | every animation as numbers: duration, delay, easing, keyframes |
+| `seek` | pin all animations at time t; two shots at the same t are byte-identical |
+| `expect` | assert page state in one call (polls, structured pass/fail) |
+| `shot` / `shot --full` | what a user would see (real GPU-composited WebKit render) |
+| `click` / `type` / `scroll` / `upload` | real pointer/input events, structured errors on misses |
+| `console` | JS errors, console output, failed requests since last check |
+| `challenge` | is this a CAPTCHA / anti-bot wall, should a human take over |
+| `resize` | verify responsive layouts across viewport widths |
+| `focus <id>` | materialize any headless session as a real window for the human |
+
+Ambiguity is an error with a match count, never a silent wrong click.
+Refs from `snapshot` are live element handles; staleness is a clear
+error, not a mystery.
+
+## vs the alternatives
+
+| | hwatu | Playwright (headless Chromium) | chrome-devtools-mcp | Percy / Chromatic / Applitools | ditto & site cloners | tterm & browser-in-IDE cockpits |
+|---|---|---|---|---|---|---|
+| Built for | agent inner loop on your machine | cross-browser E2E test suites | DevTools introspection for agents | CI visual regression gates | one-shot site→code generation | human watching an agent |
+| Pixel verification | `diff`: score + regions + heatmap, 87 ms warm pass | `toHaveScreenshot` baselines (test-suite shaped) | screenshots only | mature, but cloud round-trip, priced per shot | none — never renders its own output | none |
+| Animations | read as numbers (`motion`), pin mid-flight (`seek`) | disable or fast-forward to end state | raw CDP | disabled to avoid flakes | captured at generation, verified by eyeball | none |
+| Focus stealing at N agents | never — headless/background are window properties | headless: fine; headed: every window pops | fine headless | n/a (cloud) | n/a | its own pane |
+| Human hand-off mid-session | `focus <id>`: same live session becomes a real WM window | impossible headless; headed costs focus-steal always | none | none | n/a | human is already watching |
+| CAPTCHA / needs-human | `challenge` detects + structured wait/resume | manual workarounds | none | n/a | out of scope | human solves in-pane |
+| Runtime deps | 1 MB binary + distro webkitgtk | Node + package + ~170 MB browser per version | Node + Chrome | SaaS account | Node + Playwright + service | full app |
+| Interface cost for an agent | one JSON line / short CLI / MCP | client library, session objects | MCP over CDP verbosity | API + dashboard | REST/MCP job API | n/a |
+
+Honest caveats, so you don't discover them in a comment section: raw
+warm latency vs Playwright is a tie (83 vs 82 ms), and hwatu's
+resident memory is *higher* than headless-shell because every hwatu
+window is a real GPU-composited, WM-mappable surface, that's the
+price of hand-off, partially reclaimed by suspending idle windows
+(~56 MB back per window after 120 s). hwatu renders WebKit, not
+Chromium: right for "did my change render correctly", wrong for
+engine-specific bug hunts, keep a Playwright matrix in CI for those.
+Linux-only today. Full head-to-head data:
+[docs/benchmarks.md](docs/benchmarks.md).
+
+## The hand-off
+
+The feature the others structurally can't copy: **headless is a window
+property, not a launch mode.** Every invisible agent session is a live
+window the WM simply hasn't been shown.
 
 ```sh
-cargo build --release   # needs rust + webkitgtk-6.0 dev headers
+id=$(hwatu --headless --json https://example.com | jq .id)
+hwatu challenge --id "$id"
+# {"status":"challenge","challenge_type":"turnstile","manual_required":true}
+hwatu focus "$id"          # the session appears in your tiler, as it is
+hwatu challenge --id "$id" --wait --timeout-ms 60000
+# human clicks the checkbox; {"status":"cleared"} — agent resumes
 ```
 
-## Why
+Same cookies, same scroll position, same half-filled form. Works for
+CAPTCHAs, OAuth consents, 2FA prompts, payment confirmations, and
+plain "does this look right to you". `challenge` is detection and
+hand-off only, by design: no solver APIs, no token injection, no
+fingerprint games.
 
-Browsers conflate two things: the engine (slow to start, RAM-hungry) and the
-window (what you actually ask for). hwatu splits them, the same way
-`emacsclient`/`wezterm` do:
+Agents get headless by default: hwatu detects coding-agent
+environments (`CLAUDECODE`, `JCODE_SOCKET`, `CURSOR_AGENT`, ...) so a
+forgotten flag never puts a window in your WM. `--focus` opts back
+in; `HWATU_AGENT_MODE` / `agent_mode` in
+`~/.config/hwatu/config.json` tunes the default.
 
-- **`hwatud`** owns WebKitGTK 6, a prewarmed WebView pool, and all windows.
-- **`hwatu`** is a thin client: one Unix-socket roundtrip to open a window.
+## For the human on the other side
 
-Measured: **13 ms median** (p90 35 ms) from `hwatu <url>` to a mapped,
-loading window on a warm daemon; `--background` and `--headless` land at
-16 ms and 14 ms medians. The first-ever window pays a one-time engine/GPU
-init (~200-400 ms). Full data and methodology: [docs/benchmarks.md](docs/benchmarks.md).
+hwatu is also a deliberately minimal WebKit browser for tiling WMs:
+no tabs (your WM tiles are the tabs), no chrome (a vim-style bottom
+bar summoned on demand), remappable keybinds (`keys.conf`), built-in
+native ad blocking (EasyList compiled into WebKit's content-extension
+engine, zero JS in the request path), sane downloads, crash-restore
+sessions, TLS and permission prompts as one-line y/n bar prompts.
 
-## hwatu vs Playwright, chrome-devtools-mcp
-
-For the agent verification loop, the incumbents pay for generality:
-
-| | hwatu | headless Chrome + Playwright | chrome-devtools-mcp |
-|---|---|---|---|
-| Verify pass w/ screenshot (warm) | 83 ms | 82 ms | comparable to Playwright |
-| Runtime deps | one binary + distro webkitgtk | Node + package + ~170 MB browser | Node + Chrome |
-| Rendering | GPU-composited, real WM windows | offscreen only (headless-shell) | offscreen or a visible Chrome |
-| Headed↔headless | per window, switchable live | fixed at launch | fixed at launch |
-| Human hand-off | `hwatu focus <id>`: same session, real window | none | none |
-| Protocol | 1-line JSON / CLI / MCP | CDP / Playwright API | MCP over CDP |
-| Best at | dev-loop verification + hand-off | cross-browser E2E, CI | DevTools introspection |
-
-Raw latency is honestly a wash at agent timescales (both are far
-below a model's thinking time; full head-to-head data in
-[docs/benchmarks.md](docs/benchmarks.md)). hwatu's edge is
-structural: real windows a human can be handed mid-session, no
-Node/browser-download supply chain, and a token-shaped interface.
-
-Engine caveat: hwatu renders with WebKit; end users mostly run
-Chromium. For "did my change render, is the text right, did the
-request fire" this is irrelevant. Keep a Playwright matrix in CI for
-engine-specific bugs.
-
-## hwatu vs surf, qutebrowser, luakit
-
-As a minimal human browser for a tiling WM (Hyprland, sway, i3,
-river), the usual suspects trade differently:
-
-| | hwatu | surf | qutebrowser | luakit |
-|---|---|---|---|---|
-| Window spawn | 13 ms median (warm daemon) | full engine start per window | full engine start | full engine start |
-| Engine | WebKitGTK 6 | WebKitGTK 2 | QtWebEngine (Chromium) | WebKitGTK 2 |
-| Tabs | none, WM tiles are tabs | none | built-in | built-in |
-| Keyboard-driven UI | your WM's binds | patches | first-class vim binds | lua config |
-| Memory model | one shared engine, N views | one process per window | one big process | one process |
-
-Be aware of the scope, though: hwatu's human UI is deliberately kept
-at "receive an agent hand-off, browse a bit, close" quality. If you
-want link hints, per-site zoom memory, password-manager integration,
-or URL history completion, qutebrowser is the better daily driver;
-those are explicit non-goals here ([roadmap](docs/roadmap.md)).
-
-## Philosophy
-
-- **Agent-first.** The primary user opens windows over a socket and
-  reads pages as JSON. The human UI serves the hand-off, not the
-  other way around.
-- **No tabs.** A tab is a window. Your tiling WM is the tab manager.
-- **No chrome.** The WebView is the whole window.
-- **Real rendering.** Full WebKit: JS, CSS, media, WebGL, as the frontend
-  intended. No custom half-engine.
-- **No ads.** Content blocking is built in and on by default, evaluated
-  natively in WebKit's network process — zero JS, zero UI, zero spawn cost.
-
-## Usage
+The human side is intentionally scoped to hand-off quality. If you
+want link hints, history completion, and password-manager
+integration as a daily driver, qutebrowser is the better choice, and
+we say so. Scope and non-goals: [docs/roadmap.md](docs/roadmap.md).
 
 ```sh
-hwatu                      # open the launcher (autostarts hwatud)
-hwatu example.com          # open a URL (https:// implied)
-hwatu how to exit vim      # anything that isn't a URL is a web search
-hwatu --app-id mail url    # per-window app_id for WM window rules
-hwatu list                 # id, url, title of every window
-hwatu list --json          # same, as JSON (for wofi/rofi pipelines)
-hwatu close 2              # close window 2
-hwatu adblock              # content-blocker status (rule count, source)
-hwatu adblock off          # disable blocking (persisted; `on` re-enables)
-hwatu adblock update       # fetch EasyList + EasyPrivacy, recompile
-hwatu mcp                  # serve MCP over stdio (for Claude Code, Cursor, ...)
-hwatu update               # self-update to the latest release
+hwatu                      # launcher (autostarts the daemon)
+hwatu example.com          # open a URL
+hwatu how to exit vim      # non-URLs become a web search
+hwatu list                 # every window: id, url, title
+hwatu adblock update       # fetch + compile EasyList/EasyPrivacy
+hwatu update               # self-update
 hwatu quit                 # stop the daemon
 ```
-
-### Automation (the main event)
-
-The daemon speaks a small automation protocol, built for AI coding
-agents (jcode has a native hwatu backend) and scripts that need to
-verify web UIs. This is hwatu's primary use case. A full verification pass (open headless, wait for
-load, eval, screenshot, close) measures **87 ms median**, ~70 ms
-without the screenshot ([docs/benchmarks.md](docs/benchmarks.md)).
-Full guide: [docs/agents.md](docs/agents.md).
-
-```sh
-hwatu --background localhost:3000           # open without stealing focus
-hwatu --headless localhost:3000             # open with no window at all
-hwatu snapshot                              # page text + clickable elements, as JSON
-hwatu expect '#status' --text ready         # assert page state (polls up to 5s)
-hwatu click a --contains Pricing            # click (selector or --ref from snapshot)
-hwatu type 'input[name=q]' hello --enter    # fill an input, then submit
-hwatu console                               # console output, JS errors, failed requests
-hwatu eval 'document.title'                 # run JS in the page (async, JSON out)
-hwatu eval --id 2 'location.href'           # target a window by id
-hwatu goto localhost:3000                   # navigate + wait for the load
-hwatu goto --no-wait example.com            # navigate without waiting
-hwatu shot /tmp/page.png                    # screenshot the viewport (PNG)
-hwatu shot --full /tmp/page.png             # screenshot the whole document
-hwatu scroll h2 --contains Pricing          # scroll an element into view
-hwatu wait-load                             # block until the current load settles
-hwatu challenge                             # detect CAPTCHA / anti-bot UI, as JSON
-hwatu challenge --wait --timeout-ms 30000   # wait while the user clears it manually
-hwatu upload 'input[type=file]' ./pic.png   # set a file input's files from disk
-hwatu focus 2                               # raise/focus window 2 (materializes
-                                            # background/headless windows)
-```
-
-`eval` accepts a JavaScript *expression* (`document.title`) or a
-*function body* (`const n = ...; return n`); `await` works in both
-and a returned Promise is awaited before the result comes back as
-JSON. Without `--id`, commands target the focused window, the window
-your last automation command touched, or the only window. Everything
-is one JSON request over the Unix socket
-(`$XDG_RUNTIME_DIR/hwatu.sock`), so any language can drive it directly.
-
-`challenge` is for workflow hand-off, not bypass. It detects common
-CAPTCHA and anti-bot surfaces (Turnstile, reCAPTCHA, hCaptcha,
-Cloudflare-style interstitial text) and returns JSON with `status`,
-`challenge_type`, `confidence`, `evidence`, `actionable`,
-`manual_required`, and `elapsed_ms`. With `--wait`, hwatu polls until
-the challenge disappears or `--timeout-ms` expires, so an agent can
-focus/materialize the window, let the human solve it, then continue the
-same assigned workflow. hwatu does not solve CAPTCHAs automatically,
-call solver APIs, inject challenge tokens, or perform fingerprint
-stealth.
-
-A `--headless` window is a live session the WM never sees: an agent
-can drive and screenshot it, and `hwatu focus <id>` later materializes
-that exact session as a normal window for the human to inspect.
-
-Agents get `--headless` without asking for it: when `hwatu` runs
-inside a coding-agent environment (detected by markers like
-`CLAUDECODE`, `JCODE_SOCKET`, `CURSOR_AGENT`), opens default to
-headless so a verification flow never appears in the WM at all.
-Human entries (shells, WM keybinds) keep the normal focused open, and
-an agent can pass `--focus` to deliberately show the user a window.
-The agent default is configurable: set `HWATU_AGENT_MODE` or
-`"agent_mode": "normal" | "background" | "headless"` in
-`~/.config/hwatu/config.json` (e.g. `background` for users who want
-verification windows visible-but-unfocused in their tiler).
-For the background mode, because most tilers focus new windows
-regardless, the installer offers
-(default yes) to add a no-initial-focus rule for app-id
-`hwatu-background` to your niri/Hyprland/sway config; preseed
-`HWATU_WM_RULE=no` to skip.
-
-
-`Ctrl+w` (or `Ctrl+q`) closes the focused window. `Ctrl+l` (or `O`) opens the URL
-bar prefilled with the current address, `o` opens it blank; `Enter`
-navigates, `Esc` cancels. `Ctrl+o` / `Ctrl+i` go back/forward in
-history (vim jumplist style). `Ctrl+r` / `F5` reload the page.
-`Ctrl+Shift+j` / `Ctrl+Shift+k` scroll
-the page down/up by half a viewport. The daemon and engine stay warm.
-
-Every bind is remappable in `~/.config/hwatu/keys.conf`, one
-`action = chord[, chord...]` per line (`none` unbinds):
-
-```
-back     = ctrl+o, alt+Left
-forward  = ctrl+i, alt+Right
-url_edit = ctrl+l, O
-close    = none
-```
-
-Chords are `[ctrl+][alt+][shift+]key`; a key is a character (`o`, `/`)
-or a GDK key name (`slash`, `Left`, `Page_Down`). Uppercase implies
-shift. Actions: `close`, `url_open`, `url_edit`, `find`, `find_back`,
-`find_next`, `find_prev`, `scroll_down`, `scroll_up`, `back`,
-`forward`, `reload`. Chords with ctrl/alt always win over the page; bare keys
-reach the page first (an `o` typed in a text box stays in the page).
-
-On Wayland, `--app-id` names the window for your compositor's rules:
-
-```
-# hyprland
-windowrule = workspace 3, class:mail
-# sway
-assign [app_id="mail"] workspace 3
-```
-
-Unfocused windows are suspended after `HWATU_DISCARD_SECS` (default
-120): navigation history is serialized to `~/.cache/hwatu/discard/`,
-the web process is killed, and the RAM comes back. Focusing the window
-restores it from the prewarm pool, so resume feels instant. If a page's
-web process crashes, is OOM-killed, fails to load, or sits blank long
-enough to look like a gray-screen hang, hwatu shows a centered recovery
-overlay with the cause and keys (`Ctrl+r` reload, `Ctrl+l` edit URL,
-`Ctrl+w` close); crash/TLS cases also get the y/n bar prompt when a
-session decision is possible.
-
-If the *daemon* dies uncleanly (crash, OOM kill, logout), the next
-`hwatud` reopens every window at its last URL: the open-window set is
-snapshotted to `~/.local/state/hwatu/session.json` as you browse. A
-clean `hwatu quit` removes the snapshot, so intentional exits stay
-exits.
-
-## The bar
-
-hwatu's one piece of chrome: a single-line vim-style bar at the bottom
-of the window, hidden until summoned. Everything interactive lives
-there, so the resting state stays chromeless.
-
-- **The launcher**: a bare `hwatu` opens a keybind cheat sheet with
-  the URL bar already open — type a URL or search and hit Enter.
-  `Esc` closes an untouched launcher window, so a mis-fired keybind
-  costs nothing. Set `HWATU_HOME` to get a home page instead.
-
-- **Open a URL**: `Ctrl+l`/`O` edit the current address, `o` starts
-  blank. Input is normalized like the CLI (`example.com` gets
-  `https://`, loopback hosts get `http://`), and anything that
-  doesn't look like a URL becomes a web search.
-- **Web search**: input with spaces or without a dot (`rust borrow
-  checker`, `vim`) searches with your configured engine. The
-  installer asks which one (DuckDuckGo, Google, Bing, Brave,
-  Startpage, Kagi, Ecosia — default DuckDuckGo); change it any time
-  in `~/.config/hwatu/search.conf`, either an engine name or a URL
-  template like `https://example.com/search?q=%s`. Applies without
-  a daemon restart.
-- **Find in page**: `/` opens forward search, `?` backward. Matches
-  highlight incrementally with a live count. `Enter` commits (focus
-  returns to the page, `n`/`N` jump next/previous), `Esc` cancels.
-  A `/` typed into a page's text box still goes to the page.
-- **Permission prompts**: mic, camera, location, notifications,
-  clipboard and friends appear as `example.com wants microphone
-  [y/n]`. Decisions are remembered per site for the daemon's
-  lifetime and apply across windows. Nothing is written to disk.
-- **TLS errors**: failed certificate loads show the reason (expired,
-  unknown issuer, hostname mismatch, ...). `y` adds a session
-  exception for that host and reloads; `n`/`Esc` leaves the load
-  stopped. Exceptions reset when the daemon exits.
-- **Download status**: saved/failed notices flash briefly.
-
-## Downloads
-
-No dialogs, no download manager. Attachments and unrenderable MIME
-types save straight to `HWATU_DOWNLOAD_DIR`, or your xdg-user-dirs
-download folder, or `~/Downloads`. Name collisions get a ` (n)`
-suffix. The bar flashes the destination when a download finishes.
-
-## Ad blocking
-
-A baseline filter list is embedded in the binary, so blocking works
-offline on first run. `hwatu adblock update` upgrades to full EasyList +
-EasyPrivacy (117,431 compiled rules); compiled rulesets are cached, so
-only the first start after a list change pays compile cost (~5 s), warm
-starts load in ~0.3 s. Rules run in WebKit's content-extension engine in
-the network process — the same machinery as Safari content blockers —
-so there is no JavaScript in the request path and no per-window cost.
-
-- Toggle: `hwatu adblock on|off` applies live to every open window and
-  persists in `~/.config/hwatu/config.json`. `HWATU_ADBLOCK=off`
-  overrides at daemon startup.
-- Own filters: put ABP-syntax rules in `~/.config/hwatu/filters.txt`;
-  they are appended to whatever lists are active.
-- Filter kinds the engine cannot express declaratively ($csp,
-  $redirect, scriptlets, procedural cosmetics) are skipped, never
-  approximated, so a filter-list update can't break page loads.
-
-## Tuning
-
-No config file for engine knobs. They are set to their correct values
-in code (GPU compositing always on), and the only surfaces are
-`keys.conf` (above) and environment variables read by `hwatud`:
-
-- `HWATU_HOME` – page opened by a bare `hwatu` (default: the built-in
-  launcher, a keybind cheat sheet with the URL bar pre-opened)
-  (default <https://hongnoul.github.io/hwatu/>, use `about:blank` for none).
-- `HWATU_DISCARD_SECS` – seconds an unfocused window keeps its live
-  WebView before being suspended to save RAM (default 120, 0 disables).
-- `HWATU_DOWNLOAD_DIR` – where downloads land (default: xdg-user-dirs
-  download folder, falling back to `~/Downloads`).
-- `HWATU_WEBKIT_FEATURES=Ident:on,Other:off` – flip individual WebKit
-  runtime features on odd hardware. Unknown identifiers are ignored.
-- Standard `WEBKIT_*` / `GSK_RENDERER` vars pass through untouched.
-
-Scrolling smoothness scales with your distro's WebKitGTK: 2.46+ paints
-with Skia on the GPU and is markedly smoother. `hwatud` logs its
-WebKitGTK version, session type, and renderer at startup; include that
-line in any jank report.
 
 ## Architecture
 
@@ -342,38 +176,22 @@ hwatu <url>  --unix socket-->  hwatud (GTK main loop)
                                      per-site web processes
 ```
 
-Crates:
+The daemon owns WebKitGTK 6 and a prewarmed WebView pool; the client
+is one Unix-socket roundtrip, the way `emacsclient`/`wezterm` split
+the editor. N windows share one engine (~56 MB per extra window);
+unfocused windows suspend after 120 s and resume instantly from the
+pool. If the daemon dies uncleanly, the next start reopens every
+window at its last URL.
 
-- `crates/ipc` – newline-delimited JSON protocol (`Request`/`Response`)
-- `crates/hwatud` – daemon: GTK4 + webkit6, socket server on the GLib loop
-- `crates/hwatu` – client: no GTK linkage, connects or spawns the daemon
+Crates: `crates/ipc` (JSON protocol), `crates/hwatud` (daemon, GTK4 +
+webkit6), `crates/hwatu` (client, no GTK linkage).
 
-## Roadmap
+## Docs
 
-- [x] Background window suspension + discard-to-disk (RAM reclaim)
-- [x] Per-window `app_id` for WM window rules
-- [x] URL bar (`Ctrl+l`, `o`, `O`)
-- [x] Crash resilience: reopen windows after an unclean daemon death
-- [x] Automation protocol: eval / goto / shot / wait-load / upload / scroll / focus
-- [x] `--background` / `--headless` window modes (no focus steal, no window)
-- [x] Measured benchmarks in docs (spawn, verification loop, memory)
-- [x] Agent-ergonomic eval (expression or function body, probed server-side)
-- [x] Sticky automation target: id-less commands follow the last-driven window
-- [x] `scroll` with selector/nth/contains disambiguation + landing report
-- [x] Full-document screenshots (`shot --full`)
-- [x] Persistent cookies (logins survive daemon restarts)
-- [x] Text/a11y page snapshot (`hwatu snapshot`): token-cheap page state for agents
-- [x] First-class interaction: `hwatu click` / `hwatu type` (selector or snapshot ref)
-- [x] Console + network capture for verification loops (`hwatu console`)
-- [x] Challenge detection + manual wait/resume (`hwatu challenge --wait`)
-- [x] MCP server (`hwatu mcp`, stdio) so any MCP client can adopt hwatu
-- [x] Head-to-head benchmark vs Playwright (scripts/bench-vs-playwright.mjs, honest numbers in docs/benchmarks.md)
-- [ ] Snapshot diffing (`snapshot --diff`): only what changed, fewer tokens
-- [x] Assertion primitives (`hwatu expect`; pixel diff shipped as `hwatu diff`)
-- [ ] Profiles (separate cookie jars / web contexts); per-agent isolation
-- [ ] Displayless operation (nested headless compositor) for CI
-- [ ] Generalized human hand-off (agent flags "needs human" with a reason)
+- [docs/agents.md](docs/agents.md) — the full agent protocol and guide
+- [docs/benchmarks.md](docs/benchmarks.md) — every number, measured, with methodology
+- [docs/roadmap.md](docs/roadmap.md) — plan of record, priorities, non-goals
+- [scripts/demo/](scripts/demo/) — the stripe convergence demo, reproducible
+- [examples/clone/](examples/clone/) — generalized page-clone pipeline
 
-The full plan of record, including what is deliberately *not* built
-(link hints, history, sync, extensions), lives in
-[docs/roadmap.md](docs/roadmap.md).
+MIT licensed. Linux. WebKitGTK 6.
