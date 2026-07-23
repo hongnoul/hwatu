@@ -10,7 +10,7 @@
 //! The daemon is autostarted on the first tool call, like every other
 //! `hwatu` invocation.
 
-use hwatu_ipc::{OpenMode, Request, Response};
+use hwatu_ipc::{ClockAction, OpenMode, Request, Response};
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 
@@ -281,6 +281,30 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
             timeout_ms,
         }),
         "motion" => Ok(Request::Motion { id, timeout_ms }),
+        "clock" => {
+            let action = match req_str(args, "action")?.as_str() {
+                "pause" => ClockAction::Pause,
+                "resume" => ClockAction::Resume,
+                "step" => ClockAction::Step,
+                "set" => ClockAction::Set,
+                "status" => ClockAction::Status,
+                other => {
+                    return Err(format!(
+                        "unknown clock action {other:?} (want pause|resume|step|set|status)"
+                    ))
+                }
+            };
+            let ms = opt_f64(args, "ms");
+            if matches!(action, ClockAction::Step | ClockAction::Set) && ms.is_none() {
+                return Err("clock step/set needs `ms`".into());
+            }
+            Ok(Request::Clock {
+                id,
+                action,
+                ms,
+                timeout_ms,
+            })
+        }
         "seek" => {
             let time_ms = opt_f64(args, "time_ms");
             let progress = opt_f64(args, "progress");
@@ -535,6 +559,23 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
             &[],
         ),
         tool(
+            "clock",
+            "Control the page's virtual clock. Unlike seek (CSS/WAAPI only), \
+             this also freezes requestAnimationFrame, performance.now, \
+             Date.now, and timers, so script-driven motion (rAF marquees, \
+             carousels) becomes deterministic. `pause` freezes, `step` \
+             advances by `ms` virtual milliseconds, `set` steps to absolute \
+             virtual time `ms`, `resume` returns to real time, `status` \
+             reports state. Two screenshots at the same virtual time are \
+             byte-identical.",
+            json!({
+                "id": prop("integer", ID_DESC),
+                "action": prop("string", "pause | resume | step | set | status"),
+                "ms": prop("number", "Milliseconds: amount for step, absolute virtual time for set."),
+            }),
+            &["action"],
+        ),
+        tool(
             "diff",
             "Perceptual pixel diff of a window against another window or a \
              baseline PNG. Returns match percent and bounding boxes of the \
@@ -717,6 +758,7 @@ mod tests {
             "challenge": {},
             "motion": {},
             "seek": { "progress": 0.5 },
+            "clock": { "action": "pause" },
             "diff": { "id": 1, "other": 2 },
             "focus": { "id": 1 },
             "close": { "id": 1 },

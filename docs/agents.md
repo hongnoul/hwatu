@@ -363,10 +363,10 @@ removes focus/WM noise on a desktop; running with no display at all
   (engine: `hwatu`), speaking the socket directly.
 - **MCP**: `hwatu mcp` serves the Model Context Protocol over stdio,
   so Claude Code, Cursor, and every other MCP client can adopt hwatu
-  with one config entry. It exposes the automation protocol as 19
+  with one config entry. It exposes the automation protocol as 20
   tools (`open`, `snapshot`, `expect`, `click`, `type_text`, `eval`,
   `console`, `screenshot`, `scroll`, `goto`, `wait_load`, `challenge`,
-  `upload`, `motion`, `seek`, `diff`, `focus`, `close`,
+  `upload`, `motion`, `seek`, `clock`, `diff`, `focus`, `close`,
   `list_windows`);
   `open` defaults to headless, and
   id-less calls follow the last-driven window just like the CLI.
