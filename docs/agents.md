@@ -101,6 +101,7 @@ hwatu close 3
 | `console` | `id?`, `clear?`, `limit?` | read the console/error/network capture buffer |
 | `upload` | `id?`, `selector`, `path` | set a file input's files from disk |
 | `clock` | `id?`, `action` (`pause`/`resume`/`step`/`set`/`status`), `ms?` | control the page's virtual clock: freeze, step, or scrub every time source the page can read |
+| `motion` | `id?`, `observe?`, `observe_ms?` | declared animation inventory (CSS/WAAPI/CSSOM); with `observe`, also samples the live page under virtual time and fits models to script-driven motion (velocity, period, easing, r²) |
 | `ping` | | health check; returns `{build, version}` and the CLI warns when the running daemon's build differs from the client's (restart with `hwatu quit && hwatu ping`) |
 
 When `id` is omitted, commands target the focused window, else the
@@ -300,6 +301,51 @@ page never deadlocks the tool driving it. Pages that captured
 `performance.now` into a closure before the wrapper ran (impossible
 for normal loads, possible for pages loaded by a pre-clock daemon
 build) report `installed: false` errors; reload the page.
+
+### Observed motion: `hwatu motion --observe`
+
+`hwatu motion` reads the page's *declared* animation inventory
+(CSS/WAAPI/CSSOM). Script-driven motion — the rAF marquee, a canvas
+container repositioned by JS, a physics tween — is invisible to all
+of it. `--observe` closes the gap by watching the live page and
+**fitting models, not capturing frames**:
+
+```sh
+hwatu motion --observe --ms 2500
+# ... declared inventory as before, plus:
+# "observed": [{"target":"ul.logo-carousel__marquee","property":"transform",
+#               "axis":"x","model":"linear","velocity_px_s":-29.99,
+#               "period_s":103.23,"phase_s":103.15,"fit_r2":1.0,
+#               "source":"observed"}],
+# "observed_meta": {"frames":150,"window_ms":2500,"wrap_hunt_ms":100800,
+#                   "virtual_time":true}
+```
+
+A sampler injected into the page finds moving elements
+(MutationObserver for style writers + a two-frame rect diff, topmost
+movers only), samples `getBoundingClientRect` once per frame over the
+window, and then *wrap-hunts*: fast-forwards time in coarse chunks
+until looping tracks jump, pinning loop periods that are minutes long
+without waiting minutes. The daemon fits each position series and
+reports per track: `linear` (robust velocity in px/s, immune to
+loop-wrap outliers; loop `period_s`/`phase_s` when evidence exists),
+`periodic` (oscillation period via autocorrelation), or `bezier`
+(one-shot move: duration, distance, fitted `cubic-bezier` easing).
+Every fit carries `fit_r2`; treat entries below ~0.9 as "something
+moved" rather than a law of motion. Identical sibling fits (one
+layout shift moving a whole column) are collapsed into one entry with
+`also_targets`.
+
+Sampling runs on the virtual clock, which is not an implementation
+detail but the reason this works at all: in headless windows native
+rAF **never ticks** (hidden pages get no rendering opportunities), so
+any real-time observer sees a frozen page. Clock-stepped sampling
+drives rAF itself with virtual timestamps — and is faster than real
+time (2.5 s of animation measured in about a second, plus the wrap
+hunt covering minutes of virtual time). The observation perturbs the
+page's timeline (time is stepped, then resumed), so run it before or
+after, not during, a `seek`-pinned screenshot comparison. The output
+is token-cheap JSON: positions and fits, never pixels.
 
 ## A verification loop
 

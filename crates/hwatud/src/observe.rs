@@ -161,7 +161,7 @@ for (const t of tracks) {
     if (mono >= 0.9 && Math.abs(v) * 1000 > 1 && tail > 0.01) {
       const extent = Math.max(t.scroll_w, t.scroll_h);
       const capMs = Math.min(200000, Math.max(20000, 2.5 * extent / Math.abs(v)));
-      hunted.push({ t, axis, v, last: s[n - 1], capMs, wrap1: null, wrap2: null, done: false });
+      hunted.push({ t, axis, v, last: s[n - 1], capMs, wrap1: null, done: false });
       break; // one hunt axis per track
     }
   }
@@ -179,14 +179,17 @@ while (hunted.some(h => !h.done) && c.native.now() - huntStart < HUNT_REAL_BUDGE
     const p = h.axis === 'x' ? r.x : r.y;
     const pred = h.last + h.v * CHUNK;
     if (Math.abs(p - pred) > Math.max(24, Math.abs(h.v * CHUNK) * 4)) {
-      if (h.wrap1 === null) h.wrap1 = { t_ms: vtime, jump: p - pred };
-      else { h.wrap2 = { t_ms: vtime }; h.done = true; }
+      // One wrap is enough: the fit derives the period from
+      // jump/velocity. Confirming with a second wrap would double
+      // the hunt for marginal precision.
+      h.wrap1 = { t_ms: vtime, jump: p - pred };
+      h.done = true;
     }
     h.last = p;
   }
 }
 for (const h of hunted) {
-  h.t.wrap = { axis: h.axis, wrap1: h.wrap1, wrap2: h.wrap2 };
+  h.t.wrap = { axis: h.axis, wrap1: h.wrap1 };
 }
 c.resume();
 return {
@@ -318,6 +321,43 @@ fn fit_payload(payload: &serde_json::Value) -> Vec<serde_json::Value> {
         }
         out.push(fit);
     }
+    dedupe_fits(out)
+}
+
+/// Collapse entries whose fitted numbers are identical (a layout
+/// shift moves every following sibling by the same curve): keep the
+/// first, list the rest in `also_targets`. Distinct motion always has
+/// distinct numbers, so real tracks never merge.
+fn dedupe_fits(fits: Vec<serde_json::Value>) -> Vec<serde_json::Value> {
+    let mut out: Vec<serde_json::Value> = vec![];
+    let mut index: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for fit in fits {
+        let key = format!(
+            "{}|{}|{}|{}|{}|{}",
+            fit["model"],
+            fit["axis"],
+            fit["velocity_px_s"],
+            fit["fit_r2"],
+            fit["period_s"],
+            fit["duration_ms"],
+        );
+        match index.get(&key) {
+            Some(&i) => {
+                let entry = out[i].as_object_mut().expect("fit is an object");
+                let target = fit["target"].clone();
+                match entry.get_mut("also_targets") {
+                    Some(serde_json::Value::Array(a)) => a.push(target),
+                    _ => {
+                        entry.insert("also_targets".into(), serde_json::json!([target]));
+                    }
+                }
+            }
+            None => {
+                index.insert(key, out.len());
+                out.push(fit);
+            }
+        }
+    }
     out
 }
 
@@ -400,7 +440,10 @@ fn fit_series(
         // Loop period: observed wrap spacing inside the window, else
         // wrap-hunt evidence after it, else none (honest absence).
         if jumps.len() >= 2 {
-            let spans: Vec<f64> = jumps.windows(2).map(|w| (w[1] - w[0]) as f64 * dt).collect();
+            let spans: Vec<f64> = jumps
+                .windows(2)
+                .map(|w| (w[1] - w[0]) as f64 * dt)
+                .collect();
             map.insert(
                 "period_s".into(),
                 serde_json::json!(round2(median(&spans) / 1000.0)),
@@ -408,10 +451,8 @@ fn fit_series(
         } else if let Some(w) = wrap {
             let wrap1_t = w["wrap1"]["t_ms"].as_f64();
             let wrap1_jump = w["wrap1"]["jump"].as_f64();
-            let wrap2_t = w["wrap2"]["t_ms"].as_f64();
-            let period_ms = match (wrap1_t, wrap2_t, wrap1_jump) {
-                (Some(t1), Some(t2), _) => Some(t2 - t1),
-                (Some(_), None, Some(jump)) if slope.abs() > 1e-9 => Some((jump / slope).abs()),
+            let period_ms = match (wrap1_t, wrap1_jump) {
+                (Some(_), Some(jump)) if slope.abs() > 1e-9 => Some((jump / slope).abs()),
                 _ => None,
             };
             if let Some(p) = period_ms.filter(|p| *p > 0.0) {
@@ -574,7 +615,8 @@ fn bezier_progress(p: [f64; 4], t: f64) -> f64 {
     let (p1x, p1y, p2x, p2y) = (p[0], p[1], p[2], p[3]);
     let x = |u: f64| 3.0 * (1.0 - u).powi(2) * u * p1x + 3.0 * (1.0 - u) * u * u * p2x + u.powi(3);
     let dx = |u: f64| {
-        3.0 * (1.0 - u).powi(2) * p1x + 6.0 * (1.0 - u) * u * (p2x - p1x)
+        3.0 * (1.0 - u).powi(2) * p1x
+            + 6.0 * (1.0 - u) * u * (p2x - p1x)
             + 3.0 * u * u * (1.0 - p2x)
     };
     let mut u = t;
@@ -718,7 +760,6 @@ mod tests {
         let wrap = serde_json::json!({
             "axis": "x",
             "wrap1": { "t_ms": 60_000.0, "jump": 3096.0 },
-            "wrap2": null,
         });
         let out = fit_payload(&track_json(xs, wrap));
         let m = &out[0];
