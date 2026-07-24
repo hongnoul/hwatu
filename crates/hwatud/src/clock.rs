@@ -327,9 +327,21 @@ const CLOCK_JS: &str = r#"(() => {
   const set = (ms) => {
     ms = Number(ms);
     if (!Number.isFinite(ms) || ms < 0) return { error: 'set needs a finite ms >= 0' };
-    pause();
     const cur = vnow();
+    const wasPaused = paused;
+    pause();
     if (ms < cur - 1e-6) {
+      // The first control operation on a live page may establish a new
+      // virtual epoch after navigation/font/hydration waits have settled.
+      // Preserve each timer's remaining delay while rebasing now() to the
+      // requested value. Once a page is already paused, backwards travel
+      // remains unsupported because arbitrary script state cannot rewind.
+      if (!wasPaused) {
+        const delta = ms - cur;
+        for (const entry of timers.values()) entry.deadline += delta;
+        vbase = ms;
+        return status();
+      }
       return { error: `cannot go backwards: virtual time is ${Math.round(cur)} ms, requested ${ms} ms`, ...status() };
     }
     return step(ms - cur);
@@ -510,7 +522,11 @@ mod tests {
         // Exactly one assignment to Math.random, and it lives inside
         // seedRandom's body (after its declaration).
         let assigns: Vec<_> = CLOCK_JS.match_indices("Math.random =").collect();
-        assert_eq!(assigns.len(), 1, "Math.random should be assigned exactly once");
+        assert_eq!(
+            assigns.len(),
+            1,
+            "Math.random should be assigned exactly once"
+        );
         let seed_fn = CLOCK_JS
             .find("const seedRandom")
             .expect("seedRandom missing");
@@ -519,8 +535,27 @@ mod tests {
             "Math.random must only be replaced inside seedRandom"
         );
         // And installation-time seeding is gated on the flag global.
-        assert!(CLOCK_JS
-            .contains("if (typeof g.__hwatu_clock_seed === 'number') seedRandom(g.__hwatu_clock_seed);"));
+        assert!(CLOCK_JS.contains(
+            "if (typeof g.__hwatu_clock_seed === 'number') seedRandom(g.__hwatu_clock_seed);"
+        ));
+    }
+
+    /// A settled live page can define virtual t=0 with its first `set 0`
+    /// without trying to rewind DOM/script state. Timer deadlines move by
+    /// the same delta so their remaining delays are preserved.
+    #[test]
+    fn clock_js_first_live_set_can_rebase_backwards() {
+        for needle in [
+            "const wasPaused = paused",
+            "if (!wasPaused)",
+            "entry.deadline += delta",
+            "vbase = ms",
+        ] {
+            assert!(
+                CLOCK_JS.contains(needle),
+                "missing rebase behavior: {needle}"
+            );
+        }
     }
 
     /// Same seed + same call count => identical sequences. The Rust
