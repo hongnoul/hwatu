@@ -45,6 +45,26 @@ machine the human is working on.
   objects, no WebSocket. Cheap for token budgets, trivial to drive
   from any language.
 
+## What the agent gets
+
+| primitive | what it answers |
+|---|---|
+| `snapshot` | what's on this page, what can I click (JSON, ~tokens not pixels) |
+| `diff --other/--baseline` | how close are these two renders, where do they differ, as a score + regions + heatmap |
+| `motion` | every animation as numbers: duration, delay, easing, keyframes |
+| `seek` | pin all animations at time t; two shots at the same t are byte-identical |
+| `expect` | assert page state in one call (polls, structured pass/fail) |
+| `shot` / `shot --full` | what a user would see (real GPU-composited WebKit render) |
+| `click` / `type` / `scroll` / `upload` | real pointer/input events, structured errors on misses |
+| `console` | JS errors, console output, failed requests since last check |
+| `challenge` | is this a CAPTCHA / anti-bot wall, should a human take over |
+| `resize` | verify responsive layouts across viewport widths |
+| `focus <id>` | materialize any headless session as a real window for the human |
+
+Ambiguity is an error with a match count, never a silent wrong click.
+Refs from `snapshot` are live element handles; staleness is a clear
+error, not a mystery.
+
 ## The protocol
 
 Socket: `$XDG_RUNTIME_DIR/hwatu.sock` (fallback
@@ -499,3 +519,22 @@ Engine caveat: hwatu renders with WebKit, end users mostly run
 Chromium. For "did my change render / is the text right / did the
 request fire" checks this is irrelevant; for engine-specific bugs,
 keep your CI Playwright matrix.
+
+### The wide field
+
+| | hwatu | Playwright (headless Chromium) | chrome-devtools-mcp | Percy / Chromatic / Applitools | ditto & site cloners | tterm & browser-in-IDE cockpits |
+|---|---|---|---|---|---|---|
+| Built for | agent inner loop on your machine | cross-browser E2E test suites | DevTools introspection for agents | CI visual regression gates | one-shot site→code generation | human watching an agent |
+| Pixel verification | `diff`: score + regions + heatmap, 87 ms warm pass | `toHaveScreenshot` baselines (test-suite shaped) | screenshots only | mature, but cloud round-trip, priced per shot | none — never renders its own output | none |
+| Animations | read as numbers (`motion`), pin mid-flight (`seek`) | disable or fast-forward to end state | raw CDP | disabled to avoid flakes | captured at generation, verified by eyeball | none |
+| Focus stealing at N agents | never — headless/background are window properties | headless: fine; headed: every window pops | fine headless | n/a (cloud) | n/a | its own pane |
+| Human hand-off mid-session | `focus <id>`: same live session becomes a real WM window | impossible headless; headed costs focus-steal always | none | none | n/a | human is already watching |
+| CAPTCHA / needs-human | `challenge` detects + structured wait/resume | manual workarounds | none | n/a | out of scope | human solves in-pane |
+| Runtime deps | 1 MB binary + distro webkitgtk | Node + package + ~170 MB browser per version | Node + Chrome | SaaS account | Node + Playwright + service | full app |
+| Interface cost for an agent | one JSON line / short CLI / MCP | client library, session objects | MCP over CDP verbosity | API + dashboard | REST/MCP job API | n/a |
+
+Memory honesty: hwatu's resident memory is *higher* than
+headless-shell because every hwatu window is a real GPU-composited,
+WM-mappable surface, that's the price of hand-off, partially
+reclaimed by suspending idle windows (~56 MB back per window after
+120 s).
