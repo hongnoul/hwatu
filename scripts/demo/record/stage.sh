@@ -29,6 +29,10 @@ TYPE_DELAY="${HWATU_DEMO_TYPE_DELAY:-0.03}"
 
 stage_env() {
   export XDG_RUNTIME_DIR="$STAGE_DIR/run"
+  export XDG_CONFIG_HOME="$STAGE_DIR/config"
+  export XDG_CACHE_HOME="$STAGE_DIR/cache"
+  export XDG_STATE_HOME="$STAGE_DIR/state"
+  export XDG_DATA_HOME="$STAGE_DIR/data"
   export WAYLAND_DISPLAY="wayland-1"
   export HWATU_DEMO_KITTY_SOCK="$STAGE_DIR/kitty.sock"
   export SWAYSOCK="$(ls "$STAGE_DIR"/run/sway-ipc.*.sock 2>/dev/null | head -1 || true)"
@@ -42,11 +46,13 @@ up() {
     return 0
   fi
   rm -rf "$STAGE_DIR"
-  mkdir -p -m 700 "$STAGE_DIR/run"
+  mkdir -p -m 700 "$STAGE_DIR"/{run,config,cache,state,data}
 
   export HWATU_DEMO_KITTY_SOCK="$STAGE_DIR/kitty.sock"
   WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=pixman \
     XDG_RUNTIME_DIR="$STAGE_DIR/run" \
+    XDG_CONFIG_HOME="$STAGE_DIR/config" XDG_CACHE_HOME="$STAGE_DIR/cache" \
+    XDG_STATE_HOME="$STAGE_DIR/state" XDG_DATA_HOME="$STAGE_DIR/data" \
     sway -c "$CONFIG_DIR/sway.config" >"$STAGE_DIR/sway.log" 2>&1 &
   echo $! > "$STAGE_DIR/sway.pid"
 
@@ -122,7 +128,7 @@ case "${1:-}" in
   stoprec) stoprec ;;
   shot) shot "${2:-}" ;;
   type) type_cmd "${2:-}" ;;
-  env) echo "export XDG_RUNTIME_DIR=$STAGE_DIR/run WAYLAND_DISPLAY=wayland-1 SWAYSOCK=\$(ls $STAGE_DIR/run/sway-ipc.*.sock)" ;;
+  env) echo "export XDG_RUNTIME_DIR=$STAGE_DIR/run XDG_CONFIG_HOME=$STAGE_DIR/config XDG_CACHE_HOME=$STAGE_DIR/cache XDG_STATE_HOME=$STAGE_DIR/state XDG_DATA_HOME=$STAGE_DIR/data WAYLAND_DISPLAY=wayland-1 SWAYSOCK=\$(ls $STAGE_DIR/run/sway-ipc.*.sock)" ;;
   down) down ;;
   *) sed -n '2,20p' "$0"; exit 1 ;;
 esac

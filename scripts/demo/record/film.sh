@@ -60,18 +60,18 @@ T0=$(date +%s.%N)
 
 # Beat 1: cold open — two headless sessions + first diff.
 mark cold-open
-say "hwatu --headless --json http://localhost:$REF_PORT/"
+say "clear; hwatu --headless --json http://localhost:$REF_PORT/ | jq '{id,url,mode}'"
 pause 2
-say "hwatu --headless --json http://localhost:$CLONE_PORT/"
+say "hwatu --headless --json http://localhost:$CLONE_PORT/ | jq '{id,url,mode}'"
 pause 2
 say "hwatu wait-load --id 1 --timeout-ms 20000 && hwatu wait-load --id 2"
 pause 4
-say "hwatu diff --id 2 --other 1 --heatmap /tmp/heat.png"
+say "hwatu diff --id 2 --other 1 --heatmap /tmp/heat.png | jq '{match_percent, differing_regions:(.regions|length)}'"
 pause 3
 
 # Beat 2: read the reference's motion as numbers.
 mark motion
-say "hwatu motion --id 1"
+say "clear; hwatu motion --id 1 | jq '{animation_count:(.animations|length), sample:[.animations[0:3][]|{property,duration_ms,easing}]}'"
 pause 4
 
 # Beat 3: pin animations mid-flight, byte-comparable shots.
@@ -104,13 +104,13 @@ for ckpt in "$DEMO_DIR"/checkpoints/*/; do
   pause 3
   say "hwatu eval --id 1 '$SCROLL_JS' >/dev/null; hwatu eval --id 2 '$SCROLL_JS' >/dev/null"
   pause 1
-  say "hwatu diff --id 2 --other 1"
+  say "clear; hwatu diff --id 2 --other 1 | jq '{match_percent, differing_regions:(.regions|length)}'"
   pause 3
 done
 
 # Beat 5: the hand-off. Both sessions materialize in the tiler.
 mark handoff
-say "hwatu focus 1 && hwatu focus 2"
+say "clear; hwatu focus 1 && hwatu focus 2"
 pause 5
 
 # Beat 6: close card material — synchronized scroll.
