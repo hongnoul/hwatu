@@ -90,7 +90,15 @@ pause 2
 # the climb is invisible; at 75% it runs 0.4% -> 98%. Tune per take.
 CLIMB_SCROLL="${HWATU_DEMO_CLIMB_SCROLL:-75}"
 SCROLL_JS="window.scrollTo(0,(document.documentElement.scrollHeight-innerHeight)*$CLIMB_SCROLL/100)"
-for ckpt in "$DEMO_DIR"/checkpoints/*/; do
+CHECKPOINTS=("$DEMO_DIR"/checkpoints/*/)
+# A single viewport does not necessarily improve monotonically even
+# while the full responsive matrix does. The publish take therefore
+# uses honest bookends; the full checkpoint sequence remains available
+# for diagnostic recordings.
+if [ "${HWATU_DEMO_CHECKPOINT_MODE:-all}" = bookends ] && [ "${#CHECKPOINTS[@]}" -gt 1 ]; then
+  CHECKPOINTS=("${CHECKPOINTS[0]}" "${CHECKPOINTS[${#CHECKPOINTS[@]}-1]}")
+fi
+for ckpt in "${CHECKPOINTS[@]}"; do
   [ -d "$ckpt" ] || continue
   mark "climb $(basename "$ckpt")"
   kill $CLONE_SRV 2>/dev/null || true
@@ -107,6 +115,15 @@ for ckpt in "$DEMO_DIR"/checkpoints/*/; do
   say "clear; hwatu diff --id 2 --other 1 | jq '{match_percent, differing_regions:(.regions|length)}'"
   pause 3
 done
+
+# Prove the final result over the whole responsive gate, not by
+# cherry-picking the live viewport. This file is produced by the real
+# gate runner and contains every measured cell.
+if [ -n "${HWATU_DEMO_SCORECARD:-}" ] && [ -f "$HWATU_DEMO_SCORECARD" ]; then
+  mark gate-summary
+  say "clear; jq '[.static[].pct] as \$p | {responsive_cells:(\$p|length), min_percent:(\$p|min), mean_percent:((\$p|add/length)*100|round/100), max_percent:(\$p|max), perfect_cells:([\$p[]|select(.==100)]|length)}' '$HWATU_DEMO_SCORECARD'"
+  pause 6
+fi
 
 # Beat 5: the hand-off. Both sessions materialize in the tiler.
 mark handoff
