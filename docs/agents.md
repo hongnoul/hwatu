@@ -412,6 +412,15 @@ Wayland/X session to start, even for headless windows. Headless mode
 removes focus/WM noise on a desktop; running with no display at all
 (CI) is future work (nested headless compositor).
 
+Note on DPR: GTK derives surface scale from the monitors even for
+unmapped headless windows, so a fractional-scale Wayland output can
+leak an unexpected devicePixelRatio into verification shots. Set
+`HWATU_DPR=<integer>` on the daemon to pin it: this forces the X11
+backend (unless `GDK_BACKEND` is already set) and exports
+`GDK_SCALE`, which reaches both the UI and web processes. Exact on a
+clean X server (Xvfb); `resize` replies always report the dpr the
+page actually sees.
+
 ## Agent integrations
 
 - **jcode** has a native hwatu backend for its `browser` tool
