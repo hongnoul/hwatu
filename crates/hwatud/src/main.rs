@@ -185,6 +185,27 @@ fn persist_cookies() {
 fn main() -> glib::ExitCode {
     // Keep RAM predictable: cap glibc arena explosion under GTK threads.
     std::env::set_var("MALLOC_ARENA_MAX", "2");
+    // Exact-DPR verification mode: `HWATU_DPR=<n>` pins window
+    // devicePixelRatio to an integer n instead of whatever the session
+    // compositor imposes. Root cause of the "headless dpr leak": GTK
+    // derives surface scale from the *monitors* even for unmapped
+    // (headless) surfaces, so a niri output at scale 1.25 makes WebKit
+    // report dpr 2 in windows no compositor will ever show. Wayland
+    // has no client-side scale override, and WebKit's web process
+    // resolves the scale through its own display connection, so the
+    // only lever that reaches everything is GDK_SCALE + the X11
+    // backend, exported before gtk::init(). On a clean X server
+    // (Xvfb, typical CI X) the pin is exact; on Xwayland the server
+    // may impose its own base scale on top — resize()'s measure-and-
+    // correct loop still lands exact CSS-px viewports there, and the
+    // reply always reports the dpr the page actually sees.
+    if let Some(dpr) = hwatu_dpr() {
+        if std::env::var_os("GDK_BACKEND").is_none() {
+            std::env::set_var("GDK_BACKEND", "x11");
+        }
+        std::env::set_var("GDK_SCALE", dpr.to_string());
+        println!("hwatud: pinning devicePixelRatio to {dpr} (HWATU_DPR)");
+    }
 
     let app = gtk::Application::new(Some(APP_ID), gio::ApplicationFlags::NON_UNIQUE);
     // Daemon lives even with zero windows open.
@@ -245,4 +266,37 @@ fn main() -> glib::ExitCode {
     });
 
     app.run_with_args::<&str>(&[])
+}
+
+/// `HWATU_DPR=<positive integer>` — pin devicePixelRatio for exact-DPR
+/// verification matrices. Unset, empty, zero, negative, and
+/// non-integer values mean "session default". Fractional pins are not
+/// accepted: GDK_SCALE is integer-only, so honesty beats rounding.
+fn hwatu_dpr() -> Option<i32> {
+    parse_dpr(std::env::var("HWATU_DPR").ok().as_deref())
+}
+
+fn parse_dpr(raw: Option<&str>) -> Option<i32> {
+    raw?.trim().parse::<i32>().ok().filter(|&n| n > 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_dpr;
+
+    /// The DPR pin only accepts positive integers: GDK_SCALE cannot
+    /// express fractions, and 0/negative are nonsense. Everything
+    /// else must fall back to the session default rather than guess.
+    #[test]
+    fn dpr_env_parsing() {
+        assert_eq!(parse_dpr(None), None);
+        assert_eq!(parse_dpr(Some("")), None);
+        assert_eq!(parse_dpr(Some("0")), None);
+        assert_eq!(parse_dpr(Some("-1")), None);
+        assert_eq!(parse_dpr(Some("1.5")), None);
+        assert_eq!(parse_dpr(Some("abc")), None);
+        assert_eq!(parse_dpr(Some("1")), Some(1));
+        assert_eq!(parse_dpr(Some(" 2 ")), Some(2));
+        assert_eq!(parse_dpr(Some("3")), Some(3));
+    }
 }

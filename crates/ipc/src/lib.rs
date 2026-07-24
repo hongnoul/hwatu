@@ -335,6 +335,9 @@ pub enum Request {
         /// time for `set`. Ignored by `pause`/`resume`.
         #[serde(default)]
         ms: Option<f64>,
+        /// PRNG seed for `seed`. Ignored by every other action.
+        #[serde(default)]
+        seed: Option<u64>,
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
@@ -397,6 +400,14 @@ pub enum ClockAction {
     Set,
     /// Report the clock's state without changing it.
     Status,
+    /// Replace `Math.random` with a deterministic PRNG (mulberry32)
+    /// seeded from `seed`. Applies immediately to the current page and
+    /// persists for future loads in the same window (installed from
+    /// document start, before page scripts can capture the native
+    /// PRNG). Same seed + same virtual timeline => identical
+    /// `Math.random()` sequences across loads. Without `seed`, pages
+    /// keep native `Math.random`.
+    Seed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

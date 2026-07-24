@@ -192,9 +192,10 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
             id,
             action,
             ms,
+            seed,
             timeout_ms,
         } => {
-            return crate::clock::clock(daemon, id, action, ms, timeout_ms, reply);
+            return crate::clock::clock(daemon, id, action, ms, seed, timeout_ms, reply);
         }
         Request::Diff {
             id,

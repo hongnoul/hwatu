@@ -183,12 +183,21 @@ return {{ animations: anims.length, touched, resumed: resume }};"#,
 
 // ---- resize ---------------------------------------------------------
 
-/// Resize a window so the *page* sees `w x h` CSS pixels. The widget
-/// allocation is in logical pixels, which WebKit divides by the
-/// surface's fractional scale before exposing them as CSS px; that
-/// scale is not reliably readable for unmapped (headless) surfaces,
-/// so measure devicePixelRatio from the page itself, allocate
-/// w * dpr, and confirm with a second measurement in the reply.
+/// Resize a window so the *page* sees `w x h` CSS pixels.
+///
+/// GTK widget allocation is in *logical* pixels and WebKitGTK maps
+/// logical px 1:1 onto CSS px — the surface scale only converts
+/// logical to *device* px. An earlier version multiplied the request
+/// by the page's devicePixelRatio, double-applying the scale: under
+/// dpr 2 a `resize 360x800` landed the page at 720 CSS px (the
+/// gate-runner carried a W/dpr workaround for it). Allocate the CSS
+/// size directly.
+///
+/// Trust nothing: the reply measures innerWidth/innerHeight from the
+/// page, and if some backend does not map logical px 1:1 onto CSS px
+/// the allocation is corrected once from the measured ratio and
+/// re-verified, so the caller gets the size it asked for (or an
+/// honest measurement of the miss).
 pub fn resize(daemon: &Rc<Daemon>, id: Option<u64>, w: i32, h: i32, reply: Reply) {
     if !(1..=16384).contains(&w) || !(1..=16384).contains(&h) {
         return reply(Response::err(format!("bad viewport {w}x{h}")));
@@ -199,38 +208,61 @@ pub fn resize(daemon: &Rc<Daemon>, id: Option<u64>, w: i32, h: i32, reply: Reply
     };
     let daemon2 = daemon.clone();
     let win_id = win.id;
-    // Ask the page for its dpr (1.0 fallback if the eval fails, e.g.
-    // about:blank early in load).
+    win.resize_viewport(w, h);
+    const MEASURE: &str = "return { css_width: innerWidth, css_height: innerHeight, dpr: window.devicePixelRatio }";
     automation::eval(
         daemon,
         Some(win_id),
-        "return window.devicePixelRatio || 1".into(),
+        MEASURE.into(),
         Some(2000),
         Box::new(move |resp| {
-            let dpr = match &resp {
-                Response::Ok { value: Some(v), .. } => v.as_f64().unwrap_or(1.0),
-                _ => 1.0,
+            let measured = match &resp {
+                Response::Ok { value: Some(v), .. } => (
+                    v.get("css_width").and_then(|x| x.as_i64()).map(|x| x as i32),
+                    v.get("css_height").and_then(|x| x.as_i64()).map(|x| x as i32),
+                ),
+                _ => (None, None),
+            };
+            let (cw, ch) = match measured {
+                // Measurement failed (about:blank early in load):
+                // return whatever the eval said; the allocation stands.
+                (Some(cw), Some(ch)) => (cw, ch),
+                _ => return reply(resp),
             };
             let (aw, ah) = (
-                (w as f64 * dpr).round() as i32,
-                (h as f64 * dpr).round() as i32,
+                corrected_allocation(w, w, cw),
+                corrected_allocation(h, h, ch),
             );
-            let win = match daemon2.windows.borrow().get(&win_id).cloned() {
-                Some(w) => w,
-                None => return reply(Response::err(format!("no window {win_id}"))),
-            };
-            win.resize_viewport(aw, ah);
-            // Confirm from the page: the reply carries what the page
-            // actually sees, so the caller never has to trust us.
-            automation::eval(
-                &daemon2,
-                Some(win_id),
-                "return { css_width: innerWidth, css_height: innerHeight, dpr: window.devicePixelRatio }".into(),
-                Some(2000),
-                reply,
-            );
+            match (aw, ah) {
+                (None, None) => reply(resp), // exact: logical px == CSS px
+                (aw, ah) => {
+                    let win = match daemon2.windows.borrow().get(&win_id).cloned() {
+                        Some(w) => w,
+                        None => return reply(Response::err(format!("no window {win_id}"))),
+                    };
+                    win.resize_viewport(aw.unwrap_or(w), ah.unwrap_or(h));
+                    // Re-verify: the reply always carries what the page
+                    // actually sees, so the caller never has to trust us.
+                    automation::eval(&daemon2, Some(win_id), MEASURE.into(), Some(2000), reply);
+                }
+            }
         }),
     );
+}
+
+/// One-shot correction for backends where widget logical px do not
+/// map 1:1 onto CSS px: given what was requested (CSS px), what was
+/// allocated (logical px), and what the page measured (CSS px),
+/// return the allocation that should land the request, or `None` if
+/// the measurement already matches. Pure so the double-apply bug
+/// class is pinned by unit tests.
+fn corrected_allocation(requested: i32, allocated: i32, measured: i32) -> Option<i32> {
+    if measured == requested || measured <= 0 {
+        return None;
+    }
+    let corrected =
+        (f64::from(allocated) * f64::from(requested) / f64::from(measured)).round() as i32;
+    Some(corrected.clamp(1, 16384))
 }
 
 /// Window by id, or the sole window. (Same contract as the ipc_server
@@ -596,5 +628,40 @@ pub fn diff(
             );
         }
         _ => unreachable!("validated above"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::corrected_allocation;
+
+    /// The regression this pins: `resize WxH` must request the CSS
+    /// size as-is (logical px == CSS px in WebKitGTK), never W*dpr.
+    /// With the old double-apply, requesting 360 under dpr 2 landed
+    /// the page at 720 CSS px; the correction path must then shrink
+    /// the allocation, and must be a no-op when the page already
+    /// measures exactly what was asked.
+    #[test]
+    fn exact_measurement_needs_no_correction() {
+        assert_eq!(corrected_allocation(360, 360, 360), None);
+        assert_eq!(corrected_allocation(1920, 1920, 1920), None);
+    }
+
+    #[test]
+    fn double_applied_scale_is_corrected() {
+        // dpr-2 double apply: asked 360, page saw 720 -> halve.
+        assert_eq!(corrected_allocation(360, 360, 720), Some(180));
+        // hypothetical backend where logical px = CSS px * 2 the other
+        // way: asked 360, page saw 180 -> double.
+        assert_eq!(corrected_allocation(360, 360, 180), Some(720));
+    }
+
+    #[test]
+    fn degenerate_measurements_do_not_explode() {
+        assert_eq!(corrected_allocation(360, 360, 0), None);
+        assert_eq!(corrected_allocation(360, 360, -5), None);
+        // Correction stays in the request's valid range.
+        assert_eq!(corrected_allocation(16384, 16384, 1), Some(16384));
+        assert_eq!(corrected_allocation(1, 1, 16384), Some(1));
     }
 }

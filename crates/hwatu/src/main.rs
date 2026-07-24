@@ -544,18 +544,24 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             timeout_ms,
         }),
         Some("clock") => {
-            const USAGE_CLOCK: &str =
-                "usage: hwatu clock [--id <id>] (pause | resume | step <ms> | set <ms> | status)";
-            let (action, ms) = match rest.get(1).map(|s| s.as_str()) {
-                Some("pause") => (ClockAction::Pause, None),
-                Some("resume") => (ClockAction::Resume, None),
-                None | Some("status") => (ClockAction::Status, None),
+            const USAGE_CLOCK: &str = "usage: hwatu clock [--id <id>] (pause | resume | step <ms> | set <ms> | seed <u64> | status)";
+            let (action, ms, seed) = match rest.get(1).map(|s| s.as_str()) {
+                Some("pause") => (ClockAction::Pause, None, None),
+                Some("resume") => (ClockAction::Resume, None, None),
+                None | Some("status") => (ClockAction::Status, None, None),
                 Some("step") => (
                     ClockAction::Step,
                     Some(rest.get(2).and_then(|s| s.parse().ok()).ok_or(USAGE_CLOCK)?),
+                    None,
                 ),
                 Some("set") => (
                     ClockAction::Set,
+                    Some(rest.get(2).and_then(|s| s.parse().ok()).ok_or(USAGE_CLOCK)?),
+                    None,
+                ),
+                Some("seed") => (
+                    ClockAction::Seed,
+                    None,
                     Some(rest.get(2).and_then(|s| s.parse().ok()).ok_or(USAGE_CLOCK)?),
                 ),
                 Some(other) => {
@@ -566,6 +572,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 id,
                 action,
                 ms,
+                seed,
                 timeout_ms,
             })
         }
@@ -692,7 +699,7 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--foc
 | motion [--id <id>] [--observe [--ms <ms>]] \
 | resize [--id <id>] <width>x<height> \
 | seek [--id <id>] (--time-ms <ms> | --progress <0..1> | --resume) \
-| clock [--id <id>] (pause | resume | step <ms> | set <ms> | status) \
+| clock [--id <id>] (pause | resume | step <ms> | set <ms> | seed <u64> | status) \
 | diff --id <id> (--other <id> | --baseline <png>) [--tolerance <0-255>] [--heatmap <png>] [--full] \
 | adblock [on|off|status|update] | mcp | update | ping | quit";
 
@@ -825,6 +832,30 @@ mod tests {
         };
         assert_eq!(url.as_deref(), Some("example.com"));
         assert_eq!(mode, OpenMode::Headless);
+    }
+
+    /// `hwatu clock seed <u64>` parses to the Seed action; a missing
+    /// or non-numeric seed is a usage error, and plain `clock status`
+    /// carries no seed.
+    #[test]
+    fn clock_seed_parses() {
+        use hwatu_ipc::ClockAction;
+        let Ok(Request::Clock {
+            action, ms, seed, ..
+        }) = parse(&args(&["clock", "seed", "42"]))
+        else {
+            panic!("expected Clock");
+        };
+        assert_eq!(action, ClockAction::Seed);
+        assert_eq!(ms, None);
+        assert_eq!(seed, Some(42));
+        assert!(parse(&args(&["clock", "seed"])).is_err());
+        assert!(parse(&args(&["clock", "seed", "nope"])).is_err());
+        let Ok(Request::Clock { action, seed, .. }) = parse(&args(&["clock", "status"])) else {
+            panic!("expected Clock");
+        };
+        assert_eq!(action, ClockAction::Status);
+        assert_eq!(seed, None);
     }
 
     #[test]

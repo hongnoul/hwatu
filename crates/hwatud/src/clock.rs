@@ -151,6 +151,32 @@ const CLOCK_JS: &str = r#"(() => {
   realPerf.now = () => vnow();
   Date.now = () => Math.round(dateBase + vnow());
 
+  // ---- Math.random: optional seeded determinism ----------------------
+  // Math.random is the one visible entropy source the virtual clock
+  // does not cover: a page that renders from it can never be
+  // byte-compared across loads. seedRandom(n) replaces it with
+  // mulberry32 seeded from n, so same seed + same virtual timeline
+  // (which fixes the *order* of random() calls) => identical
+  // sequences. Default behavior is untouched native Math.random.
+  const nativeRandom = Math.random.bind(Math);
+  let randomSeed = null;
+  const seedRandom = (n) => {
+    n = Number(n);
+    if (!Number.isFinite(n) || n < 0) return { error: 'seed needs a finite number >= 0' };
+    randomSeed = n;
+    // Fold a u64-ish seed into 32 bits, then mulberry32. >>> 0 keeps
+    // arithmetic in uint32 land; the fold keeps distinct u64 seeds
+    // from trivially colliding in the low word.
+    let state = ((n >>> 0) ^ Math.floor(n / 4294967296)) >>> 0;
+    Math.random = () => {
+      state = (state + 0x6D2B79F5) >>> 0;
+      let t = state;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    return status();
+  };
   // ---- declarative animations share the timeline --------------------
   // Animations we paused (vs. paused by the page itself): only these
   // are resumed by `resume`.
@@ -235,6 +261,7 @@ const CLOCK_JS: &str = r#"(() => {
     virtual_ms: Math.round(vnow() * 1000) / 1000,
     pending_timers: timers.size,
     pending_rafs: rafCallbacks.size,
+    seed: randomSeed,
   });
   const pause = () => {
     if (paused) return status();
@@ -307,8 +334,13 @@ const CLOCK_JS: &str = r#"(() => {
     }
     return step(ms - cur);
   };
+  // A pre-injected flag (set by the daemon before this script when a
+  // seed was requested for future loads) seeds from document start,
+  // before any page script can capture or consume native Math.random.
+  if (typeof g.__hwatu_clock_seed === 'number') seedRandom(g.__hwatu_clock_seed);
   window.__hwatu_clock = {
-    pause, resume, step, set, status,
+    pause, resume, step, set, status, seedRandom,
+    nativeRandom,
     // Native escape hatch for the harness's own plumbing: hwatu's
     // scroll/click/type/expect/challenge JS must keep running in real
     // time while the *page's* clocks are frozen, or pausing the page
@@ -356,11 +388,17 @@ pub fn wire_view(view: &webkit6::WebView) {
 }
 
 /// Dispatch one clock command to the page's installed control surface.
+///
+/// `seed` is special: besides seeding the live page immediately, it
+/// registers a document-start user script on the window's view so
+/// every *future* load in that window is seeded before any page
+/// script can capture or consume the native `Math.random`.
 pub fn clock(
     daemon: &Rc<Daemon>,
     id: Option<u64>,
     action: ClockAction,
     ms: Option<f64>,
+    seed: Option<u64>,
     timeout_ms: Option<u64>,
     reply: Reply,
 ) {
@@ -376,6 +414,21 @@ pub fn clock(
         (ClockAction::Set, _) => {
             return reply(Response::err("usage: hwatu clock set <ms>"));
         }
+        (ClockAction::Seed, _) => {
+            let Some(seed) = seed else {
+                return reply(Response::err("usage: hwatu clock seed <u64>"));
+            };
+            // f64 can't hold every u64 exactly; the shim folds to u32
+            // anyway, but reject seeds that would silently change so
+            // "same seed" always means the same PRNG.
+            if seed > (1u64 << 53) {
+                return reply(Response::err("seed must be <= 2^53 (JS number precision)"));
+            }
+            if let Err(resp) = wire_seed(daemon, id, seed) {
+                return reply(*resp);
+            }
+            format!("c.seedRandom({seed})")
+        }
     };
     let js = format!(
         r#"
@@ -384,4 +437,119 @@ if (!c) return {{ error: "virtual clock not installed in this page (page predate
 return {call};"#
     );
     automation::eval(daemon, id, js, timeout_ms, reply);
+}
+
+/// Register the persistent seed flag script on the target window's
+/// view. Runs at document start; the flag global covers loads where it
+/// executes before CLOCK_JS, the direct call covers loads where the
+/// clock installed first (scripts run in registration order, and
+/// CLOCK_JS is registered at view build time).
+fn wire_seed(daemon: &Rc<Daemon>, id: Option<u64>, seed: u64) -> Result<(), Box<Response>> {
+    use webkit6::prelude::WebViewExt;
+    let windows = daemon.windows.borrow();
+    let win = match id {
+        Some(id) => windows
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| Box::new(Response::err(format!("no window {id}"))))?,
+        None => match windows.len() {
+            1 => windows.values().next().cloned().expect("len checked"),
+            0 => return Err(Box::new(Response::err("no windows open"))),
+            n => {
+                return Err(Box::new(Response::err(format!(
+                    "{n} windows open; pass --id"
+                ))))
+            }
+        },
+    };
+    let Some(view) = win.live_webview() else {
+        return Err(Box::new(Response::err("window has no live webview")));
+    };
+    let Some(ucm) = view.user_content_manager() else {
+        return Err(Box::new(Response::err("view has no user content manager")));
+    };
+    let js = format!(
+        "window.__hwatu_clock_seed = {seed};\n\
+         if (window.__hwatu_clock) window.__hwatu_clock.seedRandom({seed});"
+    );
+    let script = webkit6::UserScript::new(
+        &js,
+        webkit6::UserContentInjectedFrames::AllFrames,
+        webkit6::UserScriptInjectionTime::Start,
+        &[],
+        &[],
+    );
+    ucm.add_script(&script);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::CLOCK_JS;
+
+    /// The seeded-PRNG surface must exist in the injected shim: the
+    /// control surface exposes seedRandom, status reports the seed,
+    /// and the document-start flag path is wired for future loads.
+    #[test]
+    fn clock_js_exposes_seeded_random_surface() {
+        for needle in [
+            "seedRandom",
+            "nativeRandom",
+            "seed: randomSeed",
+            "__hwatu_clock_seed",
+            "0x6D2B79F5", // mulberry32 increment: the algorithm is part of the contract
+        ] {
+            assert!(CLOCK_JS.contains(needle), "missing {needle}");
+        }
+    }
+
+    /// Default behavior unchanged: Math.random is only replaced inside
+    /// seedRandom, never unconditionally at install.
+    #[test]
+    fn clock_js_does_not_replace_math_random_by_default() {
+        // Exactly one assignment to Math.random, and it lives inside
+        // seedRandom's body (after its declaration).
+        let assigns: Vec<_> = CLOCK_JS.match_indices("Math.random =").collect();
+        assert_eq!(assigns.len(), 1, "Math.random should be assigned exactly once");
+        let seed_fn = CLOCK_JS
+            .find("const seedRandom")
+            .expect("seedRandom missing");
+        assert!(
+            assigns[0].0 > seed_fn,
+            "Math.random must only be replaced inside seedRandom"
+        );
+        // And installation-time seeding is gated on the flag global.
+        assert!(CLOCK_JS
+            .contains("if (typeof g.__hwatu_clock_seed === 'number') seedRandom(g.__hwatu_clock_seed);"));
+    }
+
+    /// Same seed + same call count => identical sequences. The Rust
+    /// port here is the executable spec of the JS mulberry32 in
+    /// CLOCK_JS (u32 arithmetic matches JS `>>> 0` / `Math.imul`);
+    /// golden values pin the algorithm so a silent edit to the shim's
+    /// PRNG breaks this test.
+    #[test]
+    fn mulberry32_reference_sequence_is_deterministic() {
+        fn mulberry32(seed: u64) -> impl FnMut() -> f64 {
+            let mut state = (seed as u32) ^ ((seed / 4_294_967_296) as u32);
+            move || {
+                state = state.wrapping_add(0x6D2B_79F5);
+                let mut t = state;
+                t = (t ^ (t >> 15)).wrapping_mul(t | 1);
+                t ^= t.wrapping_add((t ^ (t >> 7)).wrapping_mul(t | 61));
+                f64::from(t ^ (t >> 14)) / 4_294_967_296.0
+            }
+        }
+        let mut a = mulberry32(42);
+        let mut b = mulberry32(42);
+        let seq_a: Vec<f64> = (0..64).map(|_| a()).collect();
+        let seq_b: Vec<f64> = (0..64).map(|_| b()).collect();
+        assert_eq!(seq_a, seq_b, "same seed must give identical sequences");
+        assert!(seq_a.iter().all(|v| (0.0..1.0).contains(v)));
+        // Golden first values for seed 42 (pins the exact algorithm).
+        assert_eq!(seq_a[0], 0.6011037519201636);
+        assert_eq!(seq_a[1], 0.44829055899754167);
+        let mut c = mulberry32(43);
+        assert_ne!(seq_a[0], c(), "different seeds must diverge");
+    }
 }
