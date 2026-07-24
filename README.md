@@ -4,21 +4,22 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![CI](https://github.com/hongnoul/hwatu/actions/workflows/ci.yml/badge.svg)](https://github.com/hongnoul/hwatu/actions/workflows/ci.yml)
 
-**The verification browser for coding agents.** hwatu turns "does the
-page look right" into a number an agent can climb, and turns invisible
-agent sessions into real windows on your screen the moment a human is
-needed.
+**STOP your agent claiming "pixel-perfect." Make it prove 97.49%.**
 
-Your agent works in windows that don't exist on your desktop: no focus
-stolen, no WM pollution, at any parallelism. It measures what it
-builds: pixel-diff scores, animation curves as numbers, screenshots of
-the *middle* of an animation. And when it hits a CAPTCHA or a judgment
-call, `hwatu focus` materializes its live session, cookies, state and
-all, in your tiling WM. You act for ten seconds. It takes back over.
+**STOP browser windows stealing your focus. Headless by default, you
+keep typing.**
+
+**STOP shipping 170 MB of Chromium. One static binary + your distro's
+webkitgtk.**
+
+hwatu is the verification browser for coding agents. It turns "does
+the page look right" into a number an agent can climb, and turns
+invisible agent sessions into real windows on your screen the moment
+a human is needed.
 
 ![hwatu spawning windows in ~48ms from a warm daemon](docs/assets/spawn-demo.svg)
 
-## The loop
+## STOP claiming. Start measuring.
 
 An agent iterating a page toward a design reference, real commands,
 real output:
@@ -56,7 +57,7 @@ curl -fsSL https://raw.githubusercontent.com/hongnoul/hwatu/main/scripts/install
 ```
 
 One static binary plus your distro's `webkitgtk-6.0` (the installer
-checks). No Node, no npm package, no 170 MB browser download. On Arch:
+checks), and that's the whole supply chain. On Arch:
 `yay -S hwatu`. From source: `cargo build --release`.
 
 Wire it into any MCP client (Claude Code, Cursor, ...) with one entry:
@@ -116,9 +117,11 @@ Linux-only today. Full head-to-head data:
 
 ## The hand-off
 
-The feature the others structurally can't copy: **headless is a window
-property, not a launch mode.** Every invisible agent session is a live
-window the WM simply hasn't been shown.
+Your agent works in windows that don't exist on your desktop: no
+focus stolen, no WM pollution, at any parallelism. And the feature
+the others structurally can't copy: **headless is a window property,
+not a launch mode.** Every invisible agent session is a live window
+the WM simply hasn't been shown.
 
 ```sh
 id=$(hwatu --headless --json https://example.com | jq .id)
