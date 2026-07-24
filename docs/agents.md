@@ -443,6 +443,28 @@ page actually sees.
 
 ## Agent integrations
 
+### Guided setup
+
+**Install → Detect workflow → Connect agent → Verify page → Hand off to human**
+
+```sh
+hwatu setup                                      # detect clients; change nothing
+hwatu doctor                                     # dependency + rendering checks
+hwatu setup --client claude --scope project --dry-run
+hwatu setup --client claude --scope project
+hwatu demo                                       # headless unless --focus is explicit
+```
+
+`setup` supports `claude`, `cursor`, `jcode`, and `generic` MCP workflows.
+Configuration is always an explicit client choice; repeated setup is safe,
+`--dry-run` previews the target and action, and `--undo` removes only hwatu's
+entry while preserving unrelated client settings. Project scope is shareable;
+user scope is personal. The three integration tiers remain:
+
+1. Native socket integration for Jcode.
+2. Standard stdio MCP through `hwatu mcp`.
+3. Plain CLI plus project instructions for any shell-capable agent.
+
 - **jcode** has a native hwatu backend for its `browser` tool
   (engine: `hwatu`), speaking the socket directly.
 - **MCP**: `hwatu mcp` serves the Model Context Protocol over stdio,

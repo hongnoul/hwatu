@@ -101,7 +101,7 @@ fn doctor() -> i32 {
 }
 
 fn webkit_check() -> Result<String, String> {
-    const NEEDLES: &[&str] = &["libwebkitgtk-6.0.so", "libwebkit2gtk-4.1.so"];
+    const NEEDLES: &[&str] = &["libwebkitgtk-6.0.so"];
     // Dynamic-linker cache first: authoritative on glibc systems.
     if let Ok(out) = Command::new("ldconfig").arg("-p").output() {
         let text = String::from_utf8_lossy(&out.stdout);
@@ -132,10 +132,10 @@ fn webkit_check() -> Result<String, String> {
     Err("WebKitGTK (libwebkitgtk-6.0) not found; install your distro's webkitgtk package".into())
 }
 
-/// Open a headless window on a data: URL, verify eval sees the DOM,
-/// and close the window regardless of outcome.
+/// Open a headless window on a data: URL, verify the DOM and rendered pixels,
+/// and close the window/remove the screenshot regardless of outcome.
 fn smoke_test() -> Result<String, String> {
-    let url = "data:text/html,<title>hwatu-doctor</title><h1>hwatu doctor smoke test</h1>";
+    let url = "about:blank";
     let id = match send(&Request::Open {
         url: Some(url.into()),
         app_id: None,
@@ -148,6 +148,7 @@ fn smoke_test() -> Result<String, String> {
         Ok(Response::Err { message }) => return Err(format!("open failed: {message}")),
         Err(e) => return Err(format!("open failed: {e}")),
     };
+    let shot = std::env::temp_dir().join(format!("hwatu-doctor-{}.png", std::process::id()));
     let result = (|| {
         let _ = send(&Request::WaitLoad {
             id: Some(id),
@@ -155,19 +156,33 @@ fn smoke_test() -> Result<String, String> {
         });
         match send(&Request::Eval {
             id: Some(id),
-            js: "return document.title".into(),
+            js: "document.title='hwatu-doctor'; document.body.innerHTML='<h1>hwatu doctor smoke test</h1>'; return document.title".into(),
             timeout_ms: Some(10_000),
         }) {
-            Ok(Response::Ok { value: Some(v), .. }) if v.as_str() == Some("hwatu-doctor") => {
-                Ok("headless window rendered and evaluated JS".to_string())
-            }
+            Ok(Response::Ok { value: Some(v), .. }) if v.as_str() == Some("hwatu-doctor") => Ok(()),
             Ok(Response::Ok { value, .. }) => Err(format!("unexpected eval result: {value:?}")),
             Ok(Response::Err { message }) => Err(format!("eval failed: {message}")),
             Err(e) => Err(format!("eval failed: {e}")),
+        }?;
+        match send(&Request::Screenshot {
+            id: Some(id),
+            path: Some(shot.to_string_lossy().into_owned()),
+            full: false,
+        }) {
+            Ok(Response::Ok { .. }) => match fs::metadata(&shot) {
+                Ok(meta) if meta.len() > 0 => {
+                    Ok("headless window rendered, evaluated JS, and captured pixels".to_string())
+                }
+                Ok(_) => Err("screenshot was empty".into()),
+                Err(e) => Err(format!("screenshot was not written: {e}")),
+            },
+            Ok(Response::Err { message }) => Err(format!("screenshot failed: {message}")),
+            other => Err(format!("screenshot failed: {other:?}")),
         }
     })();
     // Cleanup: never leave the smoke-test window behind.
     let _ = send(&Request::Close { id });
+    let _ = fs::remove_file(shot);
     result
 }
 
@@ -372,6 +387,18 @@ fn setup_detect() -> i32 {
     if which("jcode").is_some() || has(".jcode") {
         any = true;
         println!("  jcode    -> native support, no config needed (keep `hwatu` on PATH)");
+    }
+    for (binary, label) in [
+        ("codex", "Codex"),
+        ("gemini", "Gemini CLI"),
+        ("opencode", "OpenCode"),
+    ] {
+        if which(binary).is_some() {
+            any = true;
+            println!(
+                "  {binary:<8} -> {label}: use its MCP UI with `hwatu mcp`, or the CLI fallback"
+            );
+        }
     }
     if !any {
         println!("  (none of claude/cursor/jcode detected)");

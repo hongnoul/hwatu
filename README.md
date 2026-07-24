@@ -25,24 +25,39 @@
 
 ## Quick Start
 
+**Install → Detect workflow → Connect agent → Verify page → Hand off to human**
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/hongnoul/hwatu/main/scripts/install.sh | bash
+hwatu setup
 ```
 
 One static binary plus your distro's `webkitgtk-6.0` (the installer
 checks). On Arch: `yay -S hwatu`. From source: `cargo build --release`.
 
-The installer installs the binaries but does not modify agent configuration.
-Register hwatu with Claude Code explicitly (the default local scope applies
-only to the current project):
+The installer installs binaries only. `hwatu setup` detects supported coding
+agents and prints the available connections without changing their config.
+Choose a client explicitly when you are ready:
 
 ```sh
-claude mcp add hwatu -- hwatu mcp
+hwatu doctor
+hwatu setup --client claude --scope project --dry-run
+hwatu setup --client claude --scope project
+hwatu demo
 ```
 
-For a config shared with the repository, use `--scope project`, then start
-`claude` once to approve the new project-scoped server. Other MCP clients
-(Cursor, ...) use the equivalent entry below; jcode drives hwatu natively:
+- **Install:** download two binaries and check WebKitGTK.
+- **Detect:** find Claude Code, Cursor, Jcode, or a generic MCP workflow.
+- **Connect:** use Jcode's native socket, MCP, or the CLI fallback.
+- **Verify:** run a headless rendered smoke test with `doctor` or `demo`.
+- **Hand off:** materialize the same live session only when a human is needed.
+
+Setup is previewable, idempotent, and reversible with the same client and
+scope plus `--undo`. Project scope creates shareable configuration; user scope
+keeps it personal. Claude Code asks each user to approve project-scoped MCP
+servers when it next starts.
+
+Manual MCP configuration remains one portable entry:
 
 ```json
 { "mcpServers": { "hwatu": { "command": "hwatu", "args": ["mcp"] } } }

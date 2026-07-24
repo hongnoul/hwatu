@@ -266,6 +266,31 @@
       </section>
 
       <section>
+        <h2>Onboarding</h2>
+        <p><strong>Install → Detect workflow → Connect agent → Verify page → Hand off to human</strong></p>
+        <pre><code>curl -fsSL https://raw.githubusercontent.com/hongnoul/hwatu/main/scripts/install.sh | bash
+hwatu setup                                      # detect; changes nothing
+hwatu doctor                                     # dependency + rendered smoke test
+hwatu setup --client claude --scope project --dry-run
+hwatu setup --client claude --scope project      # explicit opt-in
+hwatu demo                                       # headless verification tour</code></pre>
+        <ul>
+          <li><strong>Install.</strong> Download the client and daemon; check WebKitGTK.</li>
+          <li><strong>Detect.</strong> Find Claude Code, Cursor, Jcode, and generic MCP workflows.</li>
+          <li><strong>Connect.</strong> Native Jcode socket, standard MCP, or plain CLI.</li>
+          <li><strong>Verify.</strong> Open, inspect, and screenshot a real rendered page headlessly.</li>
+          <li><strong>Hand off.</strong> Promote the same live session only when human judgment is needed.</li>
+        </ul>
+        <p class="muted">
+          Bare <code>hwatu setup</code> never edits agent configuration. Every
+          mutation names its target first, supports <code>--dry-run</code>, and
+          can be reversed with <code>--undo</code>. Use
+          <code>--scope project</code> for shareable config or
+          <code>--scope user</code> for personal config.
+        </p>
+      </section>
+
+      <section>
         <h2>Why</h2>
         <p>
           Browsers conflate two things: the engine (slow to start, RAM-hungry)
@@ -322,7 +347,7 @@ hwatu upload 'input[type=file]' ./fixture.png
 hwatu focus 3                      # hand the session to the human</code></pre>
         <p class="muted">
           Agent CLIs (jcode, Claude Code, Codex, Cursor, ...) are
-          auto-detected and default to <code>--background</code>, so
+          auto-detected and default to <code>--headless</code>, so
           verification never steals your focus. <code>focus</code> promotes
           any headless or background window to a normal one, session
           intact.

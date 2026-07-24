@@ -193,4 +193,5 @@ install_wm_rule() {
 }
 install_wm_rule
 
-say "try: hwatu example.com"
+say "next: hwatu setup"
+say "      detects agent workflows and previews connections without changing config"
