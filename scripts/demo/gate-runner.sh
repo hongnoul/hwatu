@@ -196,11 +196,11 @@ jq -n \
   --arg ref_dir "$REF_DIR" --arg clone_dir "$CLONE_DIR" \
   --slurpfile static <(jq -c . "$CELLS") \
   --slurpfile temporal <(jq -c . "$TEMPORAL") \
-  --argjson motion "$(cat "$MOTION_JSON")" \
+  --slurpfile motion "$MOTION_JSON" \
   '{meta:{ref_hash:$ref_hash, date:$date, hwatu_version:$hv,
           ref_dir:$ref_dir, clone_dir:$clone_dir,
           tolerance:0, height:'"$HEIGHT"'},
-    static:$static, temporal:$temporal, motion:$motion}' \
+    static:$static, temporal:$temporal, motion:$motion[0]}' \
   >"$OUT_JSON"
 
 echo "scorecard: $OUT_JSON" >&2
