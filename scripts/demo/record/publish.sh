@@ -61,9 +61,17 @@ for url in "$MP4_URL" "$WEBP_URL"; do
   [ "$code" = 200 ] || fail=1
 done
 
-# The rendered README must reference the assets.
-rendered=$(curl -sL "https://github.com/$REPO")
-echo "$rendered" | grep -q "hwatu-demo.webp" \
+# Check both GitHub's raw branch and its rendered README API. The
+# repository homepage HTML is edge-cached and can briefly serve the
+# preceding commit immediately after a push.
+raw=$(curl -fsSL -H 'Cache-Control: no-cache' \
+  "https://raw.githubusercontent.com/$REPO/main/README.md?cb=$(date +%s%N)")
+rendered=$(gh api -H 'Accept: application/vnd.github.html+json' \
+  "repos/$REPO/readme" 2>/dev/null || true)
+echo "$raw" | grep -q "$(basename "$WEBP")" \
+  && echo "  ok   raw README references demo webp" \
+  || { echo "  FAIL raw README missing demo webp"; fail=1; }
+echo "$rendered" | grep -q "$(basename "$WEBP")" \
   && echo "  ok   rendered README references demo webp" \
   || { echo "  FAIL rendered README missing demo webp"; fail=1; }
 
@@ -72,6 +80,10 @@ echo "$rendered" | grep -q "hwatu-demo.webp" \
 if hwatu ping >/dev/null 2>&1; then
   id=$(hwatu --headless --json "https://github.com/$REPO" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
   hwatu wait-load --id "$id" --timeout-ms 20000 >/dev/null
+  probe=$(hwatu eval --id "$id" "const i=[...document.images].find(i=>i.src.includes('$(basename "$WEBP")')); if(!i)return {found:false}; i.scrollIntoView({block:'center'}); return {found:true,complete:i.complete,width:i.naturalWidth,height:i.naturalHeight,link:i.closest('a')?.href}" 2>/dev/null || true)
+  echo "$probe" | grep -q '"found":true' \
+    && echo "  ok   live GitHub DOM loaded demo image" \
+    || { echo "  FAIL live GitHub DOM missing demo image"; fail=1; }
   hwatu shot --id "$id" /tmp/hwatu-readme-live.png >/dev/null
   hwatu close "$id" >/dev/null
   echo "  shot /tmp/hwatu-readme-live.png (live github render)"
