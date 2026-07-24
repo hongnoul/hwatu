@@ -36,8 +36,17 @@ curl -fsSL https://raw.githubusercontent.com/hongnoul/hwatu/main/scripts/install
 One static binary plus your distro's `webkitgtk-6.0` (the installer
 checks). On Arch: `yay -S hwatu`. From source: `cargo build --release`.
 
-Wire it into any MCP client (Claude Code, Cursor, ...) with one entry;
-jcode drives hwatu natively:
+The installer installs the binaries but does not modify agent configuration.
+Register hwatu with Claude Code explicitly (the default local scope applies
+only to the current project):
+
+```sh
+claude mcp add hwatu -- hwatu mcp
+```
+
+For a config shared with the repository, use `--scope project`, then start
+`claude` once to approve the new project-scoped server. Other MCP clients
+(Cursor, ...) use the equivalent entry below; jcode drives hwatu natively:
 
 ```json
 { "mcpServers": { "hwatu": { "command": "hwatu", "args": ["mcp"] } } }

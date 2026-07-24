@@ -455,6 +455,17 @@ page actually sees.
   `open` defaults to headless, and
   id-less calls follow the last-driven window just like the CLI.
 
+  The hwatu installer does not modify agent configuration. For Claude Code,
+  register it for the current project with:
+
+  ```sh
+  claude mcp add hwatu -- hwatu mcp
+  ```
+
+  To commit the configuration for collaborators instead, add `--scope
+  project`; Claude Code writes `.mcp.json` and asks each user to approve that
+  project-scoped server when they next start `claude`.
+
   ```jsonc
   // e.g. Claude Code: .mcp.json / Cursor: mcp.json
   { "mcpServers": { "hwatu": { "command": "hwatu", "args": ["mcp"] } } }
