@@ -83,6 +83,11 @@ pause 2
 
 # Beat 4 (optional, if checkpoint dirs exist): the climb.
 # Each checkpoint dir is a progressively better clone; re-serve + re-diff.
+# IMPORTANT: diff at CLIMB_SCROLL, not page top. Validated 2026-07-24:
+# at scroll 0 every checkpoint scores ~93% (hero was cloned first) and
+# the climb is invisible; at 75% it runs 0.4% -> 98%. Tune per take.
+CLIMB_SCROLL="${HWATU_DEMO_CLIMB_SCROLL:-75}"
+SCROLL_JS="window.scrollTo(0,(document.documentElement.scrollHeight-innerHeight)*$CLIMB_SCROLL/100)"
 for ckpt in "$DEMO_DIR"/checkpoints/*/; do
   [ -d "$ckpt" ] || continue
   mark "climb $(basename "$ckpt")"
@@ -92,6 +97,8 @@ for ckpt in "$DEMO_DIR"/checkpoints/*/; do
   pause 1
   say "hwatu goto --id 2 http://localhost:$CLONE_PORT/"
   pause 3
+  say "hwatu eval --id 1 '$SCROLL_JS' >/dev/null; hwatu eval --id 2 '$SCROLL_JS' >/dev/null"
+  pause 1
   say "hwatu diff --id 2 --other 1"
   pause 3
 done
