@@ -4,6 +4,7 @@
 //! running, it spawns one and waits for the socket.
 
 mod mcp;
+mod onboarding;
 mod update;
 
 use hwatu_ipc::{AdblockCmd, ClockAction, OpenMode, Request, Response};
@@ -19,6 +20,12 @@ fn main() {
     }
     if args.first().map(String::as_str) == Some("mcp") {
         std::process::exit(mcp::run());
+    }
+    if matches!(
+        args.first().map(String::as_str),
+        Some("doctor") | Some("setup") | Some("demo")
+    ) {
+        std::process::exit(onboarding::run(&args));
     }
     // `--json` is a client-side output flag (machine-readable `list`
     // for wofi/rofi/fuzzel pipelines), not part of the wire protocol.
@@ -701,9 +708,12 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--foc
 | seek [--id <id>] (--time-ms <ms> | --progress <0..1> | --resume) \
 | clock [--id <id>] (pause | resume | step <ms> | set <ms> | seed <u64> | status) \
 | diff --id <id> (--other <id> | --baseline <png>) [--tolerance <0-255>] [--heatmap <png>] [--full] \
-| adblock [on|off|status|update] | mcp | update | ping | quit";
+| adblock [on|off|status|update] \
+| doctor | setup [--client claude|cursor|generic|jcode] [--scope project|user] [--dry-run] [--undo] \
+| demo [url] [--focus] \
+| mcp | update | ping | quit";
 
-fn connect_or_spawn() -> std::io::Result<UnixStream> {
+pub(crate) fn connect_or_spawn() -> std::io::Result<UnixStream> {
     let path = hwatu_ipc::socket_path();
     if let Ok(s) = UnixStream::connect(&path) {
         return Ok(s);
