@@ -92,7 +92,12 @@ start_daemon() {
   local scale=$1 rt
   rt=$(mktemp -d "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/hwatu-gate.XXXXXX")
   RTDIRS+=("$rt")
-  XDG_RUNTIME_DIR="$rt" GDK_BACKEND=x11 DISPLAY="$XVFB_DISPLAY"     WAYLAND_DISPLAY= GDK_SCALE="$scale" "$HWATU_BIN" ping >/dev/null
+  # HWATU_CLOCK_START_PAUSED: pages load with the virtual clock
+  # already frozen at t=0 and a pinned Date epoch, so two loads are
+  # byte-comparable without any post-load `clock set` race.
+  XDG_RUNTIME_DIR="$rt" GDK_BACKEND=x11 DISPLAY="$XVFB_DISPLAY" \
+    WAYLAND_DISPLAY= GDK_SCALE="$scale" HWATU_CLOCK_START_PAUSED=1 \
+    "$HWATU_BIN" ping >/dev/null
   echo "$rt"
 }
 
