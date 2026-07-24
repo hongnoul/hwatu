@@ -322,9 +322,10 @@ pub enum Request {
     /// Control a page's *virtual clock*. Where [`Request::Seek`] pins
     /// declarative animations (CSS/WAAPI), Clock also freezes the
     /// clocks script-driven animation reads: `requestAnimationFrame`,
-    /// `performance.now`, `Date.now`, `setTimeout`/`setInterval` are
-    /// wrapped at document start behind one controllable timeline, and
-    /// `document.getAnimations()` is driven from the same timeline. A
+    /// `performance.now`, `Date.now`, zero-argument `Date` construction,
+    /// and `setTimeout`/`setInterval` are wrapped at document start behind
+    /// one controllable timeline, and `document.getAnimations()` is driven
+    /// from the same timeline. A
     /// rAF-driven marquee that Seek cannot touch freezes under
     /// `pause` and advances deterministically under `step`.
     Clock {
@@ -384,8 +385,8 @@ pub enum OpenMode {
 #[serde(rename_all = "snake_case")]
 pub enum ClockAction {
     /// Freeze virtual time. rAF stops firing, timers stop expiring,
-    /// `performance.now()`/`Date.now()` stop advancing, and running
-    /// CSS/WAAPI animations are paused at the current virtual time.
+    /// `performance.now()`/`Date.now()`/`new Date()` stop advancing, and
+    /// running CSS/WAAPI animations are paused at the current virtual time.
     Pause,
     /// Return to real time. Wrapped clocks resume advancing from the
     /// current virtual time (monotonic: no backwards jumps).

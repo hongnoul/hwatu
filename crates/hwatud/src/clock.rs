@@ -10,7 +10,8 @@
 //! page code runs) that puts every clock the page can read behind one
 //! controllable virtual timeline:
 //!
-//! - `performance.now()` and `Date.now()` return virtual time,
+//! - `performance.now()`, `Date.now()`, and zero-argument `Date`
+//!   construction return virtual time,
 //! - `setTimeout`/`setInterval` fire on virtual deadlines (delegated
 //!   1:1 to native timers while the clock is live, so real pages keep
 //!   their real behavior until an agent takes control),
@@ -43,6 +44,7 @@ const CLOCK_JS: &str = r#"(() => {
   const g = window;
   const realPerf = performance;
   const realNow = performance.now.bind(performance);
+  const NativeDate = g.Date;
   const nativeSetTimeout = g.setTimeout.bind(g);
   const nativeClearTimeout = g.clearTimeout.bind(g);
   const nativeSetInterval = g.setInterval.bind(g);
@@ -58,7 +60,7 @@ const CLOCK_JS: &str = r#"(() => {
   const configuredEpoch = Number(g.__hwatu_clock_epoch_ms);
   const dateBase = Number.isFinite(configuredEpoch)
     ? configuredEpoch
-    : (g.__hwatu_clock_start_paused ? startPausedEpoch : (Date.now() - realNow()));
+    : (g.__hwatu_clock_start_paused ? startPausedEpoch : (NativeDate.now() - realNow()));
 
   // Virtual timeline: continuous with the performance timeline until
   // the first pause (vnow() === realNow() while never paused).
@@ -152,7 +154,29 @@ const CLOCK_JS: &str = r#"(() => {
 
   // ---- clocks the page reads ---------------------------------------
   realPerf.now = () => vnow();
-  Date.now = () => Math.round(dateBase + vnow());
+  const virtualDateNow = () => Math.round(dateBase + vnow());
+  // Date.now alone is insufficient: sites commonly choose visible
+  // day/night variants with `new Date().getHours()`. A Proxy preserves
+  // Date's native prototype, parse/UTC statics, subclass construction,
+  // and explicit-argument parsing while virtualizing only the implicit
+  // "now" paths (`Date()` and `new Date()`).
+  const VirtualDate = new Proxy(NativeDate, {
+    apply() {
+      return new NativeDate(virtualDateNow()).toString();
+    },
+    construct(target, args, newTarget) {
+      return Reflect.construct(
+        target,
+        args.length === 0 ? [virtualDateNow()] : args,
+        newTarget,
+      );
+    },
+    get(target, property, receiver) {
+      if (property === 'now') return virtualDateNow;
+      return Reflect.get(target, property, receiver);
+    },
+  });
+  g.Date = VirtualDate;
 
   // ---- Math.random: optional seeded determinism ----------------------
   // Math.random is the one visible entropy source the virtual clock
@@ -581,6 +605,23 @@ mod tests {
     fn clock_js_accepts_a_fixed_epoch_without_starting_paused() {
         assert!(CLOCK_JS.contains("Number(g.__hwatu_clock_epoch_ms)"));
         assert!(CLOCK_JS.contains("Number.isFinite(configuredEpoch)"));
+    }
+
+    /// Pinning only Date.now leaves `new Date()` and `Date()` coupled to
+    /// real wall time. The shim must virtualize both implicit-now forms
+    /// without changing explicit Date construction or native statics.
+    #[test]
+    fn clock_js_virtualizes_the_complete_date_now_surface() {
+        for needle in [
+            "const NativeDate = g.Date",
+            "const VirtualDate = new Proxy(NativeDate",
+            "args.length === 0 ? [virtualDateNow()] : args",
+            "return new NativeDate(virtualDateNow()).toString()",
+            "if (property === 'now') return virtualDateNow",
+            "g.Date = VirtualDate",
+        ] {
+            assert!(CLOCK_JS.contains(needle), "missing Date behavior: {needle}");
+        }
     }
 
     /// Same seed + same call count => identical sequences. The Rust

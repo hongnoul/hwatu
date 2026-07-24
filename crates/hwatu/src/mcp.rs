@@ -580,7 +580,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
             "clock",
             "Control the page's virtual clock. Unlike seek (CSS/WAAPI only), \
              this also freezes requestAnimationFrame, performance.now, \
-             Date.now, and timers, so script-driven motion (rAF marquees, \
+             Date.now, new Date(), Date(), and timers, so script-driven motion (rAF marquees, \
              carousels) becomes deterministic. `pause` freezes, `step` \
              advances by `ms` virtual milliseconds, `set` steps to absolute \
              virtual time `ms`, `resume` returns to real time, `status` \

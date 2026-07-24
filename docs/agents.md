@@ -287,7 +287,8 @@ setting `currentTime`. Script-driven motion has no such handle: a
 classic marquee/carousel/physics pattern) sails straight through a
 seek. `hwatu clock` fixes that by putting *every clock the page can
 read* behind one controllable virtual timeline: `performance.now`,
-`Date.now`, `setTimeout`/`setInterval`, `requestAnimationFrame` (a
+`Date.now`, `new Date()`/`Date()`, `setTimeout`/`setInterval`,
+`requestAnimationFrame` (a
 user script wraps them at document start, before any page code runs),
 with CSS/WAAPI `currentTime` driven from the same clock.
 

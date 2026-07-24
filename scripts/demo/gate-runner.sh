@@ -40,6 +40,13 @@ SCROLLS=(0 25 50 75 100)
 TIMES=(250 1000 5000 30000 103960)  # last ~= one marquee wrap
 HEIGHT=800
 TOL=0
+STATIC_ONLY=${STATIC_ONLY:-0}
+# The reference chooses one of six visible stats themes with
+# `new Date().getHours()`. Pin both epoch and timezone so a gate started
+# on another machine or at another real hour renders the same pre-dawn
+# specimen. 2026-07-24T06:00:00Z deliberately avoids every
+# 5/8/11/16/20/23 variant boundary.
+CLOCK_EPOCH_MS=${CLOCK_EPOCH_MS:-1784872800000}
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/gate-runner.XXXXXX")
 CELLS="$WORK/cells.jsonl"; : >"$CELLS"
@@ -70,6 +77,10 @@ for i in $(seq 50); do
   curl -sf -o /dev/null "http://127.0.0.1:$REF_PORT/" && curl -sf -o /dev/null "http://127.0.0.1:$CLONE_PORT/" && break
   sleep 0.1
 done
+curl -sf -o /dev/null "http://127.0.0.1:$REF_PORT/" \
+  || { echo "reference fixture server did not become ready: $REF_DIR" >&2; exit 1; }
+curl -sf -o /dev/null "http://127.0.0.1:$CLONE_PORT/" \
+  || { echo "clone fixture server did not become ready: $CLONE_DIR" >&2; exit 1; }
 
 REF_URL="http://127.0.0.1:$REF_PORT/"
 CLONE_URL="http://127.0.0.1:$CLONE_PORT/"
@@ -92,11 +103,9 @@ start_daemon() {
   local scale=$1 rt
   rt=$(mktemp -d "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/hwatu-gate.XXXXXX")
   RTDIRS+=("$rt")
-  # HWATU_CLOCK_START_PAUSED: pages load with the virtual clock
-  # already frozen at t=0 and a pinned Date epoch, so two loads are
-  # byte-comparable without any post-load `clock set` race.
   XDG_RUNTIME_DIR="$rt" GDK_BACKEND=x11 DISPLAY="$XVFB_DISPLAY" \
-    WAYLAND_DISPLAY= GDK_SCALE="$scale" HWATU_CLOCK_START_PAUSED=1 \
+    WAYLAND_DISPLAY= GDK_SCALE="$scale" TZ=UTC \
+    HWATU_CLOCK_EPOCH_MS="$CLOCK_EPOCH_MS" \
     "$HWATU_BIN" ping >/dev/null
   echo "$rt"
 }
@@ -125,25 +134,34 @@ diff_pct() { # diff_pct <rt> -> echoes full diff json
 for dpr in "${DPRS[@]}"; do
   echo "== daemon dpr=$dpr" >&2
   RT=$(start_daemon "$dpr")
-  REF_ID=$(hw "$RT" --headless --json "$REF_URL" | jq .id)
-  CLONE_ID=$(hw "$RT" --headless --json "$CLONE_URL" | jq .id)
-  # All native-clock waits BEFORE any pause: paused pages stall them.
+  # Seed blank windows before loading either fixture. The seed persists
+  # across navigation and keeps Math.random call order deterministic.
+  seed_url='data:text/html,%3Ctitle%3Ehwatu-seed%3C%2Ftitle%3E'
+  REF_ID=$(hw "$RT" --headless --json "$seed_url" | jq .id)
+  CLONE_ID=$(hw "$RT" --headless --json "$seed_url" | jq .id)
   hw "$RT" wait-load --id "$REF_ID" --timeout-ms 60000 >/dev/null
   hw "$RT" wait-load --id "$CLONE_ID" --timeout-ms 60000 >/dev/null
-  for wid in "$REF_ID" "$CLONE_ID"; do
-    hw "$RT" eval --id "$wid" 'await document.fonts.ready; return document.fonts.status' >/dev/null
-    got_dpr=$(hw "$RT" eval --id "$wid" 'window.devicePixelRatio')
-    [ "$got_dpr" = "$dpr" ] || { echo "expected dpr $dpr, page reports $got_dpr" >&2; exit 1; }
-  done
-  # Daemon runs start-paused: both pages are already frozen at t=0.
-  for wid in "$REF_ID" "$CLONE_ID"; do
-    st=$(hw "$RT" clock --id "$wid" status)
-    [ "$(jq '.paused and .virtual_ms == 0' <<<"$st")" = true ] \
-      || { echo "clock not start-paused at 0: $st" >&2; exit 1; }
-  done
-
+  hw "$RT" clock --id "$REF_ID" seed 1 >/dev/null
+  hw "$RT" clock --id "$CLONE_ID" seed 1 >/dev/null
   for w in "${WIDTHS[@]}"; do
     resize_both "$RT" "$w" "$dpr"
+    # Each viewport is an independent t=0 specimen. A paused resize can
+    # strand responsive hydration in the preceding viewport's rAF/timer
+    # state, so navigate only after sizing the windows, then finish every
+    # native-clock load/font wait before taking control of the new realm.
+    hw "$RT" goto --id "$REF_ID" "$REF_URL" >/dev/null
+    hw "$RT" goto --id "$CLONE_ID" "$CLONE_URL" >/dev/null
+    hw "$RT" wait-load --id "$REF_ID" --timeout-ms 60000 >/dev/null
+    hw "$RT" wait-load --id "$CLONE_ID" --timeout-ms 60000 >/dev/null
+    for wid in "$REF_ID" "$CLONE_ID"; do
+      hw "$RT" eval --id "$wid" 'await document.fonts.ready; return document.fonts.status' >/dev/null
+      got_dpr=$(hw "$RT" eval --id "$wid" 'window.devicePixelRatio')
+      [ "$got_dpr" = "$dpr" ] || { echo "expected dpr $dpr, page reports $got_dpr" >&2; exit 1; }
+      hw "$RT" clock --id "$wid" set 0 >/dev/null
+      st=$(hw "$RT" clock --id "$wid" status)
+      [ "$(jq '.paused and .virtual_ms == 0' <<<"$st")" = true ] \
+        || { echo "clock not paused at t=0 after viewport load: $st" >&2; exit 1; }
+    done
     # Same absolute scroll y on both, derived from the ref's range.
     max_y=$(hw "$RT" eval --id "$REF_ID" 'Math.max(0, Math.round(document.documentElement.scrollHeight - window.innerHeight))')
     for pct in "${SCROLLS[@]}"; do
@@ -160,7 +178,7 @@ for dpr in "${DPRS[@]}"; do
   done
 
   # ---- temporal + motion, run once, on the dpr=1 daemon -------------
-  if [ "$dpr" = 1 ]; then
+  if [ "$dpr" = 1 ] && [ "$STATIC_ONLY" != 1 ]; then
     resize_both "$RT" 1280 1
     for wid in "$REF_ID" "$CLONE_ID"; do
       hw "$RT" eval --id "$wid" 'window.scrollTo(0,0); return 0' >/dev/null
