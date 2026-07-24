@@ -28,6 +28,14 @@ CLONE_DIR=${2:?usage: gate-runner.sh REF_DIR CLONE_DIR OUT_JSON}
 OUT_JSON=${3:?usage: gate-runner.sh REF_DIR CLONE_DIR OUT_JSON}
 REF_DIR=$(realpath "$REF_DIR"); CLONE_DIR=$(realpath "$CLONE_DIR")
 
+require_fixture() {
+  local kind=$1 dir=$2
+  [ -d "$dir" ] || { echo "$kind fixture directory does not exist: $dir" >&2; exit 1; }
+  [ -r "$dir/index.html" ] || { echo "$kind fixture has no readable index.html: $dir" >&2; exit 1; }
+}
+require_fixture reference "$REF_DIR"
+require_fixture clone "$CLONE_DIR"
+
 HERE=$(cd "$(dirname "$0")" && pwd)
 REPO_ROOT=$(cd "$HERE/../.." && pwd)
 HWATU_BIN=${HWATU_BIN:-$REPO_ROOT/target/release/hwatu}
