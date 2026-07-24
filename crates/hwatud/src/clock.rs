@@ -55,7 +55,10 @@ const CLOCK_JS: &str = r#"(() => {
   // would otherwise differ across loads in their last digits even
   // with identical virtual timelines.
   const startPausedEpoch = 1700000000000;
-  const dateBase = g.__hwatu_clock_start_paused ? startPausedEpoch : (Date.now() - realNow());
+  const configuredEpoch = Number(g.__hwatu_clock_epoch_ms);
+  const dateBase = Number.isFinite(configuredEpoch)
+    ? configuredEpoch
+    : (g.__hwatu_clock_start_paused ? startPausedEpoch : (Date.now() - realNow()));
 
   // Virtual timeline: continuous with the performance timeline until
   // the first pause (vnow() === realNow() while never paused).
@@ -389,6 +392,22 @@ pub fn wire_view(view: &webkit6::WebView) {
         );
         ucm.add_script(&flag);
     }
+    // Pin Date.now() independently of timeline state. This lets verification
+    // pages finish native-clock navigation/font/hydration waits before their
+    // first `clock set 0`, while still giving every page the same wall time.
+    if let Some(epoch_ms) = std::env::var("HWATU_CLOCK_EPOCH_MS")
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+    {
+        let epoch = webkit6::UserScript::new(
+            &format!("window.__hwatu_clock_epoch_ms = {epoch_ms};"),
+            webkit6::UserContentInjectedFrames::AllFrames,
+            webkit6::UserScriptInjectionTime::Start,
+            &[],
+            &[],
+        );
+        ucm.add_script(&epoch);
+    }
     let script = webkit6::UserScript::new(
         CLOCK_JS,
         webkit6::UserContentInjectedFrames::AllFrames,
@@ -556,6 +575,12 @@ mod tests {
                 "missing rebase behavior: {needle}"
             );
         }
+    }
+
+    #[test]
+    fn clock_js_accepts_a_fixed_epoch_without_starting_paused() {
+        assert!(CLOCK_JS.contains("Number(g.__hwatu_clock_epoch_ms)"));
+        assert!(CLOCK_JS.contains("Number.isFinite(configuredEpoch)"));
     }
 
     /// Same seed + same call count => identical sequences. The Rust
