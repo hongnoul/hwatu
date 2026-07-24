@@ -49,13 +49,27 @@ const CLOCK_JS: &str = r#"(() => {
   const nativeClearInterval = g.clearInterval.bind(g);
   const nativeRaf = g.requestAnimationFrame.bind(g);
   const nativeCaf = g.cancelAnimationFrame.bind(g);
-  const dateBase = Date.now() - realNow();
+  // Wall-clock epoch at performance-timeline zero. In deterministic
+  // start-paused mode the epoch is pinned to a constant: pages that
+  // derive visible state from absolute Date.now() (live counters)
+  // would otherwise differ across loads in their last digits even
+  // with identical virtual timelines.
+  const startPausedEpoch = 1700000000000;
+  const dateBase = g.__hwatu_clock_start_paused ? startPausedEpoch : (Date.now() - realNow());
 
   // Virtual timeline: continuous with the performance timeline until
   // the first pause (vnow() === realNow() while never paused).
-  let paused = false;
-  let vbase = realNow(); // virtual time at the last sync point
-  let rbase = vbase;     // realNow() at the last sync point
+  //
+  // Deterministic-load mode (`HWATU_CLOCK_START_PAUSED` on the
+  // daemon, surfaced as a pre-injected global): the clock installs
+  // already paused at virtual t=0, so the *whole load* happens at one
+  // frozen instant. Every timer deadline and every now() read during
+  // parsing is then identical across loads, which is what makes two
+  // fresh loads of the same page byte-comparable under `clock step`.
+  const startPaused = !!g.__hwatu_clock_start_paused;
+  let paused = startPaused;
+  let vbase = startPaused ? 0 : realNow(); // virtual time at the last sync point
+  let rbase = realNow();                   // realNow() at the last sync point
   const vnow = () => (paused ? vbase : vbase + (realNow() - rbase));
 
   // ---- timers: one registry, native delegation while live ---------
@@ -271,8 +285,16 @@ const CLOCK_JS: &str = r#"(() => {
       }
       pumpIO();
       flushRaf();
+      // Force a synchronous style recalc so CSS transitions triggered
+      // by the timers/rAF above are *created* inside this tick, then
+      // advance declarative animations by the same dt. Leaving the
+      // advance to the end of the step let transition creation race
+      // the engine's real-time render cycle: an animation born after
+      // the loop finished missed its advance entirely, which showed
+      // up as one-frame phase flicker between two lockstep windows.
+      void document.documentElement && document.documentElement.offsetWidth;
+      advanceAnimations(dt);
     }
-    advanceAnimations(ms);
     return status();
   };
   const set = (ms) => {
@@ -309,6 +331,20 @@ pub fn wire_view(view: &webkit6::WebView) {
     let Some(ucm) = view.user_content_manager() else {
         return;
     };
+    // Deterministic-load mode: a tiny preamble script (added first, so
+    // it runs first) flags the realm before the clock installs. Only
+    // isolated verification daemons set this env; interactive daemons
+    // keep native passthrough behavior.
+    if std::env::var("HWATU_CLOCK_START_PAUSED").is_ok_and(|v| !v.is_empty() && v != "0") {
+        let flag = webkit6::UserScript::new(
+            "window.__hwatu_clock_start_paused = true;",
+            webkit6::UserContentInjectedFrames::AllFrames,
+            webkit6::UserScriptInjectionTime::Start,
+            &[],
+            &[],
+        );
+        ucm.add_script(&flag);
+    }
     let script = webkit6::UserScript::new(
         CLOCK_JS,
         webkit6::UserContentInjectedFrames::AllFrames,

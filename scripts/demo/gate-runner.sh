@@ -130,9 +130,12 @@ for dpr in "${DPRS[@]}"; do
     got_dpr=$(hw "$RT" eval --id "$wid" 'window.devicePixelRatio')
     [ "$got_dpr" = "$dpr" ] || { echo "expected dpr $dpr, page reports $got_dpr" >&2; exit 1; }
   done
-  # Pin both to the same virtual instant.
-  hw "$RT" clock --id "$REF_ID" set 0 >/dev/null
-  hw "$RT" clock --id "$CLONE_ID" set 0 >/dev/null
+  # Daemon runs start-paused: both pages are already frozen at t=0.
+  for wid in "$REF_ID" "$CLONE_ID"; do
+    st=$(hw "$RT" clock --id "$wid" status)
+    [ "$(jq '.paused and .virtual_ms == 0' <<<"$st")" = true ] \
+      || { echo "clock not start-paused at 0: $st" >&2; exit 1; }
+  done
 
   for w in "${WIDTHS[@]}"; do
     resize_both "$RT" "$w" "$dpr"
@@ -156,15 +159,14 @@ for dpr in "${DPRS[@]}"; do
     resize_both "$RT" 1280 1
     for wid in "$REF_ID" "$CLONE_ID"; do
       hw "$RT" eval --id "$wid" 'window.scrollTo(0,0); return 0' >/dev/null
-      hw "$RT" clock --id "$wid" set 0 >/dev/null
     done
     d=$(diff_pct "$RT")
     jq -c '{t:0, pct:.match_percent, mismatched:.mismatched_pixels}' <<<"$d" >>"$TEMPORAL"
     prev=0
     for t in "${TIMES[@]}"; do
       step=$(( t - prev )); prev=$t
-      hw "$RT" clock --id "$REF_ID" step "$step" >/dev/null
-      hw "$RT" clock --id "$CLONE_ID" step "$step" >/dev/null
+      hw "$RT" clock --id "$REF_ID" step "$step" --timeout-ms 300000 >/dev/null
+      hw "$RT" clock --id "$CLONE_ID" step "$step" --timeout-ms 300000 >/dev/null
       d=$(diff_pct "$RT")
       jq -c --argjson t "$t" '{t:$t, pct:.match_percent, mismatched:.mismatched_pixels}' <<<"$d" >>"$TEMPORAL"
       echo "  t=${t}ms -> $(jq .match_percent <<<"$d")%" >&2
