@@ -1,8 +1,12 @@
+<div align="center">
+
 # hwatu
 
 [![Latest Release](https://badgen.net/github/release/hongnoul/hwatu?icon=github)](https://github.com/hongnoul/hwatu/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![CI](https://github.com/hongnoul/hwatu/actions/workflows/ci.yml/badge.svg)](https://github.com/hongnoul/hwatu/actions/workflows/ci.yml)
+
+</div>
 
 **STOP your agent claiming "pixel-perfect." Make it prove 97.49%.**
 
