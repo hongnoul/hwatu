@@ -22,6 +22,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEMO_DIR="$(dirname "$HERE")"
 STAGE="$HERE/stage.sh"
 MARKS="${OUT%.mp4}.marks"
+mkdir -p "$(dirname "$OUT")"
 
 REF_PORT=8321
 CLONE_PORT=8322
@@ -29,7 +30,8 @@ CLONE_PORT=8322
 T0=
 mark() {
   local now; now=$(date +%s.%N)
-  echo "$(echo "$now - $T0" | bc) $1" >> "$MARKS"
+  awk -v now="$now" -v start="$T0" -v label="$1" \
+    'BEGIN { printf "%.3f %s\n", now - start, label }' >> "$MARKS"
 }
 
 say() { "$STAGE" type "$1"; }
@@ -95,7 +97,10 @@ for ckpt in "$DEMO_DIR"/checkpoints/*/; do
   python3 -m http.server $CLONE_PORT --directory "$ckpt" >/dev/null 2>&1 &
   CLONE_SRV=$!
   pause 1
-  say "hwatu goto --id 2 http://localhost:$CLONE_PORT/"
+  # A distinct URL defeats WebKit's HTTP cache after the server swaps
+  # the files behind this port. Without it, every checkpoint can render
+  # the first checkpoint even though the server directory changed.
+  say "hwatu goto --id 2 http://localhost:$CLONE_PORT/?checkpoint=$(basename "$ckpt")"
   pause 3
   say "hwatu eval --id 1 '$SCROLL_JS' >/dev/null; hwatu eval --id 2 '$SCROLL_JS' >/dev/null"
   pause 1
