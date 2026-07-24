@@ -100,7 +100,7 @@ hwatu close 3
 | `type` | `id?`, `selector?`/`ref?`, `text`, `clear?`, `enter?` | fill input/textarea/select/contenteditable |
 | `console` | `id?`, `clear?`, `limit?` | read the console/error/network capture buffer |
 | `upload` | `id?`, `selector`, `path` | set a file input's files from disk |
-| `clock` | `id?`, `action` (`pause`/`resume`/`step`/`set`/`status`), `ms?` | control the page's virtual clock: freeze, step, or scrub every time source the page can read |
+| `clock` | `id?`, `action` (`pause`/`resume`/`step`/`set`/`seed`/`status`), `ms?`, `seed?` | control the page's virtual clock: freeze, step, or scrub every time source the page can read |
 | `motion` | `id?`, `observe?`, `observe_ms?` | declared animation inventory (CSS/WAAPI/CSSOM); with `observe`, also samples the live page under virtual time and fits models to script-driven motion (velocity, period, easing, r²) |
 | `ping` | | health check; returns `{build, version}` and the CLI warns when the running daemon's build differs from the client's (restart with `hwatu quit && hwatu ping`) |
 
@@ -277,7 +277,8 @@ hwatu clock step 1000    # advance exactly 1000 virtual ms (60fps ticks:
                          #   due timers fire, one rAF batch per tick)
 hwatu clock set 5000     # step to absolute virtual time 5000 ms
 hwatu clock resume       # back to real time, monotonic
-hwatu clock status       # {installed, paused, virtual_ms, pending_*}
+hwatu clock seed 42      # Math.random -> seeded deterministic PRNG
+hwatu clock status       # {installed, paused, virtual_ms, pending_*, seed}
 ```
 
 Until the first `pause`/`step`/`set` the clock is dormant passthrough:
@@ -301,6 +302,14 @@ page never deadlocks the tool driving it. Pages that captured
 `performance.now` into a closure before the wrapper ran (impossible
 for normal loads, possible for pages loaded by a pre-clock daemon
 build) report `installed: false` errors; reload the page.
+
+`Math.random` is the one visible entropy source the clock does not
+cover, so `clock seed <u64>` replaces it with a deterministic PRNG
+(mulberry32). The seed applies to the current page immediately and,
+via a document-start script, to every future load in that window, so
+same seed + same virtual timeline (which fixes the *order* of
+`Math.random()` calls) gives identical sequences across loads.
+Without a seed, pages keep native `Math.random`.
 
 ### Observed motion: `hwatu motion --observe`
 

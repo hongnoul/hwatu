@@ -292,21 +292,27 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
                 "resume" => ClockAction::Resume,
                 "step" => ClockAction::Step,
                 "set" => ClockAction::Set,
+                "seed" => ClockAction::Seed,
                 "status" => ClockAction::Status,
                 other => {
                     return Err(format!(
-                        "unknown clock action {other:?} (want pause|resume|step|set|status)"
+                        "unknown clock action {other:?} (want pause|resume|step|set|seed|status)"
                     ))
                 }
             };
             let ms = opt_f64(args, "ms");
+            let seed = opt_u64(args, "seed");
             if matches!(action, ClockAction::Step | ClockAction::Set) && ms.is_none() {
                 return Err("clock step/set needs `ms`".into());
+            }
+            if matches!(action, ClockAction::Seed) && seed.is_none() {
+                return Err("clock seed needs `seed`".into());
             }
             Ok(Request::Clock {
                 id,
                 action,
                 ms,
+                seed,
                 timeout_ms,
             })
         }
@@ -578,12 +584,15 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
              carousels) becomes deterministic. `pause` freezes, `step` \
              advances by `ms` virtual milliseconds, `set` steps to absolute \
              virtual time `ms`, `resume` returns to real time, `status` \
-             reports state. Two screenshots at the same virtual time are \
-             byte-identical.",
+             reports state (including any Math.random seed). `seed` replaces \
+             Math.random with a deterministic PRNG seeded from `seed`, for \
+             cross-load reproducibility. Two screenshots at the same virtual \
+             time are byte-identical.",
             json!({
                 "id": prop("integer", ID_DESC),
-                "action": prop("string", "pause | resume | step | set | status"),
+                "action": prop("string", "pause | resume | step | set | seed | status"),
                 "ms": prop("number", "Milliseconds: amount for step, absolute virtual time for set."),
+                "seed": prop("integer", "PRNG seed for the seed action."),
             }),
             &["action"],
         ),
