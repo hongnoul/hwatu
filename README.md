@@ -6,17 +6,13 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![CI](https://github.com/hongnoul/hwatu/actions/workflows/ci.yml/badge.svg)](https://github.com/hongnoul/hwatu/actions/workflows/ci.yml)
 
-The verification browser for coding agents.
+**The verification browser for coding agents.**
 
 </div>
 
-**STOP your agent claiming "pixel-perfect." Make it prove 97.49%.**
-
-**STOP browser windows stealing your focus. Headless by default, you
-keep typing.**
-
-**STOP shipping 170 MB of Chromium. One static binary + your distro's
-webkitgtk.**
+- **STOP your agent claiming "pixel-perfect." Make it prove 97.49%.**
+- **STOP browser windows stealing your focus. Headless by default, you keep typing.**
+- **STOP shipping 170 MB of Chromium. One static binary + your distro's webkitgtk.**
 
 ![hwatu spawning windows in ~48ms from a warm daemon](docs/assets/spawn-demo.svg)
 
