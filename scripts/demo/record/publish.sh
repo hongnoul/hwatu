@@ -14,8 +14,13 @@
 set -euo pipefail
 
 BASE="${1:?usage: publish.sh <base path, no extension>}"
-MP4="$BASE.release.mp4"
-WEBP="$BASE.readme.webp"
+if [ -f "$BASE.mp4" ] && [ -f "$BASE.webp" ]; then
+  MP4="$BASE.mp4"
+  WEBP="$BASE.webp"
+else
+  MP4="$BASE.release.mp4"
+  WEBP="$BASE.readme.webp"
+fi
 REPO="hongnoul/hwatu"
 TAG="readme-assets"
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -36,7 +41,7 @@ MP4_URL="https://github.com/$REPO/releases/download/$TAG/$(basename "$MP4")"
 WEBP_URL="https://github.com/$REPO/releases/download/$TAG/$(basename "$WEBP")"
 
 # ---- 2. README hero ----------------------------------------------
-HERO="<a href=\"$MP4_URL\"><img src=\"$WEBP_URL\" alt=\"hwatu demo: an agent converging a page to pixel-parity, score on screen\" width=\"800\"></a>"
+HERO="<a href=\"$MP4_URL\"><img src=\"$WEBP_URL\" alt=\"hwatu demo: measure pixel parity, pin both pages to exact animation frames, and reveal an offscreen browser with its state preserved\" width=\"800\"></a>"
 cd "$REPO_DIR"
 if grep -q "spawn-demo.svg" README.md; then
   # Replace the old hero line wholesale.
@@ -48,7 +53,7 @@ else
 fi
 if ! git diff --quiet README.md; then
   git add README.md
-  git commit -m "readme: replace spawn svg with convergence demo video"
+  git commit -m "readme: show visual verification workflow"
   git push origin main
 fi
 

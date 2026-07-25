@@ -1,42 +1,40 @@
-# Automated demo recording rig
+# Automated demo studio
 
-Records hwatu demos with zero human keyboard time and zero windows on
-the real desktop. The "studio" is a nested sway compositor on the
-wlroots headless backend, with its own runtime dir, its own hwatu
-daemon, a remote-controlled kitty terminal, and wf-recorder capturing
-the virtual 1920x1080 output.
-
-```
-stage.sh   # studio lifecycle: up / rec / stoprec / shot / type / down
-film.sh    # the shoot: runs every beat of the convergence demo,
-           # emits raw mp4 + machine-readable beat markers
-render.sh  # raw mp4 -> README webp loop + release mp4 (jcode pattern)
-```
+Records the README demo with no keyboard input and no windows on the real desktop. A nested headless Sway compositor runs an isolated hwatu daemon and `wf-recorder`.
 
 ## One command
 
 ```sh
-scripts/demo/record/film.sh /tmp/out/demo-raw.mp4
-scripts/demo/record/render.sh /tmp/out/demo-raw.mp4
+scripts/demo/record/run-v2.sh
 ```
 
-`film.sh` types each command into the staged terminal with a human
-rhythm (tunable via HWATU_DEMO_TYPE_DELAY), so the recording looks
-like a person driving, but every take is identical and repeatable.
-Beat timestamps land in `demo-raw.marks` for cutting.
+This captures real evidence, records the 21-second composition, renders the 1280×720 MP4 and animated WebP, builds an 800px contact sheet, and runs every local gate.
 
-## The climb
-
-Beat 4 of `film.sh` iterates over `scripts/demo/checkpoints/*/`:
-serve each checkpoint dir (a progressively better clone), re-diff,
-and the score climbs on camera. Drop convergence checkpoints from the
-clone swarm in there, ordered by name (e.g. `01-87pct/`, `02-93pct/`,
-`03-98pct/`).
-
-## Verify a take without watching it
+After reviewing the contact sheet, publish and verify the GitHub README with:
 
 ```sh
-scripts/demo/record/stage.sh shot /tmp/frame.png   # while staged
-ffprobe demo-raw.mp4                                # duration/res
-cat demo-raw.marks                                  # beat timings
+scripts/demo/record/run-v2.sh --publish
 ```
+
+The publisher checks both asset URLs, GitHub's rendered README API, and the live GitHub DOM before it reports success.
+
+## Story
+
+1. **MEASURE** uses two real 60-cell responsive scorecards and captured pixel heatmaps.
+2. **PIN MOTION** performs real `0 → 50 → 80 → 50%` seeks and proves the repeated 50% frames are byte-identical.
+3. **HAND OFF** focuses an offscreen session and verifies its URL, scroll position, title, and typed value are unchanged.
+
+The compact scorecards are tracked in `scripts/demo/scorecards/`. The two visual checkpoint directories remain generated under `scripts/demo/checkpoints/` and can be overridden with `HWATU_DEMO_BOOKEND_DIR` and `HWATU_DEMO_FINAL_DIR`.
+
+## Components
+
+```text
+capture-v2.sh   real screenshots, heatmaps, motion seeks, handoff state
+compose-v2.*    deterministic visual story; ?t= fixes an exact frame
+render-v2.sh    headless recording, MP4/WebP/contact-sheet rendering
+validate-v2.sh  fail-closed media, evidence, timing, activity, and loop gates
+publish.sh      release upload, README update, and live verification
+stage.sh        isolated compositor lifecycle
+```
+
+The older terminal-driven `film.sh` and `render.sh` remain available for diagnostic recordings.

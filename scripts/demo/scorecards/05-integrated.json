@@ -1,0 +1,493 @@
+{
+  "meta": {
+    "ref_hash": "7eb8f0a3e4fec8594ed437da6557edc5f7745f76c278fff6fa08886b759e9f4a",
+    "date": "2026-07-24T13:18:42Z",
+    "hwatu_version": "0.6.0+dcd02b89b",
+    "ref_dir": "/home/hongnoul/git/hwatu/scripts/demo/reference",
+    "clone_dir": "/home/hongnoul/git/hwatu-mason/scripts/demo/clone2",
+    "tolerance": 0,
+    "height": 800
+  },
+  "static": [
+    {
+      "w": 360,
+      "dpr": 1,
+      "scroll": 0,
+      "pct": 97.87,
+      "mismatched": 6144,
+      "total": 288000
+    },
+    {
+      "w": 360,
+      "dpr": 1,
+      "scroll": 25,
+      "pct": 95.2,
+      "mismatched": 13812,
+      "total": 288000
+    },
+    {
+      "w": 360,
+      "dpr": 1,
+      "scroll": 50,
+      "pct": 96.87,
+      "mismatched": 9003,
+      "total": 288000
+    },
+    {
+      "w": 360,
+      "dpr": 1,
+      "scroll": 75,
+      "pct": 93.83,
+      "mismatched": 17769,
+      "total": 288000
+    },
+    {
+      "w": 360,
+      "dpr": 1,
+      "scroll": 100,
+      "pct": 98.01,
+      "mismatched": 5731,
+      "total": 288000
+    },
+    {
+      "w": 768,
+      "dpr": 1,
+      "scroll": 0,
+      "pct": 94.91,
+      "mismatched": 31249,
+      "total": 614400
+    },
+    {
+      "w": 768,
+      "dpr": 1,
+      "scroll": 25,
+      "pct": 94.31,
+      "mismatched": 34945,
+      "total": 614400
+    },
+    {
+      "w": 768,
+      "dpr": 1,
+      "scroll": 50,
+      "pct": 95.22,
+      "mismatched": 29361,
+      "total": 614400
+    },
+    {
+      "w": 768,
+      "dpr": 1,
+      "scroll": 75,
+      "pct": 96.02,
+      "mismatched": 24469,
+      "total": 614400
+    },
+    {
+      "w": 768,
+      "dpr": 1,
+      "scroll": 100,
+      "pct": 94.3,
+      "mismatched": 35030,
+      "total": 614400
+    },
+    {
+      "w": 1024,
+      "dpr": 1,
+      "scroll": 0,
+      "pct": 95.01,
+      "mismatched": 40886,
+      "total": 819200
+    },
+    {
+      "w": 1024,
+      "dpr": 1,
+      "scroll": 25,
+      "pct": 97.76,
+      "mismatched": 18339,
+      "total": 819200
+    },
+    {
+      "w": 1024,
+      "dpr": 1,
+      "scroll": 50,
+      "pct": 98.17,
+      "mismatched": 15008,
+      "total": 819200
+    },
+    {
+      "w": 1024,
+      "dpr": 1,
+      "scroll": 75,
+      "pct": 94.98,
+      "mismatched": 41126,
+      "total": 819200
+    },
+    {
+      "w": 1024,
+      "dpr": 1,
+      "scroll": 100,
+      "pct": 96.86,
+      "mismatched": 25718,
+      "total": 819200
+    },
+    {
+      "w": 1280,
+      "dpr": 1,
+      "scroll": 0,
+      "pct": 96.69,
+      "mismatched": 33898,
+      "total": 1024000
+    },
+    {
+      "w": 1280,
+      "dpr": 1,
+      "scroll": 25,
+      "pct": 98.19,
+      "mismatched": 18513,
+      "total": 1024000
+    },
+    {
+      "w": 1280,
+      "dpr": 1,
+      "scroll": 50,
+      "pct": 96.18,
+      "mismatched": 39155,
+      "total": 1024000
+    },
+    {
+      "w": 1280,
+      "dpr": 1,
+      "scroll": 75,
+      "pct": 95.91,
+      "mismatched": 41835,
+      "total": 1024000
+    },
+    {
+      "w": 1280,
+      "dpr": 1,
+      "scroll": 100,
+      "pct": 98.21,
+      "mismatched": 18379,
+      "total": 1024000
+    },
+    {
+      "w": 1528,
+      "dpr": 1,
+      "scroll": 0,
+      "pct": 97.62,
+      "mismatched": 29047,
+      "total": 1222400
+    },
+    {
+      "w": 1528,
+      "dpr": 1,
+      "scroll": 25,
+      "pct": 98.48,
+      "mismatched": 18577,
+      "total": 1222400
+    },
+    {
+      "w": 1528,
+      "dpr": 1,
+      "scroll": 50,
+      "pct": 96.07,
+      "mismatched": 48014,
+      "total": 1222400
+    },
+    {
+      "w": 1528,
+      "dpr": 1,
+      "scroll": 75,
+      "pct": 96.93,
+      "mismatched": 37557,
+      "total": 1222400
+    },
+    {
+      "w": 1528,
+      "dpr": 1,
+      "scroll": 100,
+      "pct": 98.49,
+      "mismatched": 18435,
+      "total": 1222400
+    },
+    {
+      "w": 1920,
+      "dpr": 1,
+      "scroll": 0,
+      "pct": 98.06,
+      "mismatched": 29831,
+      "total": 1536000
+    },
+    {
+      "w": 1920,
+      "dpr": 1,
+      "scroll": 25,
+      "pct": 98.79,
+      "mismatched": 18605,
+      "total": 1536000
+    },
+    {
+      "w": 1920,
+      "dpr": 1,
+      "scroll": 50,
+      "pct": 96.87,
+      "mismatched": 48014,
+      "total": 1536000
+    },
+    {
+      "w": 1920,
+      "dpr": 1,
+      "scroll": 75,
+      "pct": 97.55,
+      "mismatched": 37557,
+      "total": 1536000
+    },
+    {
+      "w": 1920,
+      "dpr": 1,
+      "scroll": 100,
+      "pct": 98.8,
+      "mismatched": 18435,
+      "total": 1536000
+    },
+    {
+      "w": 360,
+      "dpr": 2,
+      "scroll": 0,
+      "pct": 98.65,
+      "mismatched": 15548,
+      "total": 1152000
+    },
+    {
+      "w": 360,
+      "dpr": 2,
+      "scroll": 25,
+      "pct": 96.1,
+      "mismatched": 44930,
+      "total": 1152000
+    },
+    {
+      "w": 360,
+      "dpr": 2,
+      "scroll": 50,
+      "pct": 97.34,
+      "mismatched": 30607,
+      "total": 1152000
+    },
+    {
+      "w": 360,
+      "dpr": 2,
+      "scroll": 75,
+      "pct": 94.98,
+      "mismatched": 57886,
+      "total": 1152000
+    },
+    {
+      "w": 360,
+      "dpr": 2,
+      "scroll": 100,
+      "pct": 98.22,
+      "mismatched": 20554,
+      "total": 1152000
+    },
+    {
+      "w": 768,
+      "dpr": 2,
+      "scroll": 0,
+      "pct": 96.16,
+      "mismatched": 94310,
+      "total": 2457600
+    },
+    {
+      "w": 768,
+      "dpr": 2,
+      "scroll": 25,
+      "pct": 95.07,
+      "mismatched": 121168,
+      "total": 2457600
+    },
+    {
+      "w": 768,
+      "dpr": 2,
+      "scroll": 50,
+      "pct": 96.12,
+      "mismatched": 95238,
+      "total": 2457600
+    },
+    {
+      "w": 768,
+      "dpr": 2,
+      "scroll": 75,
+      "pct": 96.53,
+      "mismatched": 85348,
+      "total": 2457600
+    },
+    {
+      "w": 768,
+      "dpr": 2,
+      "scroll": 100,
+      "pct": 95.31,
+      "mismatched": 115338,
+      "total": 2457600
+    },
+    {
+      "w": 1024,
+      "dpr": 2,
+      "scroll": 0,
+      "pct": 96.52,
+      "mismatched": 113881,
+      "total": 3276800
+    },
+    {
+      "w": 1024,
+      "dpr": 2,
+      "scroll": 25,
+      "pct": 98.21,
+      "mismatched": 58570,
+      "total": 3276800
+    },
+    {
+      "w": 1024,
+      "dpr": 2,
+      "scroll": 50,
+      "pct": 98.51,
+      "mismatched": 48742,
+      "total": 3276800
+    },
+    {
+      "w": 1024,
+      "dpr": 2,
+      "scroll": 75,
+      "pct": 95.79,
+      "mismatched": 137878,
+      "total": 3276800
+    },
+    {
+      "w": 1024,
+      "dpr": 2,
+      "scroll": 100,
+      "pct": 97.41,
+      "mismatched": 84875,
+      "total": 3276800
+    },
+    {
+      "w": 1280,
+      "dpr": 2,
+      "scroll": 0,
+      "pct": 97.81,
+      "mismatched": 89577,
+      "total": 4096000
+    },
+    {
+      "w": 1280,
+      "dpr": 2,
+      "scroll": 25,
+      "pct": 98.55,
+      "mismatched": 59363,
+      "total": 4096000
+    },
+    {
+      "w": 1280,
+      "dpr": 2,
+      "scroll": 50,
+      "pct": 96.52,
+      "mismatched": 142659,
+      "total": 4096000
+    },
+    {
+      "w": 1280,
+      "dpr": 2,
+      "scroll": 75,
+      "pct": 96.97,
+      "mismatched": 124116,
+      "total": 4096000
+    },
+    {
+      "w": 1280,
+      "dpr": 2,
+      "scroll": 100,
+      "pct": 98.49,
+      "mismatched": 61992,
+      "total": 4096000
+    },
+    {
+      "w": 1528,
+      "dpr": 2,
+      "scroll": 0,
+      "pct": 98.27,
+      "mismatched": 84417,
+      "total": 4889600
+    },
+    {
+      "w": 1528,
+      "dpr": 2,
+      "scroll": 25,
+      "pct": 98.79,
+      "mismatched": 59203,
+      "total": 4889600
+    },
+    {
+      "w": 1528,
+      "dpr": 2,
+      "scroll": 50,
+      "pct": 96.35,
+      "mismatched": 178521,
+      "total": 4889600
+    },
+    {
+      "w": 1528,
+      "dpr": 2,
+      "scroll": 75,
+      "pct": 97.52,
+      "mismatched": 121141,
+      "total": 4889600
+    },
+    {
+      "w": 1528,
+      "dpr": 2,
+      "scroll": 100,
+      "pct": 98.73,
+      "mismatched": 62028,
+      "total": 4889600
+    },
+    {
+      "w": 1920,
+      "dpr": 2,
+      "scroll": 0,
+      "pct": 98.57,
+      "mismatched": 87553,
+      "total": 6144000
+    },
+    {
+      "w": 1920,
+      "dpr": 2,
+      "scroll": 25,
+      "pct": 99.04,
+      "mismatched": 59253,
+      "total": 6144000
+    },
+    {
+      "w": 1920,
+      "dpr": 2,
+      "scroll": 50,
+      "pct": 97.09,
+      "mismatched": 178521,
+      "total": 6144000
+    },
+    {
+      "w": 1920,
+      "dpr": 2,
+      "scroll": 75,
+      "pct": 98.03,
+      "mismatched": 121141,
+      "total": 6144000
+    },
+    {
+      "w": 1920,
+      "dpr": 2,
+      "scroll": 100,
+      "pct": 98.99,
+      "mismatched": 62028,
+      "total": 6144000
+    }
+  ]
+}
