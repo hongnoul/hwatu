@@ -54,7 +54,12 @@ human for a minute.
    results and honest analysis in [benchmarks.md](benchmarks.md). It
    found real optimization targets: screenshot encode (~90 ms of the
    warm verify pass) and load-settle latency (~50 ms behind Chromium
-   on the fixture). Those are now the performance workstream.
+   on the fixture). Screenshot encode was fixed (threaded fast-PNG,
+   ~14 ms). Load-settle tail cost is addressed client-side by
+   `--until (committed|dom|settled)` on wait-load/goto/check, and the
+   per-step spawn tax by the composite `hwatu check` (one roundtrip
+   for open/wait/eval/shot/close); both shipped 2026-07-25 with
+   numbers in [benchmarks.md](benchmarks.md).
 
 ### P1 — the agent-facing "UI" (snapshot quality)
 

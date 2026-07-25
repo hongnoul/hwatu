@@ -10,8 +10,8 @@ use crate::window::BrowserWindow;
 use crate::Daemon;
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
-use hwatu_ipc::Response;
-use std::cell::RefCell;
+use hwatu_ipc::{LoadStage, OpenMode, Response};
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use webkit6::prelude::*;
 
@@ -327,12 +327,15 @@ fn nav_watch_untriggered(e: &glib::Error) -> bool {
     !e.matches(gio::IOErrorEnum::Cancelled)
 }
 
-/// Navigate a window; with `wait`, reply only once the load finishes.
+/// Navigate a window; with `wait`, reply once the load reaches
+/// `until` (committed / dom / settled).
+#[allow(clippy::too_many_arguments)]
 pub fn navigate(
     daemon: &Rc<Daemon>,
     id: Option<u64>,
     url: String,
     wait: bool,
+    until: LoadStage,
     timeout_ms: Option<u64>,
     reply: Reply,
 ) {
@@ -355,15 +358,21 @@ pub fn navigate(
 
     arm_timeout(reply.clone(), timeout_ms, "navigate");
     win.mark_nav_pending(&url);
-    wire_load_settled(&view, win.clone(), {
+    wire_load_stage(&view, win.clone(), until, {
         let reply = reply.clone();
         move |_| reply.send(Response::window(win.info()))
     });
     view.load_uri(&url);
 }
 
-/// Reply once the window's current load settles.
-pub fn wait_load(daemon: &Rc<Daemon>, id: Option<u64>, timeout_ms: Option<u64>, reply: Reply) {
+/// Reply once the window's current load reaches `until`.
+pub fn wait_load(
+    daemon: &Rc<Daemon>,
+    id: Option<u64>,
+    until: LoadStage,
+    timeout_ms: Option<u64>,
+    reply: Reply,
+) {
     let reply = OnceReply::new(reply);
     let win = match resolve(daemon, id) {
         Ok(w) => w,
@@ -380,11 +389,22 @@ pub fn wait_load(daemon: &Rc<Daemon>, id: Option<u64>, timeout_ms: Option<u64>, 
     // would answer "done" and the caller's next eval gets destroyed by
     // the commit. The window tracks the request (`nav_pending`) until
     // LoadEvent::Started, so cover both.
-    if !view.is_loading() && !win.nav_pending() {
+    let stage_reached = !win.nav_pending()
+        && match until {
+            LoadStage::Settled => !view.is_loading(),
+            LoadStage::Committed | LoadStage::Dom => win.load_committed(),
+        };
+    if stage_reached {
+        if until == LoadStage::Dom {
+            // Committed but the DOM may still be parsing; confirm
+            // readiness inside the page before releasing the caller.
+            arm_timeout(reply.clone(), timeout_ms, "wait_load");
+            return await_dom_ready(&view, move |_| reply.send(Response::window(win.info())));
+        }
         return reply.send(Response::window(win.info()));
     }
     arm_timeout(reply.clone(), timeout_ms, "wait_load");
-    wire_load_settled(&view, win.clone(), move |_| {
+    wire_load_stage(&view, win.clone(), until, move |_| {
         reply.send(Response::window(win.info()))
     });
 }
@@ -544,6 +564,262 @@ fn wire_load_settled(
         }
     });
     handler.replace(Some(id));
+}
+
+/// Like [`wire_load_settled`], but fires at the requested load's
+/// Committed: the new document has replaced the old one, so evals
+/// target the right page even though subresources are still loading.
+///
+/// Staleness cannot be judged by signal metadata: WebKit updates the
+/// view's `uri` property to the requested target as soon as
+/// `load_uri` is called, so a stale prewarm/adoption load's Committed
+/// already reports the new URL, and its Started can fire after the
+/// real navigation was requested. Instead each Committed is verified
+/// *inside the committed document*: `location.href` there is ground
+/// truth. A stale load is only ever the pool's `about:blank` warmup
+/// (see `note_load_engaged`), so any committed document that is not
+/// about:blank is the requested one (redirects included); when the
+/// target itself is about:blank the two are the same document anyway.
+fn wire_load_committed(
+    view: &webkit6::WebView,
+    win: Rc<crate::window::BrowserWindow>,
+    done: impl FnOnce(&webkit6::WebView) + 'static,
+) {
+    let done = Rc::new(RefCell::new(Some(done)));
+    let handler: Rc<RefCell<Option<glib::SignalHandlerId>>> = Rc::new(RefCell::new(None));
+    let handler2 = handler.clone();
+    let id = view.connect_load_changed(move |view, event| {
+        if event != webkit6::LoadEvent::Committed {
+            return;
+        }
+        if win.nav_pending() {
+            return; // the requested load has not even Started yet
+        }
+        if done.borrow().is_none() {
+            return; // already released
+        }
+        let done = done.clone();
+        let handler = handler2.clone();
+        let view2 = view.clone();
+        let target_is_blank = win.nav_target().is_none_or(|t| t.starts_with("about:"));
+        view.evaluate_javascript(
+            "location.href",
+            None,
+            None,
+            gio::Cancellable::NONE,
+            move |result| {
+                let href = match &result {
+                    Ok(v) => v.to_str().to_string(),
+                    // Context destroyed by the next commit: not this
+                    // document; a later Committed will verify again.
+                    Err(_) => return,
+                };
+                if href.starts_with("about:blank") && !target_is_blank {
+                    return; // the stale warmup document; keep watching
+                }
+                if let Some(id) = handler.borrow_mut().take() {
+                    view2.disconnect(id);
+                }
+                if let Some(done) = done.borrow_mut().take() {
+                    done(&view2);
+                }
+            },
+        );
+    });
+    handler.replace(Some(id));
+}
+
+/// Release `done` once the current document's DOM is fully parsed
+/// (`DOMContentLoaded`), checked inside the page so it is exact.
+/// Called after Committed, so the document is the requested one.
+/// Fires on eval failure too (e.g. a mid-parse redirect destroying
+/// the context): the caller's own timeout is the backstop and a
+/// stalled wait would be worse than an early release.
+fn await_dom_ready(view: &webkit6::WebView, done: impl FnOnce(&webkit6::WebView) + 'static) {
+    const JS: &str = r#"if (document.readyState === 'loading') {
+  await new Promise((r) => document.addEventListener('DOMContentLoaded', r, { once: true }));
+}
+return document.readyState;"#;
+    let view2 = view.clone();
+    view.call_async_javascript_function(JS, None, None, None, gio::Cancellable::NONE, move |_| {
+        done(&view2)
+    });
+}
+
+/// Fire `done` once the window's load reaches `stage`.
+fn wire_load_stage(
+    view: &webkit6::WebView,
+    win: Rc<crate::window::BrowserWindow>,
+    stage: LoadStage,
+    done: impl FnOnce(&webkit6::WebView) + 'static,
+) {
+    match stage {
+        LoadStage::Settled => wire_load_settled(view, win, done),
+        LoadStage::Committed => wire_load_committed(view, win, done),
+        LoadStage::Dom => wire_load_committed(view, win, move |view| await_dom_ready(view, done)),
+    }
+}
+
+/// One-roundtrip verification pass: open a headless window, load
+/// `url`, wait for the requested load stage, optionally eval JS and
+/// screenshot, close the window (unless `keep`), and reply with
+/// everything at once. Collapses the agent inner loop (open,
+/// wait-load, eval, shot, close: five process spawns and five socket
+/// roundtrips) into a single request.
+#[allow(clippy::too_many_arguments)]
+pub fn check(
+    daemon: &Rc<Daemon>,
+    url: String,
+    eval_js: Option<String>,
+    shot: bool,
+    shot_path: Option<String>,
+    full: bool,
+    until: LoadStage,
+    keep: bool,
+    timeout_ms: Option<u64>,
+    reply: Reply,
+) {
+    let reply = OnceReply::new(reply);
+    let started = std::time::Instant::now();
+
+    let url = crate::ipc_server::normalize_url(url);
+    let info = BrowserWindow::open(daemon, Some(url), None, OpenMode::Headless);
+    let win_id = info.id;
+    daemon.last_target.replace(Some(win_id));
+    let win = match daemon.windows.borrow().get(&win_id).cloned() {
+        Some(w) => w,
+        None => return reply.send(Response::err("check: window vanished at open")),
+    };
+    let view = match live_view(&win) {
+        Ok(v) => v,
+        Err(resp) => {
+            close_check_window(daemon, win_id, keep);
+            return reply.send(*resp);
+        }
+    };
+
+    // One deadline covers the whole pass. The timeout also closes the
+    // window (unless `keep`): a check that timed out must not leak a
+    // headless window the agent never learns the id of.
+    {
+        let reply = reply.clone();
+        let daemon = daemon.clone();
+        let ms = timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS);
+        if ms > 0 {
+            glib::timeout_add_local_once(std::time::Duration::from_millis(ms), move || {
+                if !reply.is_spent() {
+                    close_check_window(&daemon, win_id, keep);
+                    reply.send(Response::err(format!("check timed out after {ms} ms")));
+                }
+            });
+        }
+    }
+
+    let daemon = daemon.clone();
+    wire_load_stage(&view, win.clone(), until, move |view| {
+        if reply.is_spent() {
+            return; // timeout already answered (and closed the window)
+        }
+        let load_ms = started.elapsed().as_millis() as u64;
+        let result = Rc::new(RefCell::new(serde_json::json!({
+            "url": view.uri().map(|u| u.to_string()).unwrap_or_default(),
+            "title": view.title().map(|t| t.to_string()).unwrap_or_default(),
+            "load_ms": load_ms,
+        })));
+        if keep {
+            result.borrow_mut()["id"] = serde_json::json!(win_id);
+        }
+
+        // Eval and screenshot are independent of each other; run both
+        // concurrently and reply when the last one lands.
+        let pending = Rc::new(Cell::new(1u32));
+        let finish = {
+            let daemon = daemon.clone();
+            let result = result.clone();
+            let reply = reply.clone();
+            let pending = pending.clone();
+            Rc::new(move || {
+                pending.set(pending.get() - 1);
+                if pending.get() > 0 || reply.is_spent() {
+                    return;
+                }
+                // Console capture last: it sees everything the load
+                // and the eval produced.
+                let console = daemon
+                    .windows
+                    .borrow()
+                    .get(&win_id)
+                    .map(|w| w.console.read(false, Some(20)))
+                    .unwrap_or_default();
+                {
+                    let mut r = result.borrow_mut();
+                    if !console.is_empty() {
+                        r["console"] = serde_json::to_value(&console).unwrap_or_default();
+                    }
+                    r["total_ms"] = serde_json::json!(started.elapsed().as_millis() as u64);
+                }
+                close_check_window(&daemon, win_id, keep);
+                reply.send(Response::value(result.borrow().clone()));
+            })
+        };
+
+        if let Some(js) = eval_js {
+            pending.set(pending.get() + 1);
+            let finish = finish.clone();
+            let result = result.clone();
+            eval(
+                &daemon,
+                Some(win_id),
+                js,
+                timeout_ms,
+                Box::new(move |resp| {
+                    result.borrow_mut()["eval"] = match resp {
+                        Response::Ok { value, .. } => value.unwrap_or(serde_json::Value::Null),
+                        Response::Err { message } => serde_json::json!({ "error": message }),
+                    };
+                    finish();
+                }),
+            );
+        }
+        if shot || shot_path.is_some() {
+            pending.set(pending.get() + 1);
+            let finish = finish.clone();
+            let result = result.clone();
+            screenshot(
+                &daemon,
+                Some(win_id),
+                shot_path,
+                full,
+                Box::new(move |resp| {
+                    match resp {
+                        Response::Ok { path: Some(p), .. } => {
+                            result.borrow_mut()["shot"] = serde_json::json!(p);
+                        }
+                        Response::Err { message } => {
+                            result.borrow_mut()["shot"] = serde_json::json!({ "error": message });
+                        }
+                        _ => {}
+                    }
+                    finish();
+                }),
+            );
+        }
+        finish(); // release the base hold; replies if nothing else is pending
+    });
+}
+
+/// Close a check's window, unless the caller asked to keep it.
+fn close_check_window(daemon: &Rc<Daemon>, id: u64, keep: bool) {
+    if keep {
+        return;
+    }
+    // Bind before closing: `close()` re-enters the window's
+    // close-request handler, which borrows `daemon.windows` itself, so
+    // the borrow_mut must be released first (if-let would hold it).
+    let win = daemon.windows.borrow_mut().remove(&id);
+    if let Some(win) = win {
+        win.close();
+    }
 }
 
 /// Capture the page as a PNG on disk: the visible viewport, or the

@@ -81,7 +81,10 @@ Or use the CLI, which is the same protocol with argv parsing:
 ```sh
 hwatu --headless localhost:3000     # open without a window (returns id)
 hwatu --background localhost:3000   # open mapped but unfocused
+hwatu check localhost:3000 --eval 'document.title' --shot=/tmp/c.png
+                                    # one-shot: open+wait+eval+shot+close
 hwatu wait-load                     # block until the load settles
+hwatu wait-load --until dom         # release at DOMContentLoaded (faster)
 hwatu snapshot                      # text + interactables, cheaper than a shot
 hwatu expect '#status' --text ready # assert page state (polls up to 5s)
 hwatu eval 'document.title'         # id-less: follows the window you opened
@@ -379,8 +382,20 @@ is token-cheap JSON: positions and fits, never pixels.
 
 ## A verification loop
 
-Sticky targeting means the whole loop needs no ids: each command
-follows the window the previous one drove.
+For a one-shot check, `hwatu check` is the whole loop in one command
+(and one daemon roundtrip): it opens a headless window, waits for the
+load, runs your JS, screenshots, closes the window, and replies with
+url/title/eval/shot-path/console/timings as one JSON object. It can
+never leak a window, even on timeout.
+
+```sh
+hwatu check localhost:5173 --eval 'document.title' --shot=/tmp/after.png
+hwatu check localhost:5173 --until dom      # don't wait for slow images
+hwatu check localhost:5173 --keep           # keep the window, returns id
+```
+
+For multi-step interaction, sticky targeting means the loop needs no
+ids: each command follows the window the previous one drove.
 
 ```sh
 id=$(hwatu --headless --json localhost:5173 | jq .id)   # ~14 ms
@@ -407,6 +422,13 @@ over 10 runs ([full data](benchmarks.md)):
 A full check with a screenshot costs under a tenth of a second; a
 DOM-only check (skip `shot`) is ~70 ms. `eval` at 2 ms is cheap
 enough to poll.
+
+`wait-load` (and `goto`, and `check`) default to the full settle:
+every subresource loaded. Real pages drag that out with slow images
+and third-party scripts; when the check only reads the DOM, pass
+`--until dom` to release at `DOMContentLoaded` instead (a fixture
+with one 800 ms-slow image: 68 ms vs 1581 ms, same DOM either way;
+see [benchmarks.md](benchmarks.md)).
 
 If a check looks wrong and you want the human to see it:
 

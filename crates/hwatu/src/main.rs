@@ -7,7 +7,7 @@ mod mcp;
 mod onboarding;
 mod update;
 
-use hwatu_ipc::{AdblockCmd, ClockAction, OpenMode, Request, Response};
+use hwatu_ipc::{AdblockCmd, ClockAction, LoadStage, OpenMode, Request, Response};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::process::Command;
@@ -262,6 +262,11 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
     let mut heatmap: Option<String> = None;
     let mut expect_text: Option<String> = None;
     let mut absent = false;
+    let mut until: Option<LoadStage> = None;
+    let mut eval_js: Option<String> = None;
+    let mut shot = false;
+    let mut shot_path: Option<String> = None;
+    let mut keep = false;
     let mut mode = default_mode;
     let mut rest: Vec<&String> = Vec::new();
     let mut it = args.iter();
@@ -390,6 +395,28 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             );
         } else if arg == "--absent" {
             absent = true;
+        } else if arg == "--until" {
+            let v = it.next().ok_or("usage: --until (committed|dom|settled)")?;
+            until = Some(LoadStage::parse(v).ok_or("usage: --until (committed|dom|settled)")?);
+        } else if let Some(v) = arg.strip_prefix("--until=") {
+            until = Some(LoadStage::parse(v).ok_or("usage: --until=(committed|dom|settled)")?);
+        } else if arg == "--eval" {
+            eval_js = Some(
+                it.next()
+                    .filter(|v| !v.trim().is_empty())
+                    .ok_or("usage: --eval <js>")?
+                    .clone(),
+            );
+        } else if arg == "--shot" {
+            shot = true;
+        } else if let Some(v) = arg.strip_prefix("--shot=") {
+            if v.trim().is_empty() {
+                return Err("usage: --shot=<png-path>".into());
+            }
+            shot = true;
+            shot_path = Some(v.to_string());
+        } else if arg == "--keep" {
+            keep = true;
         } else if arg == "--to-y" {
             to_y = Some(
                 it.next()
@@ -459,12 +486,13 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
         Some("goto") => {
             let url = rest
                 .get(1)
-                .ok_or("usage: hwatu goto [--id <id>] [--no-wait] <url>")?
+                .ok_or("usage: hwatu goto [--id <id>] [--no-wait] [--until <stage>] <url>")?
                 .to_string();
             Ok(Request::Navigate {
                 id,
                 url,
                 wait: !no_wait,
+                until: until.unwrap_or_default(),
                 timeout_ms,
             })
         }
@@ -473,7 +501,30 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             path: rest.get(1).map(|s| s.to_string()),
             full,
         }),
-        Some("wait-load") => Ok(Request::WaitLoad { id, timeout_ms }),
+        Some("wait-load") => Ok(Request::WaitLoad {
+            id,
+            until: until.unwrap_or_default(),
+            timeout_ms,
+        }),
+        Some("check") => {
+            let url = rest
+                .get(1)
+                .ok_or(
+                    "usage: hwatu check <url> [--eval <js>] [--shot | --shot=<png>] [--full] \
+                     [--until (committed|dom|settled)] [--keep] [--timeout-ms <ms>]",
+                )?
+                .to_string();
+            Ok(Request::Check {
+                url,
+                eval: eval_js,
+                shot,
+                shot_path,
+                full,
+                until: until.unwrap_or_default(),
+                keep,
+                timeout_ms,
+            })
+        }
         Some("challenge") | Some("detect-challenge") => Ok(Request::Challenge {
             id,
             wait,
@@ -694,8 +745,10 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--foc
 (agent environments default to --headless; set HWATU_AGENT_MODE or \
 \"agent_mode\" in ~/.config/hwatu/config.json to normal|background|headless) \
 | list [--json] | close <id> | focus <id> \
-| eval [--id <id>] [--timeout-ms <ms>] <js> | goto [--id <id>] [--no-wait] <url> \
-    | shot [--id <id>] [--full] [path] | wait-load [--id <id>] | challenge [--id <id>] [--wait] \
+| eval [--id <id>] [--timeout-ms <ms>] <js> | goto [--id <id>] [--no-wait] [--until <stage>] <url> \
+    | shot [--id <id>] [--full] [path] | wait-load [--id <id>] [--until (committed|dom|settled)] \
+    | check <url> [--eval <js>] [--shot | --shot=<png>] [--full] [--until <stage>] [--keep] \
+    | challenge [--id <id>] [--wait] \
     | upload [--id <id>] <selector> <path> \
 | scroll [--id <id>] [<selector> [nth]] [--contains <text>] [--to-y <px>] [--by <pages>] \
 | snapshot [--id <id>] \
@@ -758,6 +811,77 @@ mod tests {
 
     fn args(list: &[&str]) -> Vec<String> {
         list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn check_parses_flags() {
+        let Ok(Request::Check {
+            url,
+            eval,
+            shot,
+            shot_path,
+            until,
+            keep,
+            ..
+        }) = parse(&args(&[
+            "check",
+            "example.com",
+            "--eval",
+            "return document.title",
+            "--shot=/tmp/x.png",
+            "--until",
+            "dom",
+        ]))
+        else {
+            panic!("expected Check");
+        };
+        assert_eq!(url, "example.com");
+        assert_eq!(eval.as_deref(), Some("return document.title"));
+        assert!(shot);
+        assert_eq!(shot_path.as_deref(), Some("/tmp/x.png"));
+        assert_eq!(until, hwatu_ipc::LoadStage::Dom);
+        assert!(!keep);
+    }
+
+    #[test]
+    fn check_defaults_are_minimal() {
+        let Ok(Request::Check {
+            eval,
+            shot,
+            shot_path,
+            until,
+            keep,
+            ..
+        }) = parse(&args(&["check", "example.com"]))
+        else {
+            panic!("expected Check");
+        };
+        assert_eq!(eval, None);
+        assert!(!shot);
+        assert_eq!(shot_path, None);
+        assert_eq!(until, hwatu_ipc::LoadStage::Settled);
+        assert!(!keep);
+    }
+
+    #[test]
+    fn until_applies_to_goto_and_wait_load() {
+        let Ok(Request::Navigate { until, .. }) =
+            parse(&args(&["goto", "--until", "committed", "example.com"]))
+        else {
+            panic!("expected Navigate");
+        };
+        assert_eq!(until, hwatu_ipc::LoadStage::Committed);
+        let Ok(Request::WaitLoad { until, .. }) = parse(&args(&["wait-load", "--until=dom"]))
+        else {
+            panic!("expected WaitLoad");
+        };
+        assert_eq!(until, hwatu_ipc::LoadStage::Dom);
+        // Bare wait-load keeps full-settle semantics.
+        let Ok(Request::WaitLoad { until, .. }) = parse(&args(&["wait-load"])) else {
+            panic!("expected WaitLoad");
+        };
+        assert_eq!(until, hwatu_ipc::LoadStage::Settled);
+        assert!(parse(&args(&["wait-load", "--until", "nonsense"])).is_err());
     }
 
     #[test]

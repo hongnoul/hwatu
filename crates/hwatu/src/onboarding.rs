@@ -152,6 +152,7 @@ fn smoke_test() -> Result<String, String> {
     let result = (|| {
         let _ = send(&Request::WaitLoad {
             id: Some(id),
+            until: Default::default(),
             timeout_ms: Some(10_000),
         });
         match send(&Request::Eval {
@@ -618,6 +619,7 @@ fn demo(args: &[String]) -> i32 {
     println!("demo: window {id} open");
     let _ = send(&Request::WaitLoad {
         id: Some(id),
+        until: Default::default(),
         timeout_ms: Some(15_000),
     });
 

@@ -143,6 +143,17 @@ pub struct BrowserWindow {
     /// bool: a stale prewarm load's own Started must not clear a real
     /// pending navigation to a different URI.
     nav_pending: RefCell<Option<String>>,
+    /// Last navigation target requested on this window (never
+    /// cleared, unlike `nav_pending`). Lets stage-aware waits tell a
+    /// stale prewarm `about:blank` commit from a genuine navigation
+    /// to about:blank.
+    nav_target: RefCell<Option<String>>,
+    /// True once the current load has Committed: the new document has
+    /// replaced the old one. Together with `nav_pending` this lets
+    /// stage-aware waits (`wait-load --until committed|dom`) know
+    /// whether an eval would target the requested document or a stale
+    /// one. Starts true: an idle window's document is its document.
+    load_committed: std::cell::Cell<bool>,
     /// Console/error/network capture for `hwatu console`. Outlives
     /// discards: the page's state dies, what it logged did happen.
     pub console: crate::console::Buffer,
@@ -273,12 +284,12 @@ impl BrowserWindow {
         // bare `hwatu` is "type where you want to go".
         let target = match url.or_else(home_page) {
             Some(url) => {
-                this.nav_pending.replace(Some(url.clone()));
+                this.mark_nav_pending(&url);
                 webview.load_uri(&url);
                 url
             }
             None => {
-                this.nav_pending.replace(Some(launcher::URI.to_string()));
+                this.mark_nav_pending(launcher::URI);
                 webview.load_uri(launcher::URI);
                 if mode == OpenMode::Normal {
                     this.bar.open_url("");
@@ -446,6 +457,8 @@ impl BrowserWindow {
             mode: std::cell::Cell::new(mode),
             viewport: std::cell::Cell::new(None),
             nav_pending: RefCell::new(None),
+            nav_target: RefCell::new(None),
+            load_committed: std::cell::Cell::new(true),
             console: crate::console::Buffer::default(),
         });
 
@@ -565,6 +578,7 @@ impl BrowserWindow {
             webview.connect_load_changed(move |wv, event| match event {
                 webkit6::LoadEvent::Started => {
                     this.note_load_engaged(wv);
+                    this.load_committed.set(false);
                     this.clear_recovery_overlay();
                     let this = this.clone();
                     let wv = wv.clone();
@@ -584,6 +598,7 @@ impl BrowserWindow {
                 }
                 webkit6::LoadEvent::Committed => {
                     this.note_load_engaged(wv);
+                    this.load_committed.set(true);
                     this.clear_recovery_overlay();
                 }
                 webkit6::LoadEvent::Finished => {
@@ -1036,11 +1051,26 @@ impl BrowserWindow {
     /// request gap.
     pub(crate) fn mark_nav_pending(&self, uri: &str) {
         self.nav_pending.replace(Some(uri.to_string()));
+        self.nav_target.replace(Some(uri.to_string()));
+        self.load_committed.set(false);
     }
 
     /// True while a requested navigation has not yet Started.
     pub(crate) fn nav_pending(&self) -> bool {
         self.nav_pending.borrow().is_some()
+    }
+
+    /// The most recently requested navigation target, if any.
+    pub(crate) fn nav_target(&self) -> Option<String> {
+        self.nav_target.borrow().clone()
+    }
+
+    /// True once the current (or last) load's document has Committed.
+    /// False between a navigation request and its commit. A stale
+    /// prewarm load's commit can set this while a real navigation is
+    /// still pending, so callers must also check [`Self::nav_pending`].
+    pub(crate) fn load_committed(&self) -> bool {
+        self.load_committed.get()
     }
 
     /// A load Started/Committed on this window: clear the pending
@@ -1258,7 +1288,7 @@ impl BrowserWindow {
         self.restore();
         if let Some(webview) = self.live_webview() {
             let url = crate::ipc_server::normalize_url(input.to_string());
-            self.nav_pending.replace(Some(url.clone()));
+            self.mark_nav_pending(&url);
             webview.load_uri(&url);
         }
     }

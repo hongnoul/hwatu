@@ -51,6 +51,45 @@ Under ninety milliseconds per full check, screenshot included
 `eval` at 2 ms is cheap enough to poll. Remeasured 2026-07-22 after
 the threaded-encode change; the loop was 216 ms before.
 
+### One command instead of five: `hwatu check`
+
+`hwatu check <url> [--eval <js>] [--shot[=path]]` runs the whole loop
+above daemon-side in one IPC roundtrip: open headless, wait, eval,
+screenshot, close, one JSON reply (url, title, eval result, shot
+path, console errors, timings). Measured 2026-07-25 against the same
+kind of local fixture, medians over 10 runs:
+
+| variant | median |
+|---|---|
+| 5-command loop (open, wait, eval, shot, close) | 56 ms |
+| `hwatu check --eval ... --shot` | 55 ms |
+
+On a loopback fixture the load dominates, so the wall-clock tie is
+expected; what `check` removes is 4 process spawns + 4 socket
+roundtrips of constant overhead, the window-leak failure mode (its
+window always closes, even on timeout), and 4 tool invocations of
+agent token cost. It also bundles the console capture the loop
+version never read.
+
+### Wait for the stage you need: `--until dom`
+
+`wait-load`, `goto`, and `check` accept `--until
+(committed|dom|settled)`. Default stays `settled` (full load, every
+subresource). Real pages keep loading images/fonts/third-party JS
+long after the DOM is usable; `--until dom` releases at
+`DOMContentLoaded`. On a fixture with one 800 ms-slow image
+(measured 2026-07-25):
+
+| wait | median |
+|---|---|
+| `check --until dom` | 68 ms |
+| `check --until settled` | 1581 ms |
+
+Both evals saw the identical, fully-parsed DOM (40/40 cards). On
+fast-settling real pages the two converge (example.com: 52/52 ms;
+a Wikipedia article: 252/271 ms); the win grows with the page's
+subresource tail, which is exactly what ad-heavy real sites have.
+
 ## Memory
 
 Sum of proportional-set-size (PSS) across the daemon and all of its
@@ -121,8 +160,10 @@ Known optimization targets from this data: load-settle latency
 (WebKitGTK reports loads settled ~50 ms behind Chromium on this
 fixture) and cold engine init. Screenshot encode was the previous
 target (90 ms of the pass) and was fixed by moving a fast-filter PNG
-encode off the main loop: shots now cost ~14 ms. Tracked in
-[roadmap.md](roadmap.md).
+encode off the main loop: shots now cost ~14 ms. Load-settle tail
+latency is now addressable from the client side too: `--until dom`
+(2026-07-25) stops paying for subresource tails at all when the check
+only needs the DOM. Tracked in [roadmap.md](roadmap.md).
 
 Caveat on method: hwatu steps go through CLI process spawns (5 per
 pass, the worst case for it) except in the socket variants, while

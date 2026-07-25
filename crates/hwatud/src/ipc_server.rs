@@ -84,15 +84,34 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
             id,
             url,
             wait,
+            until,
             timeout_ms,
         } => {
-            return automation::navigate(daemon, id, url, wait, timeout_ms, reply);
+            return automation::navigate(daemon, id, url, wait, until, timeout_ms, reply);
         }
         Request::Screenshot { id, path, full } => {
             return automation::screenshot(daemon, id, path, full, reply);
         }
-        Request::WaitLoad { id, timeout_ms } => {
-            return automation::wait_load(daemon, id, timeout_ms, reply);
+        Request::WaitLoad {
+            id,
+            until,
+            timeout_ms,
+        } => {
+            return automation::wait_load(daemon, id, until, timeout_ms, reply);
+        }
+        Request::Check {
+            url,
+            eval,
+            shot,
+            shot_path,
+            full,
+            until,
+            keep,
+            timeout_ms,
+        } => {
+            return automation::check(
+                daemon, url, eval, shot, shot_path, full, until, keep, timeout_ms, reply,
+            );
         }
         Request::Challenge {
             id,
@@ -286,6 +305,7 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
         | Request::Navigate { .. }
         | Request::Screenshot { .. }
         | Request::WaitLoad { .. }
+        | Request::Check { .. }
         | Request::Challenge { .. }
         | Request::Upload { .. }
         | Request::Scroll { .. }

@@ -64,13 +64,19 @@ pub enum Request {
         timeout_ms: Option<u64>,
     },
     /// Navigate an existing window. `wait` (default true) blocks the
-    /// response until the load finishes or `timeout_ms` expires.
+    /// response until the load reaches `until` (default: settled) or
+    /// `timeout_ms` expires.
     Navigate {
         #[serde(default)]
         id: Option<u64>,
         url: String,
         #[serde(default = "default_true")]
         wait: bool,
+        /// How far the load must progress before the reply (see
+        /// [`LoadStage`]). Absent on the wire means `Settled`, so old
+        /// clients keep the full-load semantics they were built for.
+        #[serde(default)]
+        until: LoadStage,
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
@@ -87,10 +93,44 @@ pub enum Request {
         #[serde(default)]
         full: bool,
     },
-    /// Block until the window finishes loading (or `timeout_ms`).
+    /// Block until the window's load reaches `until` (default:
+    /// settled) or `timeout_ms` expires.
     WaitLoad {
         #[serde(default)]
         id: Option<u64>,
+        #[serde(default)]
+        until: LoadStage,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
+    /// One-roundtrip verification pass: open a headless window, load
+    /// `url`, wait for `until`, optionally run JS and take a
+    /// screenshot, then close the window (unless `keep`). Replies with
+    /// everything at once in [`Response::Ok::value`]: final url,
+    /// title, eval result, screenshot path, console entries, timings.
+    /// Collapses the open/wait/eval/shot/close agent loop (5 process
+    /// spawns + 5 socket roundtrips) into one.
+    Check {
+        url: String,
+        /// JS to run once the load reaches `until` (expression or
+        /// function body, same semantics as [`Request::Eval`]).
+        #[serde(default)]
+        eval: Option<String>,
+        /// Take a screenshot (to a temp file unless `shot_path`).
+        #[serde(default)]
+        shot: bool,
+        /// Screenshot destination; implies `shot`.
+        #[serde(default)]
+        shot_path: Option<String>,
+        /// Screenshot the full document instead of the viewport.
+        #[serde(default)]
+        full: bool,
+        /// Load stage gating eval/shot (default: settled).
+        #[serde(default)]
+        until: LoadStage,
+        /// Keep the window open and report its id instead of closing.
+        #[serde(default)]
+        keep: bool,
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
@@ -358,6 +398,39 @@ pub enum Request {
 
 fn default_true() -> bool {
     true
+}
+
+/// How far a load must progress before a wait releases. Real pages
+/// keep loading subresources (fonts, third-party JS, images) long
+/// after the DOM is usable; most agent checks only need the DOM, so
+/// waiting for the full settle is paying tail latency for nothing.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LoadStage {
+    /// The new document has replaced the old one (WebKit Committed).
+    /// Earliest point where evals target the new page; its DOM may
+    /// still be streaming in.
+    Committed,
+    /// `DOMContentLoaded`: the DOM is fully parsed and queryable.
+    /// The right default for snapshot/eval checks on real pages.
+    Dom,
+    /// Full load finished and no follow-up navigation is pending
+    /// (every subresource done). The strongest guarantee, and the
+    /// wire default for backward compatibility.
+    #[default]
+    Settled,
+}
+
+impl LoadStage {
+    /// Parse a user-facing stage name.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim() {
+            "committed" | "commit" => Some(Self::Committed),
+            "dom" | "ready" => Some(Self::Dom),
+            "settled" | "load" | "full" => Some(Self::Settled),
+            _ => None,
+        }
+    }
 }
 
 /// How an opened window is shown. Built for agent verification flows

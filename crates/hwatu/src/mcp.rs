@@ -10,7 +10,7 @@
 //! The daemon is autostarted on the first tool call, like every other
 //! `hwatu` invocation.
 
-use hwatu_ipc::{ClockAction, OpenMode, Request, Response};
+use hwatu_ipc::{ClockAction, LoadStage, OpenMode, Request, Response};
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 
@@ -199,6 +199,7 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
             id,
             url: req_str(args, "url")?,
             wait: opt_bool(args, "wait").unwrap_or(true),
+            until: parse_until(args)?,
             timeout_ms,
         }),
         "eval" => Ok(Request::Eval {
@@ -211,7 +212,21 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
             path: opt_str(args, "path"),
             full: opt_bool(args, "full").unwrap_or(false),
         }),
-        "wait_load" => Ok(Request::WaitLoad { id, timeout_ms }),
+        "wait_load" => Ok(Request::WaitLoad {
+            id,
+            until: parse_until(args)?,
+            timeout_ms,
+        }),
+        "check" => Ok(Request::Check {
+            url: req_str(args, "url")?,
+            eval: opt_str(args, "eval"),
+            shot: opt_bool(args, "shot").unwrap_or(false),
+            shot_path: opt_str(args, "shot_path"),
+            full: opt_bool(args, "full").unwrap_or(false),
+            until: parse_until(args)?,
+            keep: opt_bool(args, "keep").unwrap_or(false),
+            timeout_ms,
+        }),
         "snapshot" => Ok(Request::Snapshot { id, timeout_ms }),
         "expect" => Ok(Request::Expect {
             id,
@@ -351,6 +366,15 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
     }
 }
 
+/// Optional `until` load-stage argument, defaulting to settled.
+fn parse_until(args: &Value) -> Result<LoadStage, String> {
+    match opt_str(args, "until") {
+        None => Ok(LoadStage::default()),
+        Some(v) => LoadStage::parse(&v)
+            .ok_or_else(|| format!("invalid until {v:?} (want committed|dom|settled)")),
+    }
+}
+
 // ---- tool schemas --------------------------------------------------
 
 /// Shorthand JSON-Schema property.
@@ -401,7 +425,29 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
                 "id": prop("integer", ID_DESC),
                 "url": prop("string", "URL to load."),
                 "wait": prop("boolean", "Wait for the load to finish (default true)."),
+                "until": { "type": "string", "enum": ["committed", "dom", "settled"],
+                    "description": "How far the load must progress before returning (default settled). dom = DOMContentLoaded, much earlier on real pages and enough for snapshot/eval." },
                 "timeout_ms": prop("integer", "Wait timeout in ms."),
+            }),
+            &["url"],
+        ),
+        tool(
+            "check",
+            "One-call verification pass: open a headless window, load the url, \
+             wait for it, optionally eval JS and screenshot, then close the \
+             window. Returns url, title, eval result, shot path, console \
+             errors, and timings in one reply. Prefer this over separate \
+             open/wait_load/eval/screenshot/close calls for one-shot checks.",
+            json!({
+                "url": prop("string", "URL to load (https:// implied)."),
+                "eval": prop("string", "JS to run once loaded (expression or function body)."),
+                "shot": prop("boolean", "Take a screenshot to a temp file."),
+                "shot_path": prop("string", "Screenshot destination (implies shot)."),
+                "full": prop("boolean", "Screenshot the full document, not just the viewport."),
+                "until": { "type": "string", "enum": ["committed", "dom", "settled"],
+                    "description": "Load stage gating eval/shot (default settled)." },
+                "keep": prop("boolean", "Keep the window open and return its id."),
+                "timeout_ms": prop("integer", "Deadline for the whole pass in ms."),
             }),
             &["url"],
         ),
@@ -498,9 +544,13 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         ),
         tool(
             "wait_load",
-            "Block until the window finishes loading (or timeout).",
+            "Block until the window's load reaches a stage (default: fully \
+             settled). until=dom releases at DOMContentLoaded, much earlier \
+             on real pages and enough for snapshot/eval checks.",
             json!({
                 "id": prop("integer", ID_DESC),
+                "until": { "type": "string", "enum": ["committed", "dom", "settled"],
+                    "description": "Load stage to wait for (default settled)." },
                 "timeout_ms": prop("integer", "Timeout in ms."),
             }),
             &[],
@@ -766,6 +816,7 @@ mod tests {
             "open": {},
             "list_windows": {},
             "goto": { "url": "example.com" },
+            "check": { "url": "example.com" },
             "snapshot": {},
             "expect": { "selector": "h1" },
             "click": { "ref": 0 },
