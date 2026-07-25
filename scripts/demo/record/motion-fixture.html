@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>hwatu motion proof</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; }
+  body { display: grid; place-items: center; background: #f7f8fa; color: #101116; font-family: system-ui, sans-serif; }
+  .stage { position: relative; width: 78vw; height: 62vh; overflow: hidden; border: 2px solid #101116; background: white; }
+  .grid { position: absolute; inset: 0; background-image: linear-gradient(#d9dce2 1px,transparent 1px),linear-gradient(90deg,#d9dce2 1px,transparent 1px); background-size: 48px 48px; }
+  .track { position: absolute; left: 8%; right: 8%; top: 50%; height: 3px; background: #d9dce2; }
+  .card { position: absolute; left: 8%; top: calc(50% - 84px); width: 210px; height: 168px; padding: 30px; background: #101116; color: white; animation: travel 4s cubic-bezier(.25,1,.5,1) infinite alternate; }
+  .card b { display: block; color: #f5c451; font: 700 16px ui-monospace, monospace; letter-spacing: .12em; }
+  .card strong { display: block; margin-top: 22px; font-size: 34px; line-height: 1; }
+  .meter { position: absolute; left: 8%; right: 8%; bottom: 10%; display: flex; justify-content: space-between; font: 700 18px ui-monospace, monospace; }
+  @keyframes travel { from { transform: translateX(0) rotate(-4deg); } to { transform: translateX(calc(62vw - 210px)) rotate(4deg); } }
+</style>
+</head>
+<body>
+  <main class="stage">
+    <div class="grid"></div><div class="track"></div>
+    <div class="card"><b>FRAME</b><strong>Exact<br>motion.</strong></div>
+    <div class="meter"><span>0%</span><span>50%</span><span>100%</span></div>
+  </main>
+</body>
+</html>

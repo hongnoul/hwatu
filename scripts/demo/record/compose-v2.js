@@ -4,15 +4,11 @@
   const DURATION = 21;
   const params = new URLSearchParams(location.search);
   const autoplay = params.get('autoplay') === '1';
-  const fixedTime = params.has('t') && !autoplay ? Math.max(0, Math.min(DURATION, Number(params.get('t')) || 0)) : null;
+  const fixedTime = params.has('t') && !autoplay
+    ? Math.max(0, Math.min(DURATION, Number(params.get('t')) || 0))
+    : null;
   const evidenceDir = params.get('evidence') || './evidence-v2';
-  const fixture = {
-    scores: [85.13, 93.42, 98.79],
-    motion: { durationMs: 400, easing: 'cubic-bezier(0.4, 0, 0.2, 1)' },
-    handoff: { sessionId: 2, tab: 3, scroll: 68, frame: 12 },
-    proof: '13 ms windows · 87 ms verification · one binary'
-  };
-  let evidence = fixture;
+  let evidence = null;
 
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -21,171 +17,173 @@
   const smooth = (value) => value * value * (3 - 2 * value);
 
   function assetUrl(path) {
-    if (!path) return null;
+    if (!path) return '';
     return `${evidenceDir.replace(/\/$/, '')}/${String(path).replace(/^\.\//, '')}`;
   }
 
-  function setCapturedArt(selector, path) {
+  function setBackground(selector, path) {
     const element = $(selector);
-    const url = assetUrl(path);
-    if (!element || !url) return;
-    element.classList.add('captured-evidence');
-    element.style.backgroundImage = `url("${url.replace(/"/g, '%22')}")`;
+    if (element && path) element.style.backgroundImage = `url("${assetUrl(path).replace(/"/g, '%22')}")`;
   }
 
-  function applyEvidenceAssets() {
-    const assets = evidence.assets || {};
-    setCapturedArt('.reference-art', assets.reference);
-    setCapturedArt('.live-page', assets.handoff || assets.handoffLive);
+  function applyEvidence() {
+    const assets = evidence.assets;
+    setBackground('.reference-art', assets.reference);
+    setBackground('.handoff-image', assets.handoff);
+    $('#typedValue').textContent = `“${evidence.handoff.value}”`;
+    $('#proofLine').textContent = evidence.proof.toUpperCase();
+    document.documentElement.dataset.evidence = 'captured';
+    $('#evidenceStatus').textContent = 'REAL WEBKIT · CAPTURED';
   }
 
   async function loadEvidence() {
     try {
       const response = await fetch(`${evidenceDir.replace(/\/$/, '')}/manifest.json`, { cache: 'no-store' });
-      if (!response.ok) throw new Error(String(response.status));
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const loaded = await response.json();
-      evidence = {
-        ...fixture,
-        ...loaded,
-        motion: { ...fixture.motion, ...loaded.motion },
-        handoff: { ...fixture.handoff, ...loaded.handoff },
-        assets: { ...(loaded.assets || {}) },
-        scores: Array.isArray(loaded.scores) && loaded.scores.length >= 3 ? loaded.scores.slice(0, 3) : fixture.scores
-      };
-      applyEvidenceAssets();
-      $('#evidenceStatus').textContent = 'EVIDENCE · CAPTURED';
-    } catch (_) {
-      $('#evidenceStatus').textContent = 'EVIDENCE · DEMO FIXTURE';
-      $('#evidenceStatus').style.color = 'var(--amber)';
+      const assets = loaded.assets || {};
+      if (loaded.schema !== 'hwatu.demo.capture-v2/1'
+          || !Array.isArray(loaded.scores) || loaded.scores.length !== 2
+          || !Array.isArray(assets.builds) || assets.builds.length !== 2
+          || !Array.isArray(assets.heatmaps) || assets.heatmaps.length !== 2
+          || !Array.isArray(assets.motionReferenceFrames) || assets.motionReferenceFrames.length !== 4
+          || !Array.isArray(assets.motionBuildFrames) || assets.motionBuildFrames.length !== 4
+          || !loaded.handoff?.statePreserved) {
+        throw new Error('incomplete evidence manifest');
+      }
+      evidence = loaded;
+      applyEvidence();
+    } catch (error) {
+      document.documentElement.dataset.evidence = 'missing';
+      $('#evidenceStatus').textContent = 'EVIDENCE MISSING';
+      $('#evidenceStatus').style.color = 'var(--red)';
+      console.error('hwatu demo evidence:', error);
     }
-    $('#proofLine').textContent = evidence.proof;
-    render(fixedTime ?? 0);
   }
 
-  function showScene(id, index) {
+  function showScene(id, verb) {
     $$('.scene').forEach((scene) => scene.classList.toggle('active', scene.id === id));
     $('.topline').style.opacity = id === 'end' ? '0' : '1';
-    $('#sceneIndex').textContent = `${String(index).padStart(2, '0')} / 03`;
+    $('.measurement-rail').style.opacity = id === 'end' ? '.35' : '1';
+    $('#sceneVerb').textContent = verb;
+  }
+
+  function renderPremise(time, looping = false) {
+    showScene('premise', 'PROVE IT');
+    const local = looping ? between(time, 20.62, 21) : between(time, 0, 2);
+    const reveal = smooth(looping ? local : between(local, .05, .55));
+    $('.premise h1').style.transform = `scale(${.94 + reveal * .06})`;
+    $('.premise h1').style.opacity = String(.35 + reveal * .65);
+    $('.premise strong').style.opacity = String(smooth(between(local, .35, .85)));
+    const angle = local * Math.PI * 2;
+    $$('.premise-orb i').forEach((dot, index) => {
+      const radius = 1.2 + index * .75;
+      dot.style.transform = `translate(${Math.cos(angle + index * 2.1) * radius}cqw,${Math.sin(angle + index * 2.1) * radius}cqw)`;
+    });
+    $('#railTitle').textContent = 'PROVE IT';
+    $('#railPin').style.display = 'none';
   }
 
   function renderMeasure(time) {
-    showScene('measure', 1);
-    const progress = smooth(between(time, 0.4, 6.6));
-    const checkpoint = progress < .36 ? 0 : progress < .72 ? 1 : 2;
-    const local = checkpoint === 0 ? progress / .36 : checkpoint === 1 ? (progress - .36) / .36 : (progress - .72) / .28;
-    const scoreA = evidence.scores[checkpoint];
-    const scoreB = evidence.scores[Math.min(2, checkpoint + 1)];
-    const score = checkpoint === 2 ? scoreA : scoreA + (scoreB - scoreA) * clamp(local);
-    const error = 1 - progress * .92;
-    const assets = evidence.assets || {};
-    const builds = assets.builds || assets.checkpoints || [];
-    const heatmaps = assets.heatmaps || [];
-    setCapturedArt('.build-art', builds[checkpoint] || assets.build);
-    const buildArt = $('.build-art');
-    if (buildArt.classList.contains('captured-evidence') && heatmaps[checkpoint]) {
-      buildArt.style.setProperty('--heatmap-image', `url("${assetUrl(heatmaps[checkpoint])}")`);
-      buildArt.classList.add('captured-heatmap');
-    }
-    $('.build-art').style.setProperty('--error', error.toFixed(3));
-    $('#checkpointLabel').textContent = `CHECKPOINT 0${checkpoint + 1}`;
-    $('#railTitle').textContent = 'VISUAL MATCH';
-    $('#railLeft').textContent = `${evidence.scores[0].toFixed(2)}%`;
-    $('#railRight').textContent = `${score.toFixed(2)}%`;
-    $('#railFill').style.cssText = `width:${progress * 100}%;background:var(--blue)`;
+    showScene('measure', 'MEASURE');
+    if (!evidence) return;
+    const local = between(time, 2, 9);
+    const finalPass = local >= .53;
+    const index = finalPass ? 1 : 0;
+    const scan = 18 + (Math.sin(local * Math.PI * 2.4) * .5 + .5) * 64;
+    setBackground('.build-art', evidence.assets.builds[index]);
+    setBackground('.heatmap-art', evidence.assets.heatmaps[index]);
+    $('.build-art').style.clipPath = `inset(0 0 0 ${scan}%)`;
+    $('.heatmap-art').style.clipPath = `inset(0 ${100 - scan}% 0 0)`;
+    $('.heatmap-art').style.opacity = String(finalPass ? .5 : .92);
+    $('#scanLine').style.left = `${scan}%`;
+    $('#checkpointLabel').textContent = finalPass ? 'AGENT · VERIFIED PASS' : 'AGENT · FIRST PASS';
+    $('#scoreBefore').textContent = `${Number(evidence.scores[0]).toFixed(2)}%`;
+    $('#scoreNow').textContent = `${Number(evidence.scores[index]).toFixed(2)}%`;
+    $('#scoreNow').style.transform = finalPass ? 'scale(1.08)' : 'scale(1)';
+    $('#scoreNow').style.color = finalPass ? 'var(--mint)' : 'var(--paper)';
+    $('#railTitle').textContent = finalPass ? 'VERIFIED PASS' : 'PIXEL DIFF';
     $('#railPin').style.display = 'none';
   }
 
-  function motionPosition(local) {
-    if (local < .3) return between(local, 0, .3) * .5;
-    if (local < .55) return .5 + between(local, .3, .55) * .3;
-    if (local < .78) return .8 - between(local, .55, .78) * .3;
-    return .5;
+  function motionStep(local) {
+    if (local < .18) return 0;
+    if (local < .46) return 1;
+    if (local < .69) return 2;
+    return 3;
   }
 
   function renderMotion(time) {
-    showScene('motion', 2);
-    const local = between(time, 7, 13.2);
-    const position = smooth(motionPosition(local));
-    const x = 2.5 + position * 18;
-    const y = 3.5 + Math.sin(position * Math.PI) * 7;
-    const rotation = -8 + position * 16;
-    $$('.moving-card').forEach((card) => {
-      card.style.setProperty('--motion-x', `${x}cqw`);
-      card.style.setProperty('--motion-y', `${y}cqw`);
-      card.style.setProperty('--motion-r', `${rotation}deg`);
-    });
-    const motionFrames = (evidence.assets && (evidence.assets.motionFrames || evidence.assets.motion)) || [];
-    if (Array.isArray(motionFrames) && motionFrames.length) {
-      const image = motionFrames[Math.min(motionFrames.length - 1, Math.round(position * (motionFrames.length - 1)))];
-      $$('.motion-canvas').forEach((canvas) => {
-        canvas.classList.add('captured-evidence');
-        canvas.style.backgroundImage = `url("${assetUrl(image)}")`;
-      });
-    }
-    const frame = Math.round(position * 24);
-    $$('.frame-readout').forEach((label) => { label.textContent = `FRAME ${String(frame).padStart(2, '0')}`; });
-    $('#ghostBefore').style.left = `${Math.max(0, position * 100 - 18)}%`;
-    $('#ghostNow').style.left = `${position * 100}%`;
-    $('#directionBefore').style.opacity = local < .6 ? '1' : '.25';
-    $('#directionAfter').style.opacity = local >= .5 ? '1' : '.25';
-    $('#repeatProof').textContent = local > .78 ? 'REPEAT · EXACT FRAME' : `${evidence.motion.durationMs} MS · ${evidence.motion.easing}`;
-    $('#railTitle').textContent = 'ANIMATION TIME';
-    $('#railLeft').textContent = '0%';
-    $('#railRight').textContent = `t = ${Math.round(position * 100)}%`;
-    $('#railFill').style.cssText = `width:${position * 100}%;background:var(--amber)`;
-    $('#railPin').style.cssText = `display:block;left:${position * 100}%`;
+    showScene('motion', 'PIN MOTION');
+    if (!evidence) return;
+    const local = between(time, 9, 15);
+    const index = motionStep(local);
+    const progress = [0, 50, 80, 50][index];
+    setBackground('.reference-motion', evidence.assets.motionReferenceFrames[index]);
+    setBackground('.build-motion', evidence.assets.motionBuildFrames[index]);
+    $$('.frame-readout').forEach((label) => { label.textContent = `${progress}%`; });
+    $$('#motionSequence span').forEach((step, stepIndex) => step.classList.toggle('active', stepIndex === index));
+    $('#scrubFill').style.width = `${progress}%`;
+    $('#scrubPin').style.left = `${progress}%`;
+    $('#repeatProof').textContent = index === 3 ? '✓ SAME 50% FRAME · EXACT REPEAT' : 'SCRUBBING BOTH PAGES TOGETHER';
+    $('#railTitle').textContent = index === 3 ? 'EXACT REPEAT' : 'ANIMATION TIME';
+    $('#railPin').style.display = 'block';
+    $('#railPin').style.left = `${progress}%`;
   }
 
   function renderHandoff(time) {
-    showScene('handoff', 3);
-    const reveal = smooth(between(time, 14.5, 17.1));
-    const action = between(time, 13.4, 14.8);
-    $('.handoff-action').style.opacity = String(action < .15 || action > .95 ? 0 : Math.sin(action * Math.PI));
-    $('.live-browser').style.transform = `translateX(${(1 - reveal) * 110}%)`;
-    $('.live-browser').style.opacity = String(reveal);
-    $('.state-chip').style.opacity = String(1 - reveal * .72);
-    const h = evidence.handoff;
-    $('.session-badge').textContent = `HEADLESS SESSION · ID ${h.sessionId}`;
-    $('.state-chip span').textContent = `scroll ${h.scroll}% · tab ${h.tab} · frame ${h.frame}`;
-    $('.preserved-tag').textContent = `✓ SAME TAB · SCROLL ${h.scroll}% · FRAME ${h.frame}`;
-    $('.scroll-indicator i').style.top = `${h.scroll}%`;
-    $('.scroll-indicator span').style.top = `${h.scroll}%`;
-    $('.scroll-indicator span').textContent = `${h.scroll}%`;
-    $('#railTitle').textContent = 'SESSION STATE';
-    $('#railLeft').textContent = reveal < .5 ? 'HEADLESS' : 'PRESERVED';
-    $('#railRight').textContent = reveal < .98 ? '→ LIVE' : 'LIVE · READY';
-    $('#railFill').style.cssText = `width:${reveal * 100}%;background:var(--mint)`;
+    showScene('handoff', 'HAND OFF');
+    if (!evidence) return;
+    const local = between(time, 15, 19);
+    const focus = smooth(between(local, .22, .62));
+    const pulse = between(local, .15, .48);
+    setBackground('.handoff-image', evidence.assets.handoff);
+    $('.handoff-image').style.filter = `saturate(${.65 + focus * .35}) brightness(${.62 + focus * .38})`;
+    $('#handoffBrowser').style.transform = `scale(${.96 + focus * .04})`;
+    $('#browserTitle').textContent = focus > .5 ? 'YOUR WINDOW · SAME BROWSER' : 'AGENT’S BROWSER · OFFSCREEN';
+    $('#liveBadge').textContent = focus > .5 ? 'LIVE' : 'INVISIBLE';
+    $('#liveBadge').style.borderColor = focus > .5 ? 'var(--mint)' : 'var(--amber)';
+    $('#liveBadge').style.color = focus > .5 ? 'var(--mint)' : 'var(--amber)';
+    $('#focusPulse').style.opacity = String(Math.sin(pulse * Math.PI) * (pulse > 0 && pulse < 1 ? 1 : 0));
+    $('#focusPulse').style.transform = `translate(-50%,-50%) scale(${.75 + pulse * .5})`;
+    $('.typed-callout').style.opacity = String(.35 + focus * .65);
+    $('.preserved-row').style.opacity = String(smooth(between(local, .55, .9)));
+    $('#railTitle').textContent = focus > .5 ? 'STATE PRESERVED' : 'RUNNING OFFSCREEN';
     $('#railPin').style.display = 'none';
   }
 
-  function renderEnd() {
-    showScene('end', 3);
-    $('#railTitle').textContent = 'ONE WORKFLOW';
-    $('#railLeft').textContent = 'MEASURE';
-    $('#railRight').textContent = 'HAND OFF';
-    $('#railFill').style.cssText = 'width:100%;background:var(--mint)';
+  function renderEnd(time) {
+    showScene('end', 'HWATU');
+    const local = between(time, 19, 20.62);
+    $('.end').style.opacity = String(smooth(between(local, 0, .25)) * (1 - smooth(between(local, .78, 1))));
+    $('.end-mark').style.transform = `scale(${.75 + smooth(local) * .25})`;
+    $('#railTitle').textContent = 'PROOF, NOT PROMISES';
     $('#railPin').style.display = 'none';
   }
 
   function render(rawTime) {
-    const time = Math.max(0, Math.min(DURATION, rawTime));
-    $('#railClock').textContent = `${time.toFixed(1).padStart(4, '0')} / ${DURATION.toFixed(1)}`;
-    if (time < 7) renderMeasure(time);
-    else if (time < 13.3) renderMotion(time);
-    else if (time < 19.1) renderHandoff(time);
-    else renderEnd(time);
+    const time = clamp(rawTime, 0, DURATION);
+    $('#stage').style.setProperty('--drift', `${time * 2}cqw`);
+    if (time < 2) renderPremise(time);
+    else if (time < 9) renderMeasure(time);
+    else if (time < 15) renderMotion(time);
+    else if (time < 19) renderHandoff(time);
+    else if (time < 20.62) renderEnd(time);
+    else renderPremise(time, true);
+    $('#railFill').style.width = `${(time / DURATION) * 100}%`;
+    $('#railValue').textContent = `${time.toFixed(1).padStart(4, '0')} / ${DURATION.toFixed(1)}`;
     document.documentElement.dataset.time = time.toFixed(3);
   }
 
-  let started = performance.now();
+  const started = performance.now();
   function tick(now) {
-    const elapsed = (Number(params.get('t')) || 0) + ((now - started) / 1000);
-    render(elapsed % DURATION);
+    const offset = Number(params.get('t')) || 0;
+    render((offset + (now - started) / 1000) % DURATION);
     requestAnimationFrame(tick);
   }
 
   loadEvidence().then(() => {
+    render(fixedTime ?? 0);
     if (fixedTime === null) requestAnimationFrame(tick);
-    else render(fixedTime);
   });
 })();

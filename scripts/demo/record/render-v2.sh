@@ -20,7 +20,7 @@ URL=""
 SOURCE=""
 EVIDENCE=""
 OUT_DIR=""
-CAPTURE_SECONDS="${HWATU_DEMO_V2_SECONDS:-20.5}"
+CAPTURE_SECONDS="${HWATU_DEMO_V2_SECONDS:-21}"
 WEBP_FPS="${HWATU_DEMO_V2_WEBP_FPS:-10}"
 
 usage() {
@@ -61,11 +61,13 @@ MP4="$OUT_DIR/demo-v2.mp4"
 WEBP="$OUT_DIR/demo-v2.webp"
 SHEET="$OUT_DIR/demo-v2-contact-sheet.png"
 MANIFEST="$OUT_DIR/demo-v2-render-manifest.json"
+RAW_DURATION=""
 
 probe_raw() {
   local dimensions duration
   dimensions="$(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0:s=x "$RAW")"
   duration="$(ffprobe -v error -show_entries format=duration -of default=nw=1:nk=1 "$RAW")"
+  RAW_DURATION="$duration"
   [[ "$dimensions" == "1600x900" ]] || die "raw take is $dimensions, expected 1600x900"
   awk -v d="$duration" 'BEGIN { exit !(d >= 20 && d <= 22) }' || die "raw duration $duration is outside 20-22 seconds"
 }
@@ -74,6 +76,7 @@ record() {
   need hwatu
   need swaymsg
   need wf-recorder
+  need jq
   [[ -x "$STAGE" ]] || die "stage.sh is not executable"
   local stage_dir="${HWATU_DEMO_STAGE_DIR:-/tmp/hwatu-demo-stage}"
   local runtime="$stage_dir/run"
@@ -110,7 +113,24 @@ PY
   # Load a paused deterministic first frame before rolling.
   session_id="$(hwatu --headless --json "$paused_url" | python3 -c 'import json,sys; print(json.load(sys.stdin)["id"])')"
   hwatu wait-load --id "$session_id" --timeout-ms 20000 >/dev/null
+  local evidence_state=""
+  for _ in $(seq 1 100); do
+    evidence_state="$(hwatu eval --id "$session_id" 'return document.documentElement.dataset.evidence || ""' 2>/dev/null || true)"
+    [[ "$evidence_state" == *captured* ]] && break
+    [[ "$evidence_state" == *missing* ]] && die "composition rejected its evidence manifest"
+    sleep 0.05
+  done
+  [[ "$evidence_state" == *captured* ]] || die "composition did not load captured evidence"
   hwatu focus "$session_id" >/dev/null
+  local surface_ready=false
+  for _ in $(seq 1 100); do
+    if swaymsg -t get_tree -r | jq -e '.. | objects | select(.app_id? == "dev.hwatu.hwatud")' >/dev/null; then
+      surface_ready=true
+      break
+    fi
+    sleep 0.05
+  done
+  [[ "$surface_ready" == true ]] || die "focused WebKit surface did not map into the stage"
   swaymsg '[app_id="dev.hwatu.hwatud"] fullscreen enable' >/dev/null
   sleep 0.5
   "$STAGE" rec "$RAW" >/dev/null
@@ -130,8 +150,12 @@ else
 fi
 probe_raw
 
+# wf-recorder starts before record() returns, intentionally leaving a short
+# paused-frame preroll in the provenance master. Remove that measured preroll
+# so the delivered cut contains the composition's complete 21-second loop.
+TRIM_START="$(awk -v raw="$RAW_DURATION" -v wanted="$CAPTURE_SECONDS" 'BEGIN { d=raw-wanted; if (d < 0) d=0; printf "%.3f", d }')"
 # Normalize once. All delivered artifacts derive from this exact 1280x720 cut.
-ffmpeg -y -v error -i "$RAW" -t "$CAPTURE_SECONDS" \
+ffmpeg -y -v error -ss "$TRIM_START" -i "$RAW" -t "$CAPTURE_SECONDS" \
   -vf 'scale=1280:720:flags=lanczos,setsar=1' -an -c:v libx264 \
   -pix_fmt yuv420p -crf 18 -preset slow -movflags +faststart "$MP4"
 ffmpeg -y -v error -i "$MP4" -vf "fps=$WEBP_FPS" -an \

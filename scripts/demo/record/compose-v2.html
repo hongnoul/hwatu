@@ -2,101 +2,95 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>hwatu · visual proof</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>hwatu · make it prove it</title>
   <link rel="stylesheet" href="compose-v2.css">
 </head>
 <body>
-  <main id="stage" aria-label="hwatu visual proof presentation">
+  <main id="stage" aria-label="hwatu visual verification demo">
     <header class="topline">
       <div class="wordmark"><span class="mark">h</span> hwatu</div>
-      <div id="sceneIndex" class="scene-index">01 / 03</div>
-      <div id="evidenceStatus" class="evidence-status">EVIDENCE · LOADING</div>
+      <div id="sceneVerb" class="scene-verb">PROVE IT</div>
+      <div id="evidenceStatus" class="evidence-status">REAL WEBKIT · LOADING</div>
     </header>
+
+    <section id="premise" class="scene premise" aria-label="Make pixel-perfect claims prove themselves">
+      <div class="premise-rule"></div>
+      <p>YOUR AGENT SAYS</p>
+      <h1>“pixel-perfect.”</h1>
+      <strong>Make it prove it.</strong>
+      <div class="premise-orb"><i></i><i></i><i></i></div>
+    </section>
 
     <section id="measure" class="scene measure" aria-label="Measure visual similarity">
       <div class="scene-copy">
         <div class="kicker">01 · MEASURE</div>
-        <h1>See what changed.<br><span>Measure what improved.</span></h1>
-        <p>Pixel diff gives the agent a number to climb.</p>
+        <h1>Turn “looks right”<br>into a number.</h1>
+        <p>Compare every rendered pixel. Give the agent a score it can climb.</p>
+        <div class="score-proof">
+          <span id="scoreBefore">—</span><i>→</i><strong id="scoreNow">—</strong>
+          <small>VISUAL MATCH</small>
+        </div>
       </div>
-      <div class="compare" aria-label="Reference and agent build comparison">
-        <article class="page-card reference-card">
-          <div class="card-label"><span>REFERENCE</span><span>1600 × 900</span></div>
-          <div class="browser-art reference-art">
-            <div class="nav-art"><b>Northstar</b><i></i><i></i><i></i></div>
-            <div class="hero-art"><small>DESIGN SYSTEM</small><strong>Build calmer<br>interfaces.</strong><button>Explore components</button></div>
-            <div class="tiles"><i></i><i></i><i></i></div>
-          </div>
-        </article>
-        <article class="page-card build-card">
-          <div class="card-label"><span>AGENT BUILD</span><span id="checkpointLabel">CHECKPOINT 01</span></div>
-          <div class="browser-art build-art">
-            <div class="nav-art"><b>Northstar</b><i></i><i></i><i></i></div>
-            <div class="hero-art"><small>DESIGN SYSTEM</small><strong>Build calmer<br>interfaces.</strong><button>Explore components</button></div>
-            <div class="tiles"><i></i><i></i><i></i></div>
-            <div class="heat h1"></div><div class="heat h2"></div><div class="heat h3"></div>
-          </div>
-        </article>
+      <div class="measure-proof">
+        <div class="proof-labels"><span>REFERENCE</span><span id="checkpointLabel">AGENT · FIRST PASS</span></div>
+        <div class="viewport-stack">
+          <div class="captured reference-art" aria-label="Reference capture"></div>
+          <div class="captured build-art" aria-label="Agent build capture"></div>
+          <div class="captured heatmap-art" aria-label="Pixel difference heatmap"></div>
+          <div id="scanLine" class="scan-line"><b>PIXEL DIFF</b></div>
+        </div>
+        <div class="proof-legend"><span><i class="bad"></i> DIFFERENT</span><span><i class="good"></i> MATCHED</span></div>
       </div>
     </section>
 
-    <section id="motion" class="scene motion" aria-label="Pin animation motion">
-      <div class="scene-copy compact">
+    <section id="motion" class="scene motion" aria-label="Pin both animations to the same frame">
+      <div class="scene-copy">
         <div class="kicker">02 · PIN MOTION</div>
-        <h1>Control time.<br><span>Compare the same frame.</span></h1>
-        <p>Seek to the same frame. Compare motion without flakes.</p>
+        <h1>Compare motion<br>at the exact frame.</h1>
+        <p>Scrub both pages together. Forward, backward, and back to the same point.</p>
+        <div id="motionSequence" class="motion-sequence"><span>0</span><span>50</span><span>80</span><span>50</span><b>%</b></div>
       </div>
       <div class="motion-proof">
         <div class="motion-panes">
-          <article><div class="card-label"><span>REFERENCE</span><span class="frame-readout">FRAME 12</span></div><div class="motion-canvas"><div class="orbit"></div><div class="moving-card"><b>Motion</b><small>precisely placed</small></div></div></article>
-          <article><div class="card-label"><span>AGENT BUILD</span><span class="frame-readout">FRAME 12</span></div><div class="motion-canvas"><div class="orbit"></div><div class="moving-card"><b>Motion</b><small>precisely placed</small></div></div></article>
+          <article><div class="pane-label"><span>REFERENCE</span><strong class="frame-readout">0%</strong></div><div class="motion-canvas reference-motion"></div></article>
+          <article><div class="pane-label"><span>AGENT BUILD</span><strong class="frame-readout">0%</strong></div><div class="motion-canvas build-motion"></div></article>
         </div>
-        <div class="scrub-proof">
-          <span id="directionBefore" class="direction">FORWARD →</span>
-          <div class="mini-track"><i id="ghostBefore"></i><i id="ghostNow"></i></div>
-          <span id="directionAfter" class="direction">← REVERSE</span>
-          <b id="repeatProof">REPEAT · BYTE-IDENTICAL</b>
-        </div>
+        <div class="scrubber"><div id="scrubFill"></div><i id="scrubPin"></i><span>0%</span><span>50%</span><span>100%</span></div>
+        <div id="repeatProof" class="repeat-proof">SEEKING BOTH PAGES</div>
       </div>
     </section>
 
-    <section id="handoff" class="scene handoff" aria-label="Hand off headless session">
-      <div class="scene-copy compact">
+    <section id="handoff" class="scene handoff" aria-label="Reveal the agent browser without losing state">
+      <div class="scene-copy">
         <div class="kicker">03 · HAND OFF</div>
-        <h1>Keep the state.<br><span>Bring in the human.</span></h1>
-        <p>When judgment is needed, hand the exact session to a human.</p>
+        <h1>Invisible on your desktop.<br>Live when you need it.</h1>
+        <p>Reveal the same browser without reopening the page or losing its state.</p>
+        <div class="state-proof"><small>TYPED VALUE · PRESERVED</small><strong id="typedValue">—</strong></div>
       </div>
-      <div class="workspace">
-        <div class="workspace-bar"><span>DEVELOPER WORKSPACE</span><span class="session-badge">HEADLESS SESSION · ID 2</span></div>
-        <div class="editor-pane">
-          <div class="file-tree"><b>src</b><span>app.ts</span><span class="selected">motion.css</span><span>tokens.css</span></div>
-          <div class="code-art"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
-          <div class="state-chip"><small>SESSION 2 · PRESERVED</small><b>Products / Motion</b><span>scroll 68% · tab 3 · frame 12</span><div class="chip-preview"><i></i></div></div>
+      <div class="handoff-proof">
+        <div id="handoffBrowser" class="handoff-browser">
+          <div class="browser-chrome"><span>● ● ●</span><b id="browserTitle">AGENT’S BROWSER · OFFSCREEN</b><em id="liveBadge">INVISIBLE</em></div>
+          <div class="handoff-image"></div>
+          <div class="typed-callout"><span>same typed value</span></div>
         </div>
-        <div class="handoff-action"><span>FOCUS</span><i></i></div>
-        <div class="live-browser">
-          <div class="live-bar"><span>● ● ●</span><b>Products / Motion</b><em>LIVE</em></div>
-          <div class="live-page"><small>PRODUCTS / MOTION</small><h2>Precision<br>in every frame.</h2><div class="preserved-card"><b>Motion</b><span>precisely placed</span></div><div class="scroll-indicator"><i></i><span>68%</span></div></div>
-          <div class="preserved-tag">✓ SAME TAB · SCROLL 68% · FRAME 12</div>
-        </div>
+        <div id="focusPulse" class="focus-pulse">FOCUS</div>
+        <div class="preserved-row"><span>PAGE</span><b>✓</b><span>TYPED VALUE</span><b>✓</b><span>SCROLL</span><b>✓</b></div>
       </div>
     </section>
 
-    <section id="end" class="scene end" aria-label="hwatu summary">
+    <section id="end" class="scene end" aria-label="hwatu workflow summary">
       <div class="end-mark">h</div>
-      <div class="kicker">VISUAL BROWSER AUTOMATION</div>
       <h1>hwatu</h1>
-      <p>measure <span>→</span> pin <span>→</span> hand off</p>
-      <small id="proofLine">13 ms windows · 87 ms verification · one binary</small>
+      <p>measure <span>→</span> pin motion <span>→</span> hand off</p>
+      <strong>THE VERIFICATION BROWSER FOR CODING AGENTS.</strong>
+      <small id="proofLine">REAL WEBKIT · MEASURED FRAME BY FRAME</small>
     </section>
 
     <footer class="measurement-rail">
-      <div class="rail-title" id="railTitle">VISUAL MATCH</div>
-      <div class="rail-value left" id="railLeft">85.13%</div>
+      <div id="railTitle" class="rail-title">PROVE IT</div>
       <div class="rail-track"><div id="railFill" class="rail-fill"></div><div id="railPin" class="rail-pin"></div></div>
-      <div class="rail-value right" id="railRight">98.79%</div>
-      <div class="rail-clock" id="railClock">00.0 / 21.0</div>
+      <div id="railValue" class="rail-value">00.0 / 21.0</div>
     </footer>
   </main>
   <script src="compose-v2.js"></script>

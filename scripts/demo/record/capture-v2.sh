@@ -16,7 +16,7 @@ CHECKPOINT_ROOT=${HWATU_DEMO_CHECKPOINT_DIR:-"$DEMO_DIR/checkpoints"}
 HWATU_BIN=${HWATU_BIN:-"$REPO_ROOT/target/release/hwatu"}
 WIDTH=${HWATU_DEMO_WIDTH:-1600}
 HEIGHT=${HWATU_DEMO_HEIGHT:-900}
-SCROLL_PERCENT=${HWATU_DEMO_SCROLL_PERCENT:-75}
+SCROLL_PERCENT=${HWATU_DEMO_SCROLL_PERCENT:-50}
 CLOCK_EPOCH_MS=${HWATU_CLOCK_EPOCH_MS:-1784872800000}
 
 fail() { printf 'capture-v2: %s\n' "$*" >&2; exit 1; }
@@ -35,8 +35,14 @@ mapfile -d '' CHECKPOINTS < <(find "$CHECKPOINT_ROOT" -mindepth 1 -maxdepth 1 -t
 ((${#CHECKPOINTS[@]} >= 2)) || fail "need at least two checkpoint directories in $CHECKPOINT_ROOT"
 BOOKEND_DIR=${HWATU_DEMO_BOOKEND_DIR:-${CHECKPOINTS[0]}}
 FINAL_DIR=${HWATU_DEMO_FINAL_DIR:-${CHECKPOINTS[${#CHECKPOINTS[@]}-1]}}
+BOOKEND_SCORECARD=${HWATU_DEMO_BOOKEND_SCORECARD:-}
+FINAL_SCORECARD=${HWATU_DEMO_FINAL_SCORECARD:-}
 fixture "$BOOKEND_DIR" bookend
 fixture "$FINAL_DIR" final
+if [ -n "$BOOKEND_SCORECARD$FINAL_SCORECARD" ]; then
+  [ -r "$BOOKEND_SCORECARD" ] || fail "bookend scorecard is not readable: $BOOKEND_SCORECARD"
+  [ -r "$FINAL_SCORECARD" ] || fail "final scorecard is not readable: $FINAL_SCORECARD"
+fi
 
 OUT=$(mkdir -p "$OUT" && cd "$OUT" && pwd)
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/hwatu-capture-v2.XXXXXX")
@@ -56,9 +62,10 @@ trap cleanup EXIT HUP INT TERM
 # Build in a sibling directory, then atomically replace OUT. Failed runs never
 # leave a plausible mixed-generation evidence set behind.
 NEXT="$WORK/output"; mkdir "$NEXT"
-REF_PORT=$(pick_port); BUILD_PORT=$(pick_port)
+REF_PORT=$(pick_port); BUILD_PORT=$(pick_port); MOTION_PORT=$(pick_port)
 python3 -m http.server "$REF_PORT" --bind 127.0.0.1 --directory "$REF_DIR" >"$WORK/ref-server.log" 2>&1 & PIDS+=("$!")
 python3 -m http.server "$BUILD_PORT" --bind 127.0.0.1 --directory "$CHECKPOINT_ROOT" >"$WORK/build-server.log" 2>&1 & PIDS+=("$!")
+python3 -m http.server "$MOTION_PORT" --bind 127.0.0.1 --directory "$HERE" >"$WORK/motion-server.log" 2>&1 & PIDS+=("$!")
 for _ in $(seq 1 100); do
   curl -fs -o /dev/null "http://127.0.0.1:$REF_PORT/" 2>/dev/null \
     && curl -fs -o /dev/null "http://127.0.0.1:$BUILD_PORT/$(basename "$BOOKEND_DIR")/" 2>/dev/null && break
@@ -116,6 +123,10 @@ capture_checkpoint final "$FINAL_DIR"
 # proves this is a scrubbed timeline, not merely disabled animation. Take the
 # repeated 50% frame without advancing time and preserve every seek reply.
 for id in "$REF_ID" "$BUILD_ID"; do
+  hw goto --id "$id" "http://127.0.0.1:$MOTION_PORT/motion-fixture.html?session=$id" >/dev/null
+  hw wait-load --id "$id" --timeout-ms 30000 >/dev/null
+done
+for id in "$REF_ID" "$BUILD_ID"; do
   # Flush fixture timers/rAF once under virtual time so animations created by
   # startup JavaScript exist before inventory and seek.
   hw clock --id "$id" step 1000 >/dev/null
@@ -140,7 +151,11 @@ done
 
 # Give the session an obvious state chip independent of fixture markup. The
 # focus transition must preserve both this typed value and the scroll position.
-HANDOFF_JS='let e=document.querySelector("#hwatu-v2-handoff-state"); if(!e){e=document.createElement("input");e.id="hwatu-v2-handoff-state";e.value="preserved: exact session";Object.assign(e.style,{position:"fixed",top:"24px",right:"24px",zIndex:"2147483647",font:"700 24px monospace",padding:"12px",width:"390px"});document.body.append(e)}; return {value:e.value,x:scrollX,y:scrollY,url:location.href,title:document.title}'
+FINAL_URL="http://127.0.0.1:$BUILD_PORT/$(basename "$FINAL_DIR")/?capture=v2-handoff"
+hw goto --id "$BUILD_ID" "$FINAL_URL" >/dev/null
+hw wait-load --id "$BUILD_ID" --timeout-ms 30000 >/dev/null
+hw eval --id "$BUILD_ID" 'await document.fonts.ready; const m=Math.max(0,document.documentElement.scrollHeight-innerHeight); window.scrollTo(0,Math.round(m/2)); return scrollY' >/dev/null
+HANDOFF_JS='let e=document.querySelector("#hwatu-v2-handoff-state"); if(!e){e=document.createElement("input");e.id="hwatu-v2-handoff-state";e.value="checkout: ready for review";Object.assign(e.style,{position:"fixed",top:"24px",right:"24px",zIndex:"2147483647",font:"700 24px monospace",padding:"12px",width:"390px"});document.body.append(e)}; return {value:e.value,x:scrollX,y:scrollY,url:location.href,title:document.title}'
 hw list --json >"$NEXT/handoff-headless.json"
 hw eval --id "$BUILD_ID" "$HANDOFF_JS" >"$NEXT/handoff-state-before.json"
 hw shot --id "$BUILD_ID" "$NEXT/handoff-before.png" >/dev/null
@@ -150,13 +165,19 @@ hw list --json >"$NEXT/handoff-live.json"
 hw eval --id "$BUILD_ID" "$HANDOFF_JS" >"$NEXT/handoff-state-after.json"
 hw shot --id "$BUILD_ID" "$NEXT/handoff-after.png" >/dev/null
 
+if [ -n "$BOOKEND_SCORECARD" ]; then
+  cp -- "$BOOKEND_SCORECARD" "$NEXT/bookend-scorecard.json"
+  cp -- "$FINAL_SCORECARD" "$NEXT/final-scorecard.json"
+fi
+
 # Validate and assemble a path-relative manifest. Exact numeric values are read
 # from hwatu JSON rather than duplicated as presentation claims.
-python3 - "$NEXT" "$BOOKEND_DIR" "$FINAL_DIR" "$HWATU_BIN" "$WIDTH" "$HEIGHT" "$SCROLL_PERCENT" <<'PY'
+python3 - "$NEXT" "$BOOKEND_DIR" "$FINAL_DIR" "$HWATU_BIN" "$WIDTH" "$HEIGHT" "$SCROLL_PERCENT" "$BOOKEND_SCORECARD" <<'PY'
 import hashlib, json, pathlib, struct, sys
 root = pathlib.Path(sys.argv[1])
 bookend, final, binary = sys.argv[2:5]
 width, height, scroll = map(int, sys.argv[5:8])
+has_scorecards = bool(sys.argv[8])
 expected = [
  "bookend-reference.png", "bookend-build.png", "bookend-heatmap.png", "bookend-diff.json",
  "final-reference.png", "final-build.png", "final-heatmap.png", "final-diff.json",
@@ -187,6 +208,11 @@ values = {}
 for p in json_files:
     try: values[p.name] = json.loads(p.read_text())
     except Exception as e: raise SystemExit(f"invalid JSON {p.name}: {e}")
+if has_scorecards:
+    for label in ("bookend", "final"):
+        cells = values[f"{label}-scorecard.json"].get("static", [])
+        if len(cells) < 2 or not all(isinstance(c.get("pct"), (int, float)) for c in cells):
+            raise SystemExit(f"invalid responsive matrix in {label}-scorecard.json")
 for label in ("bookend", "final"):
     d = values[f"{label}-diff.json"]
     if not isinstance(d.get("match_percent"), (int,float)) or not 0 <= d["match_percent"] <= 100:
@@ -205,24 +231,68 @@ for side in ("reference", "build"):
 if values["handoff-state-before.json"] != values["handoff-state-after.json"]:
     raise SystemExit("focus changed the page URL/scroll/title state")
 def sha(p): return hashlib.sha256(p.read_bytes()).hexdigest()
-assets = {p.name: {"bytes": p.stat().st_size, "sha256": sha(p)} for p in sorted(root.iterdir()) if p.is_file()}
+files = {p.name: {"bytes": p.stat().st_size, "sha256": sha(p)} for p in sorted(root.iterdir()) if p.is_file()}
+assets = {
+ "reference": "final-reference.png",
+ "builds": ["bookend-build.png", "final-build.png"],
+ "heatmaps": ["bookend-heatmap.png", "final-heatmap.png"],
+ "motionReferenceFrames": [
+   "motion-reference-0.png", "motion-reference-50-a.png",
+   "motion-reference-80.png", "motion-reference-50-b.png",
+ ],
+ "motionBuildFrames": [
+   "motion-build-0.png", "motion-build-50-a.png",
+   "motion-build-80.png", "motion-build-50-b.png",
+ ],
+ "handoff": "handoff-before.png", "handoffLive": "handoff-after.png",
+}
+motion_inventory = values["motion-build.json"]
+active = motion_inventory.get("animations", [])
+duration_ms = max((a.get("duration_ms", a.get("duration", 0)) or 0 for a in active), default=4000)
+if duration_ms < 10: duration_ms *= 1000
+easing = next((a.get("easing") for a in active if a.get("easing")), "cubic-bezier(0.25, 1, 0.5, 1)")
+handoff_state = values["handoff-state-before.json"]
+focus = values["handoff-focus.json"]
+if has_scorecards:
+    score_cells = {label: values[f"{label}-scorecard.json"]["static"] for label in ("bookend", "final")}
+    scores = [round(sum(c["pct"] for c in score_cells[label]) / len(score_cells[label]), 2)
+              for label in ("bookend", "final")]
+    score_scope = {"kind": "responsive-matrix", "cells": [len(score_cells["bookend"]), len(score_cells["final"])],
+                   "scorecards": ["bookend-scorecard.json", "final-scorecard.json"]}
+else:
+    scores = [values["bookend-diff.json"]["match_percent"], values["final-diff.json"]["match_percent"]]
+    score_scope = {"kind": "single-viewport", "cells": [1, 1], "viewport": {"width": width, "height": height, "scroll": scroll}}
 manifest = {
  "schema": "hwatu.demo.capture-v2/1", "viewport": {"width": width, "height": height},
  "scroll_percent": scroll, "fixtures": {"reference": "scripts/demo/reference", "bookend": pathlib.Path(bookend).name, "final": pathlib.Path(final).name},
  "commands": {"binary": binary, "capture": ["shot", "diff --tolerance 0 --heatmap", "motion", "seek --progress 0.5", "focus", "list --json"]},
  "measurements": {"bookend": values["bookend-diff.json"], "final": values["final-diff.json"]},
- "motion": {"reference": values["motion-reference.json"], "build": values["motion-build.json"], "progress": 0.5,
+ "scores": scores, "scoreScope": score_scope,
+ "motion": {"reference": values["motion-reference.json"], "build": motion_inventory, "durationMs": duration_ms,
+            "easing": easing, "progress": [0, 0.5, 0.8, 0.5],
             "repeat": "byte-identical", "hashes": {s: sha(root/f"motion-{s}-50-a.png") for s in ("reference","build")}},
- "handoff": {"session_id": values["handoff-state-before.json"], "state_preserved": True},
+ "handoff": {"sessionId": focus["id"], "value": handoff_state["value"],
+             "scrollY": handoff_state["y"], "url": handoff_state["url"],
+             "title": handoff_state["title"], "statePreserved": True},
+ "proof": "real WebKit · measured frame by frame",
  "assets": assets,
+ "files": files,
 }
-(root / "evidence-manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+payload = json.dumps(manifest, indent=2, sort_keys=True) + "\n"
+(root / "evidence-manifest.json").write_text(payload)
+(root / "manifest.json").write_text(payload)
 PY
 
 # Replace old evidence only after complete validation, preserving OUT itself.
 find "$OUT" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
 cp -a "$NEXT"/. "$OUT"/
-jq -e '.schema == "hwatu.demo.capture-v2/1" and (.assets|length >= 20)' "$OUT/evidence-manifest.json" >/dev/null
+jq -e '.schema == "hwatu.demo.capture-v2/1"
+  and (.files|length >= 20)
+  and (.scores|length == 2)
+  and (.assets.builds|length == 2)
+  and (.assets.motionReferenceFrames|length == 4)
+  and (.assets.motionBuildFrames|length == 4)
+  and .handoff.statePreserved' "$OUT/evidence-manifest.json" >/dev/null
 printf 'capture-v2 evidence: %s\n' "$OUT"
 printf 'bookend match: %s%%\n' "$(jq -r .measurements.bookend.match_percent "$OUT/evidence-manifest.json")"
 printf 'final match:    %s%%\n' "$(jq -r .measurements.final.match_percent "$OUT/evidence-manifest.json")"
