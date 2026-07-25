@@ -103,8 +103,12 @@ PROMPT="Use scripts/demo/record/stage-hwatu.sh to compare APP $APP with REF $REF
 # typing animation), submit, then start rolling so the first frame shows the
 # prompt delivered to Jcode.
 "$STAGE" paste "$PROMPT"
-sleep 0.2
+# The TUI drains a large paste over several frames; give it time to hold the
+# complete text before submitting, then let the submit render so frame one
+# already shows the prompt sent rather than sitting in the input box.
+sleep 1.0
 "$STAGE" key enter
+sleep 1.5
 
 "$STAGE" rec "$OUT"
 T0=$(date +%s.%N)
