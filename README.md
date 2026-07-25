@@ -88,11 +88,22 @@ hwatu localhost:3000       # open a window like you open a terminal
 
 ## Why not Playwright or chrome-devtools-mcp?
 
-Cold daemon = fast call, but not accurate, unoptimized for agent harness loops (current method)
-Warm daemon = unnecessary resource allocation on browser (chromium), entire browser stealing your focus
-Hwatu = "the coldest warm daemon," interruptible reactively, optimized for agent loops
+There are three ways to give an agent a browser, and two of them are bad at it:
 
-Playwright and chrome-devtools-mcp are, at their core, automation
+| | How it runs | What it costs the agent loop |
+|---|---|---|
+| **Cold library** (Playwright, launched per task) | engine starts when the script does | fast to *call*, slow to *run*: every check pays engine startup; no state survives between tasks |
+| **Warm browser** (your Chrome + devtools-mcp) | a full human browser stays resident | resources spent on tabs, extensions, sync, UI you never render — and its windows steal *your* focus while you work |
+| **hwatu** | **"the coldest warm daemon"** — engine hot, everything else absent | 8 ms spawns, 35 ms verified checks, invisible until *you* ask to see it (`focus`), interruptible in both directions |
+
+hwatu keeps exactly what makes checks instant (engine, GPU context,
+compiled adblock, a prewarmed WebView) and nothing that serves a
+human sitting in front of it. That's why it idles warm without a tab
+bar, and why a kept-warm Playwright server driven the same way still
+costs 341 ms per client to hwatu's 39 ([benchmarks](docs/benchmarks.md)).
+
+The second difference is what comes back. Playwright and
+chrome-devtools-mcp are, at their core, automation
 APIs: they let an agent *drive* a browser, then hand back raw
 screenshots and DOM for the agent to eyeball.
 
