@@ -344,12 +344,12 @@ fn setup(args: &[String]) -> i32 {
     }
     let outcome = if undo {
         remove_registration(&path).map(|r| match r {
-            Removed::Removed => "removed hwatu registration".to_string(),
-            Removed::RemovedFileToo => {
+            RemovalOutcome::Registration => "removed hwatu registration".to_string(),
+            RemovalOutcome::ConfigFile => {
                 "removed hwatu registration and now-empty config file".to_string()
             }
-            Removed::NotConfigured => "hwatu was not registered; nothing to do".to_string(),
-            Removed::FileMissing => "config file does not exist; nothing to do".to_string(),
+            RemovalOutcome::NotConfigured => "hwatu was not registered; nothing to do".to_string(),
+            RemovalOutcome::FileMissing => "config file does not exist; nothing to do".to_string(),
         })
     } else {
         apply_registration(&path, &hwatu_command()).map(|a| match a {
@@ -498,9 +498,9 @@ pub fn apply_registration(path: &Path, command: &str) -> Result<Applied, String>
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub enum Removed {
-    Removed,
-    RemovedFileToo,
+pub enum RemovalOutcome {
+    Registration,
+    ConfigFile,
     NotConfigured,
     FileMissing,
 }
@@ -509,10 +509,12 @@ pub enum Removed {
 /// becomes empty, deletes the file only if the whole document becomes
 /// an empty object, and then removes the parent dir only when empty
 /// and clearly config-related (`.cursor`, `hwatu`).
-pub fn remove_registration(path: &Path) -> Result<Removed, String> {
+pub fn remove_registration(path: &Path) -> Result<RemovalOutcome, String> {
     let raw = match fs::read_to_string(path) {
         Ok(r) => r,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Removed::FileMissing),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(RemovalOutcome::FileMissing);
+        }
         Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
     };
     let mut root: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
@@ -533,7 +535,7 @@ pub fn remove_registration(path: &Path) -> Result<Removed, String> {
         .map(|s| s.remove("hwatu").is_some())
         .unwrap_or(false);
     if !removed {
-        return Ok(Removed::NotConfigured);
+        return Ok(RemovalOutcome::NotConfigured);
     }
     let servers_empty = obj
         .get("mcpServers")
@@ -551,10 +553,10 @@ pub fn remove_registration(path: &Path) -> Result<Removed, String> {
                 let _ = fs::remove_dir(parent); // fails (kept) when non-empty
             }
         }
-        return Ok(Removed::RemovedFileToo);
+        return Ok(RemovalOutcome::ConfigFile);
     }
     write_json(path, &root)?;
-    Ok(Removed::Removed)
+    Ok(RemovalOutcome::Registration)
 }
 
 fn write_json(path: &Path, value: &serde_json::Value) -> Result<(), String> {
@@ -800,7 +802,10 @@ mod tests {
             r#"{"theme":"dark","mcpServers":{"other":{"command":"x"},"hwatu":{"command":"hwatu","args":["mcp"]}}}"#,
         )
         .unwrap();
-        assert_eq!(remove_registration(&path).unwrap(), Removed::Removed);
+        assert_eq!(
+            remove_registration(&path).unwrap(),
+            RemovalOutcome::Registration
+        );
         let json = read_json(&path);
         assert_eq!(json["theme"], "dark");
         assert_eq!(json["mcpServers"]["other"]["command"], "x");
@@ -813,7 +818,10 @@ mod tests {
         let dir = tmpdir("undo-full");
         let path = dir.join(".cursor").join("mcp.json");
         apply_registration(&path, "hwatu").unwrap();
-        assert_eq!(remove_registration(&path).unwrap(), Removed::RemovedFileToo);
+        assert_eq!(
+            remove_registration(&path).unwrap(),
+            RemovalOutcome::ConfigFile
+        );
         assert!(!path.exists());
         assert!(!dir.join(".cursor").exists(), "empty created dir removed");
         fs::remove_dir_all(&dir).unwrap();
@@ -827,7 +835,10 @@ mod tests {
         fs::write(cursor.join("settings.json"), "{}").unwrap();
         let path = cursor.join("mcp.json");
         apply_registration(&path, "hwatu").unwrap();
-        assert_eq!(remove_registration(&path).unwrap(), Removed::RemovedFileToo);
+        assert_eq!(
+            remove_registration(&path).unwrap(),
+            RemovalOutcome::ConfigFile
+        );
         assert!(cursor.exists(), "dir with unrelated files preserved");
         assert!(cursor.join("settings.json").exists());
         fs::remove_dir_all(&dir).unwrap();
@@ -837,11 +848,14 @@ mod tests {
     fn undo_noops_gracefully() {
         let dir = tmpdir("undo-noop");
         let missing = dir.join("mcp.json");
-        assert_eq!(remove_registration(&missing).unwrap(), Removed::FileMissing);
+        assert_eq!(
+            remove_registration(&missing).unwrap(),
+            RemovalOutcome::FileMissing
+        );
         fs::write(&missing, r#"{"mcpServers":{"other":{}}}"#).unwrap();
         assert_eq!(
             remove_registration(&missing).unwrap(),
-            Removed::NotConfigured
+            RemovalOutcome::NotConfigured
         );
         // Unrelated registration untouched.
         assert_eq!(

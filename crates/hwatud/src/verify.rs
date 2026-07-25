@@ -209,7 +209,8 @@ pub fn resize(daemon: &Rc<Daemon>, id: Option<u64>, w: i32, h: i32, reply: Reply
     let daemon2 = daemon.clone();
     let win_id = win.id;
     win.resize_viewport(w, h);
-    const MEASURE: &str = "return { css_width: innerWidth, css_height: innerHeight, dpr: window.devicePixelRatio }";
+    const MEASURE: &str =
+        "return { css_width: innerWidth, css_height: innerHeight, dpr: window.devicePixelRatio }";
     automation::eval(
         daemon,
         Some(win_id),
@@ -218,8 +219,12 @@ pub fn resize(daemon: &Rc<Daemon>, id: Option<u64>, w: i32, h: i32, reply: Reply
         Box::new(move |resp| {
             let measured = match &resp {
                 Response::Ok { value: Some(v), .. } => (
-                    v.get("css_width").and_then(|x| x.as_i64()).map(|x| x as i32),
-                    v.get("css_height").and_then(|x| x.as_i64()).map(|x| x as i32),
+                    v.get("css_width")
+                        .and_then(|x| x.as_i64())
+                        .map(|x| x as i32),
+                    v.get("css_height")
+                        .and_then(|x| x.as_i64())
+                        .map(|x| x as i32),
                 ),
                 _ => (None, None),
             };
