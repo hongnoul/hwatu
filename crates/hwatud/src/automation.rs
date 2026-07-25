@@ -666,6 +666,13 @@ fn wire_load_stage(
 /// everything at once. Collapses the agent inner loop (open,
 /// wait-load, eval, shot, close: five process spawns and five socket
 /// roundtrips) into a single request.
+///
+/// Windows are recycled: instead of closing, a finished check parks
+/// its window in `daemon.check_pool` and the next check navigates it.
+/// A fresh WebKit window pays window construction plus a cold render
+/// pipeline (~80 ms to a settled load on a local fixture); navigating
+/// a warm window pays ~15 ms. Pooled windows are blanked, their
+/// console buffers drained, and closed after [`CHECK_POOL_TTL`] idle.
 #[allow(clippy::too_many_arguments)]
 pub fn check(
     daemon: &Rc<Daemon>,
@@ -683,20 +690,12 @@ pub fn check(
     let started = std::time::Instant::now();
 
     let url = crate::ipc_server::normalize_url(url);
-    let info = BrowserWindow::open(daemon, Some(url), None, OpenMode::Headless);
-    let win_id = info.id;
+    let (win, view) = match acquire_check_window(daemon, &url) {
+        Ok(pair) => pair,
+        Err(resp) => return reply.send(*resp),
+    };
+    let win_id = win.id;
     daemon.last_target.replace(Some(win_id));
-    let win = match daemon.windows.borrow().get(&win_id).cloned() {
-        Some(w) => w,
-        None => return reply.send(Response::err("check: window vanished at open")),
-    };
-    let view = match live_view(&win) {
-        Ok(v) => v,
-        Err(resp) => {
-            close_check_window(daemon, win_id, keep);
-            return reply.send(*resp);
-        }
-    };
 
     // One deadline covers the whole pass. The timeout also closes the
     // window (unless `keep`): a check that timed out must not leak a
@@ -723,7 +722,6 @@ pub fn check(
         let load_ms = started.elapsed().as_millis() as u64;
         let result = Rc::new(RefCell::new(serde_json::json!({
             "url": view.uri().map(|u| u.to_string()).unwrap_or_default(),
-            "title": view.title().map(|t| t.to_string()).unwrap_or_default(),
             "load_ms": load_ms,
         })));
         if keep {
@@ -738,18 +736,25 @@ pub fn check(
             let result = result.clone();
             let reply = reply.clone();
             let pending = pending.clone();
+            let view = view.clone();
             Rc::new(move || {
                 pending.set(pending.get() - 1);
                 if pending.get() > 0 || reply.is_spent() {
                     return;
                 }
+                // Title last, not at load time: WebKit publishes the
+                // title property a beat after the load settles, and on
+                // a recycled window the stale value would win the race.
+                result.borrow_mut()["title"] =
+                    serde_json::json!(view.title().map(|t| t.to_string()).unwrap_or_default());
                 // Console capture last: it sees everything the load
-                // and the eval produced.
+                // and the eval produced. Drained (`clear`) because the
+                // window may be recycled for the next check.
                 let console = daemon
                     .windows
                     .borrow()
                     .get(&win_id)
-                    .map(|w| w.console.read(false, Some(20)))
+                    .map(|w| w.console.read(true, Some(20)))
                     .unwrap_or_default();
                 {
                     let mut r = result.borrow_mut();
@@ -758,7 +763,7 @@ pub fn check(
                     }
                     r["total_ms"] = serde_json::json!(started.elapsed().as_millis() as u64);
                 }
-                close_check_window(&daemon, win_id, keep);
+                release_check_window(&daemon, win_id, keep);
                 reply.send(Response::value(result.borrow().clone()));
             })
         };
@@ -805,6 +810,97 @@ pub fn check(
             );
         }
         finish(); // release the base hold; replies if nothing else is pending
+    });
+}
+
+/// How long an idle pooled check window is kept before being closed.
+const CHECK_POOL_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Cap on parked check windows; beyond this, released windows close.
+const CHECK_POOL_MAX: usize = 2;
+
+/// Get a window for a check: reuse a parked one (navigate it to
+/// `url`) or open a fresh headless window. Returns the window with
+/// the navigation already requested, exactly like `BrowserWindow::open`.
+fn acquire_check_window(
+    daemon: &Rc<Daemon>,
+    url: &str,
+) -> Result<(Rc<BrowserWindow>, webkit6::WebView), Box<Response>> {
+    loop {
+        let Some((id, _token)) = daemon.check_pool.borrow_mut().pop() else {
+            break;
+        };
+        let Some(win) = daemon.windows.borrow().get(&id).cloned() else {
+            continue; // closed behind our back (e.g. `hwatu close`)
+        };
+        let Ok(view) = live_view(&win) else {
+            close_check_window(daemon, id, false);
+            continue;
+        };
+        win.mark_nav_pending(url);
+        view.load_uri(url);
+        return Ok((win, view));
+    }
+    let info = BrowserWindow::open(daemon, Some(url.to_string()), None, OpenMode::Headless);
+    let win = daemon
+        .windows
+        .borrow()
+        .get(&info.id)
+        .cloned()
+        .ok_or_else(|| Box::new(Response::err("check: window vanished at open")))?;
+    let view = live_view(&win).map_err(|resp| {
+        close_check_window(daemon, info.id, false);
+        resp
+    })?;
+    Ok((win, view))
+}
+
+/// Return a check's window: park it for reuse (blanked, console
+/// drained) or close it when the pool is full / the caller kept it.
+/// A TTL timer closes parked windows that nobody reuses, so a burst
+/// of checks does not permanently raise the daemon's memory floor.
+fn release_check_window(daemon: &Rc<Daemon>, id: u64, keep: bool) {
+    if keep {
+        return;
+    }
+    let Some(win) = daemon.windows.borrow().get(&id).cloned() else {
+        return;
+    };
+    if daemon.check_pool.borrow().len() >= CHECK_POOL_MAX {
+        close_check_window(daemon, id, false);
+        return;
+    }
+    // Blank the page so the parked window drops the page's memory and
+    // can't keep running its scripts/timers between checks.
+    win.console.read(true, None); // drain
+    if let Some(view) = win.live_webview() {
+        win.mark_nav_pending("about:blank");
+        view.load_uri("about:blank");
+    }
+    // Unique token: a TTL timer only closes the park it was armed for.
+    let token = {
+        let mut n = daemon.next_id.borrow_mut();
+        let t = *n;
+        *n += 1;
+        t
+    };
+    daemon.check_pool.borrow_mut().push((id, token));
+    let daemon = daemon.clone();
+    glib::timeout_add_local_once(CHECK_POOL_TTL, move || {
+        // Only close if still parked from THIS park (not reacquired).
+        let parked = {
+            let mut pool = daemon.check_pool.borrow_mut();
+            match pool.iter().position(|&p| p == (id, token)) {
+                Some(i) => {
+                    pool.remove(i);
+                    true
+                }
+                None => false,
+            }
+        };
+        if parked {
+            close_check_window(&daemon, id, false);
+        }
     });
 }
 
@@ -1077,6 +1173,7 @@ pub fn expect(
     contains: Option<String>,
     text: Option<String>,
     absent: bool,
+    visible: bool,
     timeout_ms: Option<u64>,
     reply: Reply,
 ) {
@@ -1087,8 +1184,39 @@ const nth = {nth};
 const contains = {contains};
 const wantText = {want_text};
 const absent = {absent};
+const wantVisible = {visible};
 const deadline = {deadline};
 const started = hwatuNow();
+
+// Visibility that a bare existence check misses: zero-sized boxes,
+// display/visibility/opacity hiding (on the element or an ancestor,
+// getComputedStyle inherits the first two, opacity needs the walk),
+// and occlusion, where the element renders but another element is on
+// top (wrong z-index, forgotten overlay). elementFromPoint at the
+// center answers occlusion directly; a hit inside the subtree (or a
+// label/shadow host relationship) counts as visible.
+function whyInvisible(el) {{
+  for (let n = el; n instanceof Element; n = n.parentElement) {{
+    const st = getComputedStyle(n);
+    if (st.display === 'none') return n === el ? 'display:none' : 'display:none on ancestor <' + n.tagName.toLowerCase() + '>';
+    if (st.visibility === 'hidden' || st.visibility === 'collapse') return 'visibility:' + st.visibility + (n === el ? '' : ' on ancestor <' + n.tagName.toLowerCase() + '>');
+    if (st.opacity === '0') return n === el ? 'opacity:0' : 'opacity:0 on ancestor <' + n.tagName.toLowerCase() + '>';
+  }}
+  const r = el.getBoundingClientRect();
+  if (r.width === 0 || r.height === 0) return `zero-size box (${{r.width}}x${{r.height}})`;
+  const cx = Math.min(Math.max(r.left + r.width / 2, 0), innerWidth - 1);
+  const cy = Math.min(Math.max(r.top + r.height / 2, 0), innerHeight - 1);
+  if (r.bottom < 0 || r.top > innerHeight || r.right < 0 || r.left > innerWidth)
+    return `outside viewport (rect ${{Math.round(r.left)}},${{Math.round(r.top)}} ${{Math.round(r.width)}}x${{Math.round(r.height)}})`;
+  const hit = document.elementFromPoint(cx, cy);
+  if (hit && (hit === el || el.contains(hit) || hit.contains(el)
+      || (hit.shadowRoot && hit.shadowRoot.contains(el))
+      || (hit instanceof HTMLLabelElement && hit.control === el)))
+    return null;
+  if (!hit) return 'center point hits nothing (elementFromPoint returned null)';
+  const t = (hit.textContent || '').trim().slice(0, 60);
+  return `covered by <${{hit.tagName.toLowerCase()}}${{hit.id ? '#' + hit.id : ''}}> ${{JSON.stringify(t)}}`;
+}}
 
 function check() {{
   let els = [...document.querySelectorAll(selector)];
@@ -1108,6 +1236,10 @@ function check() {{
   const actual = (el.textContent || '').trim();
   if (wantText !== null && !actual.includes(wantText)) {{
     return {{ ok: false, why: `text mismatch: expected to contain ${{JSON.stringify(wantText)}}, got ${{JSON.stringify(actual.slice(0, 200))}}` }};
+  }}
+  if (wantVisible) {{
+    const why = whyInvisible(el);
+    if (why) return {{ ok: false, why: `element matched but is not visible: ${{why}}` }};
   }}
   return {{
     ok: true,
@@ -1131,6 +1263,7 @@ return result;"#,
         contains = json_or_null(contains.as_deref()),
         want_text = json_or_null(text.as_deref()),
         absent = absent,
+        visible = visible,
         deadline = deadline,
     );
     // The page-side loop owns the deadline; give the eval transport a

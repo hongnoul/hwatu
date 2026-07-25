@@ -118,7 +118,7 @@ hwatu close 3
 | `challenge` | `id?`, `wait?`, `timeout_ms?` | detect CAPTCHA/anti-bot UI; optionally wait for manual/user resolution |
 | `scroll` | `id?`, `selector?`, `nth?`, `contains?`, `to_y?`, `by_pages?` | scroll and report where it landed |
 | `snapshot` | `id?` | token-cheap page state: url, title, text, indexed interactables |
-| `expect` | `id?`, `selector`, `nth?`, `contains?`, `text?`, `absent?`, `timeout_ms?` | assert page state, polling until it holds (default 5 s); failure names what WAS found |
+| `expect` | `id?`, `selector`, `nth?`, `contains?`, `text?`, `absent?`, `visible?`, `timeout_ms?` | assert page state, polling until it holds (default 5 s); failure names what WAS found. `visible` additionally requires a real rendered element: nonzero box, no display/visibility/opacity hiding (self or ancestor), in viewport, and not covered by another element (occlusion via elementFromPoint); failure names the exact cause, e.g. what covers it |
 | `click` | `id?`, `selector?`, `nth?`, `contains?`, `ref?` | click an element (real pointer events), reports what it hit |
 | `type` | `id?`, `selector?`/`ref?`, `text`, `clear?`, `enter?` | fill input/textarea/select/contenteditable |
 | `console` | `id?`, `clear?`, `limit?` | read the console/error/network capture buffer |

@@ -355,6 +355,13 @@ pub enum Request {
         /// Assert the selector matches nothing instead.
         #[serde(default)]
         absent: bool,
+        /// Require the matched element to be actually visible: nonzero
+        /// box, not display:none/visibility:hidden/opacity:0, and not
+        /// covered by another element (elementFromPoint at its center
+        /// resolves inside it). Catches rendered-but-invisible UI that
+        /// a bare existence check false-passes.
+        #[serde(default)]
+        visible: bool,
         /// Poll deadline (default 5000 ms; 0 = a single check).
         #[serde(default)]
         timeout_ms: Option<u64>,

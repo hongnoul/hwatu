@@ -200,6 +200,29 @@ async function hwatuWarmVerify(url, shotPath) {
   return now() - t0;
 }
 
+/** The composite command: the whole pass in ONE process spawn and ONE
+ * socket roundtrip. `until`: "settled" (full load, Playwright's
+ * waitUntil:"load" peer) or "dom" (DOMContentLoaded, Playwright's
+ * waitUntil:"domcontentloaded" peer). */
+async function hwatuCheck(url, shotPath, until) {
+  const t0 = now();
+  const args = ["check", url, "--eval", "document.title", "--until", until];
+  if (shotPath) args.push(`--shot=${shotPath}`);
+  await hwatu(...args);
+  return now() - t0;
+}
+
+/** Composite over the raw socket: the floor for a persistent client
+ * (jcode backend, `hwatu mcp`). */
+async function hwatuCheckSock(url, shotPath, until) {
+  const t0 = now();
+  await hwatuSock({
+    cmd: "check", url, eval: "document.title", until,
+    ...(shotPath ? { shot_path: shotPath } : {}),
+  });
+  return now() - t0;
+}
+
 /** Same loop over the raw socket (no CLI process per step). */
 async function hwatuWarmVerifySock(url, shotPath) {
   const t0 = now();
@@ -225,11 +248,11 @@ async function pwColdVerify(chromium, url, shotPath) {
   return now() - t0;
 }
 
-async function pwWarmVerify(browser, url, shotPath) {
+async function pwWarmVerify(browser, url, shotPath, waitUntil = "load") {
   const t0 = now();
   const context = await browser.newContext();
   const page = await context.newPage();
-  await page.goto(url, { waitUntil: "load" });
+  await page.goto(url, { waitUntil });
   await page.title();
   if (shotPath) await page.screenshot({ path: shotPath });
   await context.close();
@@ -301,21 +324,38 @@ await new Promise((r) => setTimeout(r, 500));
   await pwWarmVerify(browser, url, shot("w1"));
 
   const h = [], hs = [], hd = [], p = [], pd = [], ho = [], po = [];
+  const hc = [], hcs = [], hcd = [], hcsd = [], pdm = [];
   for (let i = 0; i < RUNS; i++) ho.push(await attempt(() => hwatuOpenLoaded(url)));
   for (let i = 0; i < RUNS; i++) po.push(await attempt(() => pwOpenLoaded(browser, url)));
   for (let i = 0; i < RUNS; i++) h.push(await attempt(() => hwatuWarmVerify(url, shot("hw"))));
   for (let i = 0; i < RUNS; i++) hs.push(await attempt(() => hwatuWarmVerifySock(url, shot("hs"))));
   for (let i = 0; i < RUNS; i++) hd.push(await attempt(() => hwatuWarmVerifySock(url, null)));
+  for (let i = 0; i < RUNS; i++) hc.push(await attempt(() => hwatuCheck(url, shot("hk"), "settled")));
+  for (let i = 0; i < RUNS; i++) hcs.push(await attempt(() => hwatuCheckSock(url, shot("hks"), "settled")));
+  for (let i = 0; i < RUNS; i++) hcd.push(await attempt(() => hwatuCheck(url, null, "dom")));
+  for (let i = 0; i < RUNS; i++) hcsd.push(await attempt(() => hwatuCheckSock(url, null, "dom")));
   for (let i = 0; i < RUNS; i++) p.push(await attempt(() => pwWarmVerify(browser, url, shot("pw"))));
   for (let i = 0; i < RUNS; i++) pd.push(await attempt(() => pwWarmVerify(browser, url, null)));
-  results.warm = { hwatu_open: ho, playwright_open: po, hwatu_cli: h, hwatu_socket: hs, hwatu_socket_noshot: hd, playwright: p, playwright_noshot: pd };
+  for (let i = 0; i < RUNS; i++) pdm.push(await attempt(() => pwWarmVerify(browser, url, null, "domcontentloaded")));
+  results.warm = {
+    hwatu_open: ho, playwright_open: po, hwatu_cli: h, hwatu_socket: hs,
+    hwatu_socket_noshot: hd, playwright: p, playwright_noshot: pd,
+    hwatu_check_cli: hc, hwatu_check_socket: hcs,
+    hwatu_check_dom_noshot_cli: hcd, hwatu_check_dom_noshot_socket: hcsd,
+    playwright_dcl_noshot: pdm,
+  };
   console.log(`open loaded   hwatu (socket):     ${fmt(ho)}`);
   console.log(`open loaded   playwright:         ${fmt(po)}`);
-  console.log(`warm verify   hwatu (CLI):        ${fmt(h)}`);
-  console.log(`warm verify   hwatu (socket):     ${fmt(hs)}`);
+  console.log(`warm verify   hwatu (5-cmd CLI):  ${fmt(h)}`);
+  console.log(`warm verify   hwatu (5-cmd sock): ${fmt(hs)}`);
   console.log(`warm verify   hwatu (sock,noshot):${fmt(hd)}`);
+  console.log(`warm verify   hwatu check (CLI):  ${fmt(hc)}`);
+  console.log(`warm verify   hwatu check (sock): ${fmt(hcs)}`);
   console.log(`warm verify   playwright:         ${fmt(p)}`);
   console.log(`warm verify   playwright (noshot):${fmt(pd)}`);
+  console.log(`dom verify    hwatu check --until dom (CLI, noshot):  ${fmt(hcd)}`);
+  console.log(`dom verify    hwatu check --until dom (sock, noshot): ${fmt(hcsd)}`);
+  console.log(`dom verify    playwright dcl (noshot):                ${fmt(pdm)}`);
 
   // -- 3. page-state payload -------------------------------------------
   const open = await hwatu("--headless", "--json", url);

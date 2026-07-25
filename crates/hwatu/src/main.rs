@@ -262,6 +262,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
     let mut heatmap: Option<String> = None;
     let mut expect_text: Option<String> = None;
     let mut absent = false;
+    let mut visible = false;
     let mut until: Option<LoadStage> = None;
     let mut eval_js: Option<String> = None;
     let mut shot = false;
@@ -395,6 +396,8 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             );
         } else if arg == "--absent" {
             absent = true;
+        } else if arg == "--visible" {
+            visible = true;
         } else if arg == "--until" {
             let v = it.next().ok_or("usage: --until (committed|dom|settled)")?;
             until = Some(LoadStage::parse(v).ok_or("usage: --until (committed|dom|settled)")?);
@@ -565,7 +568,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 .get(1)
                 .ok_or(
                     "usage: hwatu expect [--id <id>] <selector> [--contains <filter>] \
-                     [--text <substring>] [--absent] [--nth <n>] [--timeout-ms <ms>]",
+                     [--text <substring>] [--absent] [--visible] [--nth <n>] [--timeout-ms <ms>]",
                 )?
                 .to_string();
             Ok(Request::Expect {
@@ -575,6 +578,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 contains,
                 text: expect_text,
                 absent,
+                visible,
                 timeout_ms,
             })
         }
@@ -752,7 +756,7 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--foc
     | upload [--id <id>] <selector> <path> \
 | scroll [--id <id>] [<selector> [nth]] [--contains <text>] [--to-y <px>] [--by <pages>] \
 | snapshot [--id <id>] \
-| expect [--id <id>] <selector> [--contains <filter>] [--text <substring>] [--absent] [--nth <n>] [--timeout-ms <ms>] \
+| expect [--id <id>] <selector> [--contains <filter>] [--text <substring>] [--absent] [--visible] [--nth <n>] [--timeout-ms <ms>] \
 | click [--id <id>] (<selector> [nth] [--contains <text>] | --ref <n>) \
 | type [--id <id>] (<selector> | --ref <n>) <text> [--enter] [--no-clear] \
 | console [--id <id>] [--clear] [--limit <n>] \

@@ -54,6 +54,12 @@ pub struct Daemon {
     /// and none is focused, so an agent that opened or drove a window
     /// can keep addressing it without repeating `id`.
     pub last_target: RefCell<Option<u64>>,
+    /// Idle headless windows kept for reuse by `hwatu check`, so
+    /// back-to-back checks navigate a warm window instead of paying
+    /// window construction + prewarm-refill per check. Entries carry
+    /// a park token so a TTL timer from an earlier park of the same
+    /// window cannot close a later park.
+    pub check_pool: RefCell<Vec<(u64, u64)>>,
     /// Debounce timer for crash-resilience session snapshots.
     session_save_timer: RefCell<Option<glib::SourceId>>,
 }
@@ -69,6 +75,7 @@ impl Daemon {
             prompt_memory: prompts::Memory::default(),
             keymap: keys::Keymap::load(),
             last_target: RefCell::new(None),
+            check_pool: RefCell::new(Vec::new()),
             session_save_timer: RefCell::new(None),
         })
     }

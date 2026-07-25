@@ -151,10 +151,11 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
             contains,
             text,
             absent,
+            visible,
             timeout_ms,
         } => {
             return automation::expect(
-                daemon, id, selector, nth, contains, text, absent, timeout_ms, reply,
+                daemon, id, selector, nth, contains, text, absent, visible, timeout_ms, reply,
             );
         }
         Request::Click {
