@@ -6,12 +6,12 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![CI](https://github.com/hongnoul/hwatu/actions/workflows/ci.yml/badge.svg)](https://github.com/hongnoul/hwatu/actions/workflows/ci.yml)
 
-**Fast, interruptible verification browser for coding agents.**
+**Fastest interruptible verification browser for coding agents.**
 
 </div>
 
 - **STOP your agent claiming "pixel-perfect." Make it prove 97.49%.**
-- **STOP paying 5 tool calls per page check. `hwatu check` is one call, ~35 ms — and as a warm service it beats warm-server Playwright ~9x.**
+- **STOP paying 5 tool calls per page check. `hwatu check` is one call, ~35 ms (beats warm-server Playwright ~9x).**
 - **STOP browser windows stealing your focus. Headless by default, you keep typing.**
 - **STOP shipping 170 MB of Chromium. One static binary + your distro's webkitgtk.**
 
