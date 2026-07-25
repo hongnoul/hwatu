@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Why hwatu's browser windows spawn in 13 ms: anatomy of a warm WebKitGTK daemon. Where the milliseconds go, and mostly, where they don't."
+    />
+    <link
+      rel="canonical"
+      href="https://hongnoul.github.io/hwatu/blog/13ms-window-spawn.html"
+    />
+    <meta
+      property="og:title"
+      content="Why hwatu's browser windows spawn in 13 ms"
+    />
+    <meta
+      property="og:description"
+      content="Anatomy of a warm WebKitGTK daemon: the emacsclient split, the prewarm pool, and headless as a window property."
+    />
+    <meta property="og:type" content="article" />
+    <meta
+      property="og:url"
+      content="https://hongnoul.github.io/hwatu/blog/13ms-window-spawn.html"
+    />
+    <meta
+      property="og:image"
+      content="https://hongnoul.github.io/hwatu/assets/boar.svg"
+    />
+    <link rel="icon" type="image/svg+xml" href="../assets/boar.svg" />
+    <title>Why hwatu's browser windows spawn in 13 ms</title>
+    <style>
+      /* Mono, monochrome, minimal. Matches ../index.html. */
+      :root {
+        --ink: #111;
+        --muted: #666;
+        --faint: #999;
+        --rule: #ccc;
+        --wash: #f4f4f4;
+        --bg: #fff;
+        --radius: 8px;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      body {
+        font-family: ui-monospace, "JetBrains Mono", SFMono-Regular, Menlo,
+          Consolas, monospace;
+        color: var(--ink);
+        background: var(--bg);
+        line-height: 1.65;
+        font-size: 16px;
+        -webkit-font-smoothing: antialiased;
+      }
+      main {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 0 1.5rem 6rem;
+      }
+      a {
+        color: var(--ink);
+      }
+      a:hover {
+        color: var(--muted);
+      }
+      header.site {
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+        padding: 1.25rem 0 0;
+        font-size: 0.9rem;
+        color: var(--faint);
+      }
+      header.site img {
+        width: 28px;
+        height: auto;
+        border-radius: 3px;
+      }
+      article h1 {
+        font-size: 1.8rem;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+        line-height: 1.25;
+        margin: 2.5rem 0 0.25rem;
+      }
+      .byline {
+        color: var(--muted);
+        font-size: 0.85rem;
+        margin: 0 0 2rem;
+      }
+      h2 {
+        font-size: 1.15rem;
+        border-bottom: 1px solid var(--rule);
+        padding-bottom: 0.4rem;
+        margin-top: 3rem;
+      }
+      pre {
+        background: var(--wash);
+        border: 1px solid var(--rule);
+        border-radius: var(--radius);
+        padding: 1rem;
+        overflow-x: auto;
+        font-size: 0.85rem;
+        line-height: 1.6;
+      }
+      code {
+        font-family: inherit;
+      }
+      p code,
+      li code {
+        background: var(--wash);
+        border-radius: 4px;
+        padding: 0.05rem 0.35rem;
+        font-size: 0.9em;
+      }
+      ol,
+      ul {
+        padding-left: 1.4rem;
+      }
+      li {
+        margin: 0.35rem 0;
+      }
+      em {
+        font-style: italic;
+      }
+      .muted {
+        color: var(--muted);
+      }
+      footer {
+        margin-top: 5rem;
+        padding-top: 1rem;
+        border-top: 1px solid var(--rule);
+        color: var(--faint);
+        font-size: 0.85rem;
+        text-align: center;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header class="site">
+        <a href="../index.html"
+          ><img
+            src="../assets/boar.svg"
+            alt="Hanafuda July card: bush clover with boar"
+        /></a>
+        <a href="../index.html">hwatu</a>
+        <span>· blog</span>
+      </header>
+
+      <article>
+        <h1>Why hwatu's browser windows spawn in 13&nbsp;ms</h1>
+        <p class="byline">2026-07-25 · anatomy of a warm WebKitGTK daemon</p>
+
+        <p>
+          hwatu is a verification browser for AI coding agents: a daemon that
+          renders real pages with WebKitGTK and answers questions about them
+          (pixel diffs, animation numbers, console errors) over a Unix socket.
+          Its windows spawn in 13 ms median, and a full verification pass
+          (open a page headless, wait for load, eval JS, screenshot, close) is
+          one command and ~35 ms. This post is about where those milliseconds
+          go and, mostly, where they don't.
+        </p>
+
+        <h2>The split</h2>
+        <p>
+          hwatu is two binaries, split the way emacs/emacsclient or
+          wezterm/wezterm-cli are:
+        </p>
+        <ul>
+          <li>
+            <code>hwatud</code>, the daemon: a single-threaded GTK4
+            application that owns WebKitGTK 6, every window, and all state.
+            1.1 MB.
+          </li>
+          <li>
+            <code>hwatu</code>, the client: 624 KB, no GTK linkage at all. It
+            connects to <code>$XDG_RUNTIME_DIR/hwatu.sock</code>, writes one
+            line of JSON, reads one line back, and exits.
+          </li>
+        </ul>
+        <p>
+          The protocol is deliberately primitive: one request per connection,
+          newline-delimited JSON, no sessions, no WebSocket, no client
+          library. That primitiveness is a feature twice over. It makes the
+          client process nearly free (fork, connect, one roundtrip), and it
+          makes the browser drivable from anything that can write to a
+          socket, which for AI agents means the invocation cost is a few
+          tokens, not a schema.
+        </p>
+
+        <h2>Where browser startup time actually lives</h2>
+        <p>
+          Launch a browser engine cold and you pay for: process spawn,
+          library loading (WebKitGTK maps ~300 MB of shared libraries), the
+          network process, the sandbox setup (bwrap, dbus proxies), GPU
+          context creation, and the first WebView's web process. On my
+          machine that's 181-407 ms before a window can exist.
+        </p>
+        <p>
+          The entire trick of hwatu is that this cost is paid exactly once,
+          at daemon start, and never again. Everything after that is
+          bookkeeping.
+        </p>
+
+        <h2>The prewarm pool</h2>
+        <p>
+          The daemon keeps exactly one spare WebView, built during idle time
+          via <code>glib::idle_add_local_once</code>. Crucially it's not just
+          constructed, it's <em>deep-warmed</em>: the pool loads
+          <code>about:blank</code> into it, which forces WebKit to realize
+          the web process and the GPU compositor path while nobody is
+          waiting. Without that, the first paint of a new window would still
+          pay pipeline setup.
+        </p>
+        <p>Opening a window is then:</p>
+        <ol>
+          <li>Take the warm view; queue warming the next one.</li>
+          <li><code>stop_loading()</code> on it unconditionally.</li>
+          <li>
+            Wrap it in a GtkWindow, register the id, start the real
+            navigation.
+          </li>
+        </ol>
+        <p>
+          Step 2 earns its comment in the source. A view adopted mid-warm has
+          a pending <code>about:blank</code> load whose Started/Finished
+          signals are indistinguishable from a real navigation's. Left alone,
+          the stale load's Finished can satisfy a later
+          <code>wait_load</code> before the real page has committed, and the
+          caller's <code>eval</code> results get destroyed by the real commit
+          moments later. Warm pools create time-travel bugs; you have to
+          cancel the past explicitly.
+        </p>
+        <p>
+          Result, measured over 20 runs (<code>scripts/bench-spawn.sh</code>,
+          which fails if the median exceeds a budget): 13 ms median for a
+          focused window, 14 ms headless, 8 ms best case. Headless is
+          <em>steadier</em> (p90 15 ms vs 35 ms) because there's no
+          compositor activation request in the path, no window manager in the
+          timing at all.
+        </p>
+
+        <h2>Headless as a window property</h2>
+        <p>
+          In every mainstream tool, headless is a launch flag: decide at
+          startup, live with it. In hwatu it's a property of an individual
+          window, because of how the windows are made. A headless window is
+          <em>realized</em>, the xdg_toplevel exists, but never
+          <em>mapped</em>, the compositor never shows it. WebKit won't lay
+          out a zero-size view, so hwatu pushes a manual allocation at the
+          requested viewport and the page renders normally, GPU-composited,
+          screenshot-able, just invisible.
+        </p>
+        <p>
+          <code>hwatu focus &lt;id&gt;</code> later maps that same window
+          into the user's tiling WM: same cookies, same scroll position, same
+          half-filled form. This is the hand-off flow the whole design
+          serves: an agent works invisibly, hits a CAPTCHA or a judgment
+          call, and hands the live session to a human for ten seconds.
+          Launch-time-headless architectures cannot do this at any price, the
+          offscreen target has no window to map.
+        </p>
+
+        <h2>Making the whole check one roundtrip</h2>
+        <p>
+          Fast spawns weren't enough. An agent's verify loop (open, wait,
+          eval, screenshot, close) as five CLI calls cost ~103 ms, most of it
+          process spawns and socket roundtrips. <code>hwatu check</code> runs
+          the whole sequence daemon-side: one client, one JSON reply carrying
+          title, eval result, screenshot path, console errors, and timings.
+          Finished check windows don't die, they <em>park</em>: blanked,
+          console drained, 60-second TTL, max two, and the next check
+          navigates a parked window instead of building one. That took the
+          pass to 39 ms via CLI, 35 ms over a held socket.
+        </p>
+        <p>
+          For calibration: the same pass through Playwright's best case
+          (warm, in-process CDP) is 82 ms. Shaped the way shell-driven agents
+          actually run, a fresh client each check against a kept-warm browser
+          server, Playwright pays 341 ms, almost all Node startup and
+          WebSocket connect. hwatu's whole design is being that warm service.
+          Fairness requires saying Playwright wins cold start (190 vs 435 ms)
+          and memory, and headless-shell Chromium is not the sluggish giant
+          folklore claims. Full methodology and every caveat:
+          <a
+            href="https://github.com/hongnoul/hwatu/blob/main/docs/benchmarks.md"
+            >docs/benchmarks.md</a
+          >
+          in the repo.
+        </p>
+        <p>
+          The lesson generalizes past browsers: if a tool is invoked far more
+          often than it's started, make it a daemon, keep the expensive state
+          alive, and make the client so dumb it can't be slow.
+        </p>
+        <p>
+          hwatu is AGPL-3.0-licensed Rust, Linux/WebKitGTK 6:
+          <a href="https://github.com/hongnoul/hwatu"
+            >github.com/hongnoul/hwatu</a
+          >
+        </p>
+      </article>
+
+      <footer>
+        <a href="https://github.com/hongnoul/hwatu">github.com/hongnoul/hwatu</a>
+        · AGPL-3.0 license
+        <br />
+        Boar card by
+        <a href="https://commons.wikimedia.org/wiki/File:Hanafuda_July_Tane.svg"
+          >Louie Mantia</a
+        >
+        ·
+        <a href="https://creativecommons.org/licenses/by-sa/4.0/"
+          >CC BY-SA 4.0</a
+        >
+      </footer>
+    </main>
+  </body>
+</html>
