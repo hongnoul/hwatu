@@ -14,7 +14,7 @@
 - **STOP browser windows stealing your focus. Headless by default, you keep typing.**
 - **STOP shipping 170 MB of Chromium. One static binary + your distro's webkitgtk.**
 
-<a href="https://github.com/hongnoul/hwatu/releases/download/readme-assets/demo-v2.mp4"><img src="https://github.com/hongnoul/hwatu/releases/download/readme-assets/demo-v2.webp" alt="hwatu demo: measure pixel parity, pin both pages to exact animation frames, and reveal an offscreen browser with its state preserved" width="800"></a>
+<a href="https://github.com/hongnoul/hwatu/releases/download/readme-assets/demo-v2.mp4"><img src="https://github.com/hongnoul/hwatu/releases/download/readme-assets/demo-v2.webp" alt="hwatu real workflow: open headless, verify the rendered page, then hand the live browser to a human" width="800"></a>
 
 ## Documents
 
