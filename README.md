@@ -3,7 +3,7 @@
 # hwatu
 
 [![Latest Release](https://badgen.net/github/release/hongnoul/hwatu?icon=github)](https://github.com/hongnoul/hwatu/releases)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
+[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![CI](https://github.com/hongnoul/hwatu/actions/workflows/ci.yml/badge.svg)](https://github.com/hongnoul/hwatu/actions/workflows/ci.yml)
 
 **Make your agent harness loop instantly faster by giving it real eyes**
@@ -204,4 +204,4 @@ summary of easing/velocity/keyframes.
 
 ---
 
-MIT licensed. Linux. WebKitGTK 6.
+AGPL-3.0 licensed. Linux. WebKitGTK 6.

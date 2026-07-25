@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 Justin Hong
 //! Unix-socket IPC server, integrated with the GLib main loop so all
 //! window work happens on the GTK main thread.
 

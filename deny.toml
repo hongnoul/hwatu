@@ -21,6 +21,13 @@ allow = [
   "Unicode-3.0",
   "Zlib",
 ]
+# The workspace itself is AGPL-3.0-only; keep the copyleft allowance
+# scoped to our own crates so third-party copyleft still trips CI.
+exceptions = [
+  { name = "hwatu", allow = ["AGPL-3.0-only"] },
+  { name = "hwatud", allow = ["AGPL-3.0-only"] },
+  { name = "hwatu-ipc", allow = ["AGPL-3.0-only"] },
+]
 
 [bans]
 multiple-versions = "warn"

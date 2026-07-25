@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 Justin Hong
 //! Cross-client onboarding: `hwatu doctor`, `hwatu setup`, `hwatu demo`.
 //!
 //! Design rules:

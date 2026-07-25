@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 Justin Hong
 //! The bar: hwatu's single piece of chrome, a one-line vim-style
 //! command bar overlaid at the bottom of the window, hidden until
 //! summoned.

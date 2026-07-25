@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 Justin Hong
 //! `hwatu update`: self-update from GitHub releases.
 //!
 //! Downloads the latest release tarball for this platform, verifies the

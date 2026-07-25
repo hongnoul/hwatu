@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 Justin Hong
 //! Bisect helper: find converted rules WebKit's compiler rejects.
 //! Usage: cargo run --example compile_check -p hwatud -- <list.txt>...
 //! Not shipped; developer tool for filter-converter debugging.

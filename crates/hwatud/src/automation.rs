@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 Justin Hong
 //! Agent automation IPC: eval / navigate / screenshot / wait_load.
 //!
 //! These requests are asynchronous on the GTK main loop (JS evaluation,

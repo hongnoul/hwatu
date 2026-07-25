@@ -6,7 +6,7 @@ members = ["crates/ipc", "crates/hwatud", "crates/hwatu"]
 version = "0.6.0"
 edition = "2021"
 rust-version = "1.85"
-license = "MIT"
+license = "AGPL-3.0-only"
 repository = "https://github.com/hongnoul/hwatu"
 
 [profile.release]

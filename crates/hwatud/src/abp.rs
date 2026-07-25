@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 Justin Hong
 //! Adblock Plus filter syntax -> WebKit content-blocker JSON.
 //!
 //! WebKit (like Safari) evaluates content-blocker rules natively in the

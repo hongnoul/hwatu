@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 Justin Hong
 //! Virtual time for a page: `hwatu clock pause|resume|step|set`.
 //!
 //! [`crate::verify::seek`] pins declarative animation (CSS/WAAPI)

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 Justin Hong
 //! Search-engine fallback: bar/CLI input that doesn't look like a URL
 //! becomes a web search.
 //!

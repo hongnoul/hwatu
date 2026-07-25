@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 Justin Hong
 //! Wire protocol between the `hana` client and the `hwatud` daemon.
 //!
 //! Newline-delimited JSON over a Unix domain socket. One request per

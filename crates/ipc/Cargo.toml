@@ -5,8 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-# Distributed as release tarballs, not on crates.io.
-publish = false
+description = "IPC protocol types for hwatu, the visual verification browser for AI coding agents"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

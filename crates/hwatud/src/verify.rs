@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 Justin Hong
 //! Visual-verification primitives: motion spec, animation seek, pixel diff.
 //!
 //! These are the "measuring instrument" half of agent verification.

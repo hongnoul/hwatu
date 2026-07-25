@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 Justin Hong
 //! Embed the git commit into the binary so the daemon can report its
 //! build over IPC (`ping`), letting the CLI flag daemon/client skew.
 use std::process::Command;

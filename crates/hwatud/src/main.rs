@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 Justin Hong
 //! hwatud: the hwatu browser daemon.
 //!
 //! Owns the WebKit engine, a prewarmed WebView pool, and all browser

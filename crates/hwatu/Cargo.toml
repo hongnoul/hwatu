@@ -5,9 +5,11 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-# Distributed as release tarballs, not on crates.io.
-publish = false
+description = "Visual verification browser for AI coding agents: real WebKit rendering, ~13ms window spawn, MCP server"
+keywords = ["browser", "webkit", "agent", "mcp", "verification"]
+categories = ["web-programming", "development-tools", "command-line-utilities"]
+readme = "../../README.md"
 
 [dependencies]
-hwatu-ipc = { path = "../ipc" }
+hwatu-ipc = { path = "../ipc", version = "0.6.0" }
 serde_json = "1"

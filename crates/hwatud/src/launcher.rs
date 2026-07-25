@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 Justin Hong
 //! The launcher page: what a bare `hwatu` shows instead of a blank
 //! window. A generated HTML page listing the live keybindings (from
 //! the resolved [`crate::keys::Keymap`], so `keys.conf` overrides

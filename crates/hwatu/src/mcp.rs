@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 Justin Hong
 //! `hwatu mcp`: a Model Context Protocol server over stdio.
 //!
 //! A thin translation layer: MCP `tools/call` requests become the same

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 Justin Hong
 //! `hwatu motion --observe`: model the motion the page will not admit to.
 //!
 //! [`crate::verify::motion`] reads *declared* animation (CSS/WAAPI/

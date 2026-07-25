@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Copyright (c) 2026 Justin Hong
 //! Built-in content blocking, on by default.
 //!
 //! Filters are compiled by WebKit's content-extension engine
