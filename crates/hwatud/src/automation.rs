@@ -266,7 +266,22 @@ pub fn eval_with(
     // effects and a runtime SyntaxError cannot be mistaken for one.
     let probe = format!("return typeof (async () => (\n{trimmed}\n));");
     let expr = format!("return (\n{trimmed}\n);");
-    let body = js;
+    // Multi-statement scripts without an explicit `return` used to
+    // resolve to null, which agents read as "the script broke". Real
+    // REPLs answer with the completion value of the last statement;
+    // indirect eval gives exactly those semantics, so route return-less
+    // bodies through it. Bodies using `return` or `await` keep the
+    // plain async-function-body path: `return` because the author
+    // already chose the value, `await` because eval code is not an
+    // async context and would turn it into a SyntaxError.
+    let body = if js.contains("return") || js.contains("await") {
+        js
+    } else {
+        format!(
+            "return (0, eval)({});",
+            serde_json::to_string(&js).expect("string serializes")
+        )
+    };
     let view2 = view.clone();
     let cancellable2 = cancellable.clone();
     view.call_async_javascript_function(
@@ -725,7 +740,7 @@ if (selector !== null) {{
   let els = [...document.querySelectorAll(selector)];
   const total = els.length;
   if (contains !== null)
-    els = els.filter(e => (e.textContent || '').includes(contains));
+    els = els.filter(e => ((e.textContent || '') + ' ' + (e.value || '')).includes(contains));
   const el = els[nth];
   if (!el) {{
     const filt = contains === null ? '' : ` (${{els.length}} after contains filter)`;
@@ -803,7 +818,7 @@ function check() {{
   let els = [...document.querySelectorAll(selector)];
   const total = els.length;
   if (contains !== null)
-    els = els.filter(e => (e.textContent || '').includes(contains));
+    els = els.filter(e => ((e.textContent || '') + ' ' + (e.value || '')).includes(contains));
   const el = els[nth];
   if (absent) {{
     if (els.length === 0) return {{ ok: true }};
@@ -941,7 +956,7 @@ if (refIdx !== null) {{
   let els = [...document.querySelectorAll(selector)];
   const total = els.length;
   if (contains !== null)
-    els = els.filter(e => (e.textContent || '').includes(contains));
+    els = els.filter(e => ((e.textContent || '') + ' ' + (e.value || '')).includes(contains));
   el = els[nth];
   if (!el) {{
     const filt = contains === null ? '' : ` (${{els.length}} after contains filter)`;
