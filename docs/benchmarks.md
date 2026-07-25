@@ -1,13 +1,24 @@
 # Benchmarks
 
+**The headline: a full verification pass — open a page, wait for the
+load, read the DOM, screenshot, clean up — costs 24 ms through hwatu
+and 83 ms through Playwright, on the same machine, same page, same
+clock. A DOM-only check is 19 ms vs 35 ms. And hwatu's side of that
+table pays a fresh process spawn per check while Playwright rides a
+warm in-process CDP connection: the bias runs against us and we win
+anyway.** Full data and every caveat in the
+[head-to-head section](#head-to-head-hwatu-vs-playwright--headless-chromium).
+
 Every number below was measured on a real run, not estimated. Rerun
 them yourself: the spawn benchmark is `scripts/bench-spawn.sh`, the
-rest are a few lines of shell against the release binaries.
+head-to-head is `scripts/bench-vs-playwright.mjs`, the rest are a few
+lines of shell against the release binaries.
 
 **Test rig:** i7-12650H laptop, 15 GiB RAM, Wayland (niri),
 WebKitGTK 2.52.5, hwatu built with `cargo build --release`.
-Measured 2026-07-19. Page under test: a local 40-card HTML fixture
-served by `python3 -m http.server` on loopback.
+Measured 2026-07-19, remeasured 2026-07-25 after the composite-check
+work. Page under test: a local 40-card HTML fixture served by
+`python3 -m http.server` on loopback.
 
 ## Window spawn latency
 

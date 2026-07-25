@@ -417,11 +417,13 @@ over 10 runs ([full data](benchmarks.md)):
 | `eval` | 2 ms |
 | `shot` (1024x768 PNG) | 15 ms |
 | `close` | 6 ms |
-| **total** | **87 ms** |
+| **total, 5 separate commands** | **87 ms** |
+| **total, one `hwatu check`** | **24-32 ms** |
 
-A full check with a screenshot costs under a tenth of a second; a
-DOM-only check (skip `shot`) is ~70 ms. `eval` at 2 ms is cheap
-enough to poll.
+A full check with a screenshot costs ~30 ms as one command (window
+recycling skips construction) — faster than the same pass through a
+warm Playwright connection (83 ms), through a fresh CLI process.
+`eval` at 2 ms is cheap enough to poll.
 
 `wait-load` (and `goto`, and `check`) default to the full settle:
 every subresource loaded. Real pages drag that out with slow images
@@ -581,7 +583,7 @@ keep your CI Playwright matrix.
 | | hwatu | Playwright (headless Chromium) | chrome-devtools-mcp | Percy / Chromatic / Applitools | ditto & site cloners | tterm & browser-in-IDE cockpits |
 |---|---|---|---|---|---|---|
 | Built for | agent inner loop on your machine | cross-browser E2E test suites | DevTools introspection for agents | CI visual regression gates | one-shot site→code generation | human watching an agent |
-| Pixel verification | `diff`: score + regions + heatmap, 87 ms warm pass | `toHaveScreenshot` baselines (test-suite shaped) | screenshots only | mature, but cloud round-trip, priced per shot | none — never renders its own output | none |
+| Pixel verification | `diff`: score + regions + heatmap, 24-32 ms warm pass | `toHaveScreenshot` baselines (test-suite shaped) | screenshots only | mature, but cloud round-trip, priced per shot | none — never renders its own output | none |
 | Animations | read as numbers (`motion`), pin mid-flight (`seek`) | disable or fast-forward to end state | raw CDP | disabled to avoid flakes | captured at generation, verified by eyeball | none |
 | Focus stealing at N agents | never — headless/background are window properties | headless: fine; headed: every window pops | fine headless | n/a (cloud) | n/a | its own pane |
 | Human hand-off mid-session | `focus <id>`: same live session becomes a real WM window | impossible headless; headed costs focus-steal always | none | none | n/a | human is already watching |

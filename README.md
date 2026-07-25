@@ -11,6 +11,7 @@
 </div>
 
 - **STOP your agent claiming "pixel-perfect." Make it prove 97.49%.**
+- **STOP paying 5 tool calls per page check. `hwatu check` is one call, 24 ms, 3x faster than Playwright.**
 - **STOP browser windows stealing your focus. Headless by default, you keep typing.**
 - **STOP shipping 170 MB of Chromium. One static binary + your distro's webkitgtk.**
 
@@ -117,8 +118,19 @@ hwatu diff --id 2 --other 1
 We ran this loop against a clone of stripe.com's landing page: an
 agent took it from **85.1% to 98.8% pixel match**. Reproduce it:
 [scripts/demo/](scripts/demo/). A full verification pass (open, load,
-eval, screenshot, close) is **87 ms median**
-([benchmarks](docs/benchmarks.md)).
+eval, screenshot, close) is **one command, one tool call, 24-32 ms
+median** — up to 40 screenshot-verified checks per second
+([benchmarks](docs/benchmarks.md)):
+
+```sh
+hwatu check localhost:5173 --eval 'document.title' --shot=/tmp/after.png
+# {"title":"My App","eval":"My App","shot":"/tmp/after.png",
+#  "console":[...],"load_ms":13,"total_ms":24}
+```
+
+The same pass through Playwright's warm, in-process CDP connection —
+its best case, against hwatu's worst (a fresh CLI process per check) —
+is 83 ms and five API calls.
 
 And when the agent hits a CAPTCHA or a judgment call, `hwatu focus`
 materializes its live session, cookies and state intact, in your
@@ -132,6 +144,8 @@ launch.
 
 | Capability | Playwright | chrome-devtools-mcp | hwatu |
 | --- | :---: | :---: | :---: |
+| Verify pass (load + eval + screenshot), warm | 83 ms | — | **24 ms** |
+| Tool calls per verify pass | 5 | 5 | **1** |
 | Pixel-diff score + regions + heatmap | 🟡 1 | ❌ | ✅ |
 | Animations as numbers, pinned mid-flight | ❌ 2 | 🟡 3 | ✅ |
 | Headless ↔ headed on a *live* session | ❌ | ❌ | ✅ |
@@ -152,10 +166,13 @@ summary of easing/velocity/keyframes.
 4 Fine headless; every headed window pops and takes focus.
 
 > Comparison reflects each project at the time of writing;
-> corrections are welcome. Honest caveats: raw warm latency vs
-> Playwright is a tie (83 vs 82 ms), hwatu renders WebKit not
-> Chromium (keep a Playwright matrix in CI for engine-specific
-> bugs), and it is Linux-only today. Full head-to-head data:
+> corrections are welcome. Honest caveats: Playwright still wins
+> cold start (176 vs 392 ms, paid once per boot) and memory; hwatu
+> renders WebKit not Chromium (keep a Playwright matrix in CI for
+> engine-specific bugs), and it is Linux-only today. Latency
+> methodology is stacked *against* hwatu: its numbers include a
+> fresh process spawn per check, Playwright's ride a warm in-process
+> CDP connection. Full head-to-head data:
 > [docs/benchmarks.md](docs/benchmarks.md).
 
 ---
