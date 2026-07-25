@@ -25,7 +25,7 @@ const SHOWN: &[Action] = &[
 
 /// The hanafuda boar card from the docs site, inlined at compile time:
 /// the launcher must render with no network and no disk.
-const BOAR_SVG: &str = include_str!("../../../docs/assets/boar.svg");
+const BOAR_SVG: &str = include_str!("../assets/boar.svg");
 
 /// Generated HTML for the launcher page.
 pub fn html(keymap: &Keymap) -> String {
