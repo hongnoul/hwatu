@@ -1,13 +1,13 @@
 # Benchmarks
 
-**The headline: hwatu ships warm.** A full verification pass — open a
-page, wait for the load, read the DOM, screenshot, clean up — is one
+**The headline: hwatu ships warm.** A full verification pass (open a
+page, wait for the load, read the DOM, screenshot, clean up) is one
 command and **35-39 ms** through hwatu, vs **82 ms** through a warm
 in-process Playwright connection, on the same machine, page, and
 clock. A DOM-only check is **21 ms vs 49 ms**. And when Playwright is
-used the way hwatu is used — a fresh client process talking to a
+used the way hwatu is used, a fresh client process talking to a
 kept-warm browser server, the shape every shell-driven agent actually
-has — its pass costs **341 ms**: hwatu's architecture is ~9x faster
+has, its pass costs **341 ms**: hwatu's architecture is ~9x faster
 at being a warm service, because being a warm service is the whole
 design. Full data and every caveat in the
 [head-to-head section](#head-to-head-hwatu-vs-playwright--headless-chromium).
@@ -160,7 +160,7 @@ The rows mean different things, so read them separately:
   still beats it 2x+, *through a fresh CLI process per call*.
 - **Warm service (341 ms)** is Playwright shaped like hwatu: engine
   kept warm in `launchServer()`, each check a fresh client that
-  connects and disconnects — which is what "keep Playwright warm"
+  connects and disconnects, which is what "keep Playwright warm"
   means for any shell-driven agent, CI step, or MCP tool that
   shells out. Node startup + WebSocket connect + remote context
   creation eat 300 ms before any browsing happens. hwatu's whole
@@ -168,7 +168,7 @@ The rows mean different things, so read them separately:
   ms, ~9x faster. Playwright is a library that must be *made* warm;
   hwatu is a daemon that cannot be cold (first client spawn
   autostarts it).
-- **Cold engine (190 vs 435 ms)** still goes to Playwright — paid
+- **Cold engine (190 vs 435 ms)** still goes to Playwright, paid
   once per boot on hwatu's side, once per script invocation for
   library-style Playwright use.
 

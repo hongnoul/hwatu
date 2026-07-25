@@ -1,8 +1,8 @@
 //! `hwatu motion --observe`: model the motion the page will not admit to.
 //!
 //! [`crate::verify::motion`] reads *declared* animation (CSS/WAAPI/
-//! CSSOM). Script-driven motion — a `requestAnimationFrame` loop
-//! integrating timestamp deltas, the classic marquee/physics pattern —
+//! CSSOM). Script-driven motion (a `requestAnimationFrame` loop
+//! integrating timestamp deltas, the classic marquee/physics pattern)
 //! is invisible to all of it. This module observes the live page and
 //! *fits models* instead of capturing frames:
 //!

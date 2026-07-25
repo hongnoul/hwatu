@@ -159,7 +159,7 @@ pub struct BrowserWindow {
     pub console: crate::console::Buffer,
 }
 
-/// `HWATU_WEBKIT_FEATURES=Ident:on,Other:off` — escape hatch for odd
+/// `HWATU_WEBKIT_FEATURES=Ident:on,Other:off`: escape hatch for odd
 /// hardware. hwatu used to force-enable the async/threaded scrolling
 /// features here, but forcing them breaks wheel scrolling outright on
 /// some driver stacks (notably NVIDIA + Wayland), so engine defaults
@@ -214,7 +214,7 @@ fn set_wayland_app_id(window: &gtk::Window, app_id: &str) {
 }
 
 /// Build a fully configured WebView. Called for the prewarm pool and as
-/// a fallback; all engine knobs live here — never on the spawn path.
+/// a fallback; all engine knobs live here, never on the spawn path.
 pub fn build_webview() -> webkit6::WebView {
     let view = webkit6::WebView::new();
     apply_view_settings(&view);
@@ -363,7 +363,7 @@ impl BrowserWindow {
 
     /// Open a window for a popup requested by the page (`window.open`,
     /// `target=_blank`). The new WebView must be built with
-    /// `related_view` so it shares the opener's web process —
+    /// `related_view` so it shares the opener's web process;
     /// `window.opener` and postMessage (OAuth flows) depend on it. The
     /// prewarmed pool can't serve this, so the view is built here.
     /// WebKit drives the navigation itself; loading anything manually
@@ -835,7 +835,7 @@ impl BrowserWindow {
         self.overlay.set_child(Some(&placeholder));
         // Dropping the WebView alone is not enough: WebKit keeps the web
         // process cached for reuse. State is already serialized, so kill
-        // the process outright; that is where the RAM comes back — unless
+        // the process outright; that is where the RAM comes back, unless
         // a related window (popup ↔ opener) still runs in that process.
         let shared = self
             .process_group

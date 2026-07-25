@@ -178,7 +178,7 @@ fn default_open_mode() -> OpenMode {
     ];
     // jcode tool subprocesses carry various JCODE_* vars (JCODE_SCRATCH_DIR,
     // JCODE_NON_INTERACTIVE, ...) but not always JCODE_SOCKET, so treat any
-    // JCODE_-prefixed var as an agent marker — except user-config knobs that
+    // JCODE_-prefixed var as an agent marker, except user-config knobs that
     // people export session-wide from .profile/environment.d (those would
     // make the whole desktop look like an agent and force every WM-keybind
     // launch headless).

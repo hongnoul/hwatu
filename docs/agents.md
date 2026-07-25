@@ -338,8 +338,8 @@ Without a seed, pages keep native `Math.random`.
 ### Observed motion: `hwatu motion --observe`
 
 `hwatu motion` reads the page's *declared* animation inventory
-(CSS/WAAPI/CSSOM). Script-driven motion — the rAF marquee, a canvas
-container repositioned by JS, a physics tween — is invisible to all
+(CSS/WAAPI/CSSOM). Script-driven motion (the rAF marquee, a canvas
+container repositioned by JS, a physics tween) is invisible to all
 of it. `--observe` closes the gap by watching the live page and
 **fitting models, not capturing frames**:
 
@@ -373,7 +373,7 @@ Sampling runs on the virtual clock, which is not an implementation
 detail but the reason this works at all: in headless windows native
 rAF **never ticks** (hidden pages get no rendering opportunities), so
 any real-time observer sees a frozen page. Clock-stepped sampling
-drives rAF itself with virtual timestamps — and is faster than real
+drives rAF itself with virtual timestamps, and is faster than real
 time (2.5 s of animation measured in about a second, plus the wrap
 hunt covering minutes of virtual time). The observation perturbs the
 page's timeline (time is stepped, then resumed), so run it before or
@@ -421,7 +421,7 @@ over 10 runs ([full data](benchmarks.md)):
 | **total, one `hwatu check`** | **35-39 ms** |
 
 A full check with a screenshot costs ~35-39 ms as one command
-(window recycling skips construction) — faster than the same pass
+(window recycling skips construction), faster than the same pass
 through a warm in-process Playwright connection (82 ms), and ~9x
 faster than warm-server Playwright driven the same service shape
 (341 ms).
@@ -442,12 +442,12 @@ hwatu focus $id    # window appears in their WM, session intact
 
 ## Window modes
 
-- **normal** — map + request focus. What a human asked for.
-- **background** — mapped, rendered, present in the WM layout, but
+- **normal**: map + request focus. What a human asked for.
+- **background**: mapped, rendered, present in the WM layout, but
   no activation request: focus stays where the user has it. Pair
   with `--app-id` and a WM rule to keep these off the current
   workspace entirely (e.g. sway `assign [app_id="agent"] workspace 9`).
-- **headless** — never mapped; invisible to the WM. The toplevel is
+- **headless**: never mapped; invisible to the WM. The toplevel is
   realized but not shown, with a synthetic 1024x768 allocation so
   pages lay out at a real viewport size. `eval`, `goto`, `upload`,
   and `shot` all work. Headless windows are excluded from crash-restore
@@ -585,9 +585,9 @@ keep your CI Playwright matrix.
 | | hwatu | Playwright (headless Chromium) | chrome-devtools-mcp | Percy / Chromatic / Applitools | ditto & site cloners | tterm & browser-in-IDE cockpits |
 |---|---|---|---|---|---|---|
 | Built for | agent inner loop on your machine | cross-browser E2E test suites | DevTools introspection for agents | CI visual regression gates | one-shot site→code generation | human watching an agent |
-| Pixel verification | `diff`: score + regions + heatmap, 35-39 ms warm pass | `toHaveScreenshot` baselines (test-suite shaped) | screenshots only | mature, but cloud round-trip, priced per shot | none — never renders its own output | none |
+| Pixel verification | `diff`: score + regions + heatmap, 35-39 ms warm pass | `toHaveScreenshot` baselines (test-suite shaped) | screenshots only | mature, but cloud round-trip, priced per shot | none (never renders its own output) | none |
 | Animations | read as numbers (`motion`), pin mid-flight (`seek`) | disable or fast-forward to end state | raw CDP | disabled to avoid flakes | captured at generation, verified by eyeball | none |
-| Focus stealing at N agents | never — headless/background are window properties | headless: fine; headed: every window pops | fine headless | n/a (cloud) | n/a | its own pane |
+| Focus stealing at N agents | never; headless/background are window properties | headless: fine; headed: every window pops | fine headless | n/a (cloud) | n/a | its own pane |
 | Human hand-off mid-session | `focus <id>`: same live session becomes a real WM window | impossible headless; headed costs focus-steal always | none | none | n/a | human is already watching |
 | CAPTCHA / needs-human | `challenge` detects + structured wait/resume | manual workarounds | none | n/a | out of scope | human solves in-pane |
 | Runtime deps | 1 MB binary + distro webkitgtk | Node + package + ~170 MB browser per version | Node + Chrome | SaaS account | Node + Playwright + service | full app |

@@ -203,7 +203,7 @@ fn main() -> glib::ExitCode {
     // only lever that reaches everything is GDK_SCALE + the X11
     // backend, exported before gtk::init(). On a clean X server
     // (Xvfb, typical CI X) the pin is exact; on Xwayland the server
-    // may impose its own base scale on top — resize()'s measure-and-
+    // may impose its own base scale on top; resize()'s measure-and-
     // correct loop still lands exact CSS-px viewports there, and the
     // reply always reports the dpr the page actually sees.
     if let Some(dpr) = hwatu_dpr() {
@@ -275,7 +275,7 @@ fn main() -> glib::ExitCode {
     app.run_with_args::<&str>(&[])
 }
 
-/// `HWATU_DPR=<positive integer>` — pin devicePixelRatio for exact-DPR
+/// `HWATU_DPR=<positive integer>`: pin devicePixelRatio for exact-DPR
 /// verification matrices. Unset, empty, zero, negative, and
 /// non-integer values mean "session default". Fractional pins are not
 /// accepted: GDK_SCALE is integer-only, so honesty beats rounding.

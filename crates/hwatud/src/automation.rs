@@ -1038,7 +1038,7 @@ fn write_png(
 
 /// Set a file input's files from a path on disk. The bytes travel
 /// into the page as base64 inside a JS snippet, are decoded to a
-/// `File`, and assigned through `DataTransfer` — the same technique
+/// `File`, and assigned through `DataTransfer`, the same technique
 /// every automation harness uses, since engines allow assigning
 /// `input.files` but not opening the OS picker programmatically.
 pub fn upload(

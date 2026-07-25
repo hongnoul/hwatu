@@ -19,10 +19,10 @@
 
 ## Documents
 
-- [Agent guide](docs/agents.md) — protocol, primitives, verification loops
-- [Human guide](docs/human.md) — the tiling-WM browser side
-- [Benchmarks](docs/benchmarks.md) — every number, measured, with methodology
-- [Roadmap](docs/roadmap.md) — plan of record, priorities, non-goals
+- [Agent guide](docs/agents.md): protocol, primitives, verification loops
+- [Human guide](docs/human.md): the tiling-WM browser side
+- [Benchmarks](docs/benchmarks.md): every number, measured, with methodology
+- [Roadmap](docs/roadmap.md): plan of record, priorities, non-goals
 
 ## Quick Start
 
@@ -93,8 +93,8 @@ There are three ways to give an agent a browser, and two of them are bad at it:
 | | How it runs | What it costs the agent loop |
 |---|---|---|
 | **Cold library** (Playwright, launched per task) | engine starts when the script does | fast to *call*, slow to *run*: every check pays engine startup; no state survives between tasks |
-| **Warm browser** (your Chrome + devtools-mcp) | a full human browser stays resident | resources spent on tabs, extensions, sync, UI you never render — and its windows steal *your* focus while you work |
-| **hwatu** | **"the coldest warm daemon"** — engine hot, everything else absent | 8 ms spawns, 35 ms verified checks, invisible until *you* ask to see it (`focus`), interruptible in both directions |
+| **Warm browser** (your Chrome + devtools-mcp) | a full human browser stays resident | resources spent on tabs, extensions, sync, UI you never render, and its windows steal *your* focus while you work |
+| **hwatu** | **"the coldest warm daemon"**: engine hot, everything else absent | 8 ms spawns, 35 ms verified checks, invisible until *you* ask to see it (`focus`), interruptible in both directions |
 
 hwatu keeps exactly what makes checks instant (engine, GPU context,
 compiled adblock, a prewarmed WebView) and nothing that serves a
@@ -142,8 +142,8 @@ hwatu check localhost:5173 --eval 'document.title' --shot=/tmp/after.png
 #  "console":[...],"load_ms":13,"total_ms":35}
 ```
 
-The same pass through Playwright's warm in-process CDP connection —
-its best case — is 82 ms and five API calls. Shaped like hwatu
+The same pass through Playwright's warm in-process CDP connection,
+its best case, is 82 ms and five API calls. Shaped like hwatu
 actually runs (a fresh client each check against a kept-warm
 engine), Playwright's pass is **341 ms vs hwatu's 39**: hwatu is a
 warm daemon by design, Playwright is a library you have to keep warm
@@ -161,7 +161,7 @@ The speed follows from the same design decision: hwatu is a **warm
 daemon**, not a library you launch. The engine, the GPU context, the
 compiled adblock ruleset, and a prewarmed WebView outlive every
 task, so a check starts from a hot pipeline instead of a cold
-process. Playwright is a library and cold by nature — keeping it
+process. Playwright is a library and cold by nature. Keeping it
 warm is something *you* build (a server process, connection
 management, context pooling); hwatu ships warm as the default and
 the only mode.
@@ -172,8 +172,8 @@ the only mode.
 
 | Capability | Playwright | chrome-devtools-mcp | hwatu |
 | --- | :---: | :---: | :---: |
-| Verify pass (load + eval + screenshot), warm in-process | 82 ms | — | **35 ms** |
-| Verify pass as a warm *service* (fresh client per check) | 341 ms | — | **39 ms** |
+| Verify pass (load + eval + screenshot), warm in-process | 82 ms | n/a | **35 ms** |
+| Verify pass as a warm *service* (fresh client per check) | 341 ms | n/a | **39 ms** |
 | Tool calls per verify pass | 5 | 5 | **1** |
 | Pixel-diff score + regions + heatmap | 🟡 1 | ❌ | ✅ |
 | Animations as numbers, pinned mid-flight | ❌ 2 | 🟡 3 | ✅ |

@@ -650,7 +650,7 @@ fn demo(args: &[String]) -> i32 {
     }
 
     if focus {
-        println!("demo: handoff — window {id} left open and focused; close with: hwatu close {id}");
+        println!("demo: handoff: window {id} left open and focused; close with: hwatu close {id}");
     } else {
         match send(&Request::Close { id }) {
             Ok(Response::Ok { .. }) => println!("demo: cleaned up window {id}"),

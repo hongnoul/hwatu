@@ -186,7 +186,7 @@ return {{ animations: anims.length, touched, resumed: resume }};"#,
 /// Resize a window so the *page* sees `w x h` CSS pixels.
 ///
 /// GTK widget allocation is in *logical* pixels and WebKitGTK maps
-/// logical px 1:1 onto CSS px — the surface scale only converts
+/// logical px 1:1 onto CSS px; the surface scale only converts
 /// logical to *device* px. An earlier version multiplied the request
 /// by the page's devicePixelRatio, double-applying the scale: under
 /// dpr 2 a `resize 360x800` landed the page at 720 CSS px (the

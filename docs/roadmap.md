@@ -42,7 +42,7 @@ human for a minute.
 
 ## Priorities
 
-### P0 — adoption surface
+### P0: adoption surface
 
 1. **MCP server.** ~~hwatu's best features currently have one consumer
    (jcode).~~ **Shipped:** `hwatu mcp` serves MCP over stdio (no SDK,
@@ -61,7 +61,7 @@ human for a minute.
    for open/wait/eval/shot/close); both shipped 2026-07-25 with
    numbers in [benchmarks.md](benchmarks.md).
 
-### P1 — the agent-facing "UI" (snapshot quality)
+### P1: the agent-facing "UI" (snapshot quality)
 
 For an agent, the JSON snapshot *is* the interface. Polish it the way
 a human browser polishes rendering:
@@ -84,16 +84,16 @@ a human browser polishes rendering:
    piece for animation verification in headless windows, where rAF
    and IntersectionObserver never fire natively.
 
-### P2 — concurrency and isolation
+### P2: concurrency and isolation
 
 6. **Profiles.** `--profile <name>`: separate cookie jars/site data
    per profile, so parallel agents (or one agent testing two accounts)
    don't share sessions. One daemon, N isolated headless sessions.
 7. **Display-free operation.** hwatud currently needs a Wayland/X
    session even for headless windows. Promoted to the generative-UI
-   workstream as [G4](#g4--display-free-operation-promoted-from-p2-item-7).
+   workstream as [G4](#g4-display-free-operation-promoted-from-p2-item-7).
 
-### P2 — closing the general-automation gaps that matter
+### P2: closing the general-automation gaps that matter
 
 Measured against Playwright, hwatu's real coverage gaps are trusted
 input, cross-origin iframes, and network visibility. Two of those are
@@ -104,7 +104,7 @@ worth native features; the rest stay non-goals.
    (hosted payment fields: Stripe Elements, Braintree, Adyen) are
    unreachable from the top frame's JS world entirely. Synthesizing
    input at the GTK/GDK level instead makes events trusted AND lands
-   them on whatever is under the pointer, iframes included — one
+   them on whatever is under the pointer, iframes included. One
    feature closes both gaps. Plan: `click --trusted` / `type
    --trusted` (opt-in; the JS path stays default for its landing
    reports), coordinates resolved from the same selector/ref
@@ -122,7 +122,7 @@ worth native features; the rest stay non-goals.
    stubbing is ever needed for deterministic offline checks, a tiny
    built-in proxy is the honest mechanism, and it stays optional.
 
-### P3 — the hand-off loop, productized
+### P3: the hand-off loop, productized
 
 10. **Generalized hand-off.** `challenge` already detects CAPTCHAs;
    generalize the pattern: agent flags "needs human" with a reason,
@@ -134,7 +134,7 @@ worth native features; the rest stay non-goals.
 Thesis (2026-07): agents increasingly *generate* UI per-request
 instead of only consuming deployed pages. That future needs a
 substrate where every render is instant and machine-verifiable
-before a human sees it — which is hwatu's existing pipeline pointed
+before a human sees it, which is hwatu's existing pipeline pointed
 at a new input source. The wedge (agent verification of the existing
 web) funds the platform (render substrate for generated UI).
 
@@ -149,7 +149,7 @@ session, and each carries the test plan that session must run before
 claiming it done. These are bulky: budget more time for validation
 than implementation.
 
-### G1 — `hwatu render`: documents without a server
+### G1. `hwatu render`: documents without a server
 
 `hwatu render [--stdin | <file.html>] [--base <url>]` loads markup
 directly (`webkit_web_view_load_html`), composing with every existing
@@ -166,12 +166,12 @@ Test plan:
   restore must NOT resurrect rendered windows; window recycling works
   across render→open→render sequences on one pooled window.
 - Size: 1 MB+ generated documents through the socket (protocol is
-  line-delimited JSON — measure, and cap with a clear error).
+  line-delimited JSON; measure, and cap with a clear error).
 - Bench: `render`→shot median vs `check` on a loopback URL serving
   identical markup; render should win (no HTTP). Add to
   benchmarks.md with the usual measured-not-estimated numbers.
 
-### G2 — push IPC: subscriptions on a persistent connection
+### G2. push IPC: subscriptions on a persistent connection
 
 The protocol note says "one request per connection for the MVP"; this
 item retires the MVP. A client may hold the socket open and
@@ -192,12 +192,12 @@ Test plan:
   subscriber crash mid-stream leaks nothing (assert with daemon
   window/timer counts); events during a window discard/restore cycle;
   slow-reader backpressure (daemon must never block the GTK loop on a
-  stuck client socket — write-buffer overflow drops the client, not
+  stuck client socket: write-buffer overflow drops the client, not
   the daemon).
 - Soak: 1-hour run with a subscriber attached and a check loop
   hammering; RSS/PSS flat, no fd leaks (`ls /proc/$pid/fd | wc`).
 
-### G3 — resident assertions: `expect --watch`
+### G3. resident assertions: `expect --watch`
 
 `expect` gains `--watch`: instead of polling inside one eval, install
 a MutationObserver-backed monitor that reports over G2 whenever the
@@ -207,7 +207,7 @@ existing `--visible`/`--text`/`--absent` matchers unchanged.
 
 Test plan:
 - Behavioral: flip detection under DOM replacement (framework
-  re-render replacing the observed node — the observer must re-arm),
+  re-render replacing the observed node; the observer must re-arm),
   under navigation (watch dies with a structured event, not
   silence), under virtual-clock pause (must still fire; use the
   native-clock path like the challenge poller).
@@ -218,7 +218,7 @@ Test plan:
   reload → watch event) measuring end-to-end latency from file write
   to event delivery; target < 200 ms.
 
-### G4 — display-free operation (promoted from P2 item 7)
+### G4. display-free operation (promoted from P2 item 7)
 
 Under the substrate thesis this is load-bearing: rendering generated
 UI server-side (CI, headless boxes) must not require a logged-in
@@ -232,13 +232,13 @@ Test plan:
   motion) on a machine/session with no `WAYLAND_DISPLAY`/`DISPLAY`,
   asserting pixel output identical (diff score ≥ 99%) to a
   compositor-hosted run on the same fixture set.
-- CI: a GitHub Actions job running the behavioral suite headless —
-  this item is done when that job is green on main, because that job
+- CI: a GitHub Actions job running the behavioral suite headless.
+  This item is done when that job is green on main, because that job
   IS the use case.
 - Hand-off boundary: `focus` on a display-free daemon must return a
   structured "no display" error, not crash.
 
-### G5 — zero-copy pixels
+### G5. zero-copy pixels
 
 Screenshot/diff currently round-trip PNG through disk (~14 ms encode
 + write + client re-read). Add a shared-memory path: `shot --shm` /
@@ -256,7 +256,7 @@ Test plan:
 ### Sequencing and session protocol
 
 Order: G1 → G2 → G3 (needs G2) → G4 → G5. G4 can proceed in parallel
-with G2/G3 if two sessions run concurrently — they touch disjoint
+with G2/G3 if two sessions run concurrently; they touch disjoint
 code (windowing vs IPC).
 
 Each session working an item should: (1) re-run the existing gates
@@ -265,7 +265,7 @@ baseline; (2) land the item's test plan as automated tests where the
 harness allows (unit/parse/protocol tests in-tree; live-daemon
 behavioral scripts under `scripts/`); (3) update benchmarks.md with
 measured numbers for anything performance-claiming; (4) leave the
-one-shot protocol backward compatible — old clients against new
+one-shot protocol backward compatible: old clients against new
 daemons is the invariant that lets sessions ship incrementally.
 
 ## The human side: frozen at hand-off quality
