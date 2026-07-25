@@ -16,6 +16,8 @@
 #   scripts/demo/record/stage.sh stoprec   # stop recording (flushes mp4)
 #   scripts/demo/record/stage.sh shot FILE # single PNG frame (grim)
 #   scripts/demo/record/stage.sh type CMD  # type + run CMD in the terminal
+#   scripts/demo/record/stage.sh text TEXT # type without submitting
+#   scripts/demo/record/stage.sh key KEY   # send a raw key (e.g. enter, ctrl+c)
 #   scripts/demo/record/stage.sh env       # print env exports for manual use
 #   scripts/demo/record/stage.sh down      # tear everything down
 set -euo pipefail
@@ -98,18 +100,30 @@ shot() {
   echo "frame -> $out"
 }
 
-# Type a command into the director terminal with a human rhythm, then Enter.
-type_cmd() {
-  local cmd="${1:?usage: stage.sh type 'command'}"
+# Type text into the director terminal with a human rhythm. Sending a real Enter
+# key separately matters for raw-mode applications such as the Jcode TUI;
+# injecting a newline byte only submits reliably in a shell.
+type_text() {
+  local text="${1:?usage: stage.sh text 'text'}"
   stage_env
-  # kitty send-text types atomically; for human feel, chunk by character.
   local i ch
-  for (( i=0; i<${#cmd}; i++ )); do
-    ch="${cmd:$i:1}"
+  for (( i=0; i<${#text}; i++ )); do
+    ch="${text:$i:1}"
     kitty @ --to "unix:$HWATU_DEMO_KITTY_SOCK" send-text -- "$ch"
     sleep "$TYPE_DELAY"
   done
-  kitty @ --to "unix:$HWATU_DEMO_KITTY_SOCK" send-text -- $'\n'
+}
+
+type_cmd() {
+  type_text "${1:?usage: stage.sh type 'command'}"
+  sleep 0.1
+  press_key enter
+}
+
+press_key() {
+  local key="${1:?usage: stage.sh key KEY}"
+  stage_env
+  kitty @ --to "unix:$HWATU_DEMO_KITTY_SOCK" send-key "$key"
 }
 
 down() {
@@ -128,6 +142,8 @@ case "${1:-}" in
   stoprec) stoprec ;;
   shot) shot "${2:-}" ;;
   type) type_cmd "${2:-}" ;;
+  text) type_text "${2:-}" ;;
+  key) press_key "${2:-}" ;;
   env) echo "export XDG_RUNTIME_DIR=$STAGE_DIR/run XDG_CONFIG_HOME=$STAGE_DIR/config XDG_CACHE_HOME=$STAGE_DIR/cache XDG_STATE_HOME=$STAGE_DIR/state XDG_DATA_HOME=$STAGE_DIR/data WAYLAND_DISPLAY=wayland-1 SWAYSOCK=\$(ls $STAGE_DIR/run/sway-ipc.*.sock)" ;;
   down) down ;;
   *) sed -n '2,20p' "$0"; exit 1 ;;

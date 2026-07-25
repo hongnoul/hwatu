@@ -22,7 +22,7 @@ stream = probe['streams'][0]
 duration = float(probe['format']['duration'])
 if stream['codec_name'] != 'h264' or (stream['width'], stream['height']) != (1600, 900):
     raise SystemExit(f"unexpected MP4 stream: {stream}")
-if not 12 <= duration <= 35:
+if not 12 <= duration <= 45:
     raise SystemExit(f"unexpected duration: {duration:.3f}s")
 
 with Image.open(webp) as image:

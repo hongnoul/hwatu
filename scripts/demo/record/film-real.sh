@@ -1,31 +1,42 @@
 #!/usr/bin/env bash
-# Record one uninterrupted, real hwatu workflow inside the isolated stage.
-# There are no presentation layers: every visible command and browser frame is
-# produced by the released CLI and WebKit daemon.
+# Record one uninterrupted, real Jcode -> hwatu verification workflow inside
+# the isolated stage. Every visible frame is the actual Jcode TUI or the live
+# WebKit session it hands to the human. There are no presentation layers.
 set -euo pipefail
 
 OUT="${1:?usage: film-real.sh out.mp4}"
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+REPO_DIR=$(cd "$HERE/../../.." && pwd)
 DEMO_DIR=$(cd "$HERE/.." && pwd)
 STAGE="$HERE/stage.sh"
+STAGE_HWATU="$HERE/stage-hwatu.sh"
 REF_DIR=${HWATU_DEMO_REFERENCE_DIR:-"$DEMO_DIR/reference"}
 APP_DIR=${HWATU_DEMO_FINAL_DIR:-"$DEMO_DIR/checkpoints/07-final-99.84pct"}
 REF_PORT=${HWATU_DEMO_REF_PORT:-8321}
 APP_PORT=${HWATU_DEMO_APP_PORT:-8322}
+JCODE_BIN=${HWATU_DEMO_JCODE_BIN:-$(command -v jcode || true)}
+JCODE_MODEL=${HWATU_DEMO_JCODE_MODEL:-gpt-5.5}
 MARKS="${OUT%.mp4}.marks"
 PIDS=()
 
 fail() { printf 'film-real: %s\n' "$*" >&2; exit 1; }
 pick_port() { python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()'; }
 
+[ -x "$JCODE_BIN" ] || fail "jcode is not installed"
+[ -x "$STAGE_HWATU" ] || fail "stage-hwatu.sh is not executable"
 [ -r "$REF_DIR/index.html" ] || fail "missing reference fixture: $REF_DIR"
 [ -r "$APP_DIR/index.html" ] || fail "missing app fixture: $APP_DIR"
 mkdir -p "$(dirname "$OUT")"
 OUT=$(cd "$(dirname "$OUT")" && pwd)/$(basename "$OUT")
+JCODE_DIR="${OUT%.mp4}-jcode"
+JCODE_SOCKET="$JCODE_DIR/jcode.sock"
+JCODE_LOG="$JCODE_DIR/server.log"
+rm -rf "$JCODE_DIR"
+mkdir -p -m 700 "$JCODE_DIR/run"
 rm -f "$OUT" "$MARKS"
 
 # Avoid colliding with another local demo run while keeping the URLs short in
-# the filmed terminal. Explicit port overrides remain available for debugging.
+# the filmed prompt. Explicit port overrides remain available for debugging.
 if ! python3 - "$REF_PORT" <<'PY' >/dev/null 2>&1
 import socket, sys
 s=socket.socket(); s.bind(('127.0.0.1', int(sys.argv[1]))); s.close()
@@ -53,16 +64,37 @@ for _ in $(seq 1 100); do
 done
 curl -fsS -o /dev/null "http://127.0.0.1:$APP_PORT/" || fail "fixture servers did not start"
 
-export HWATU_DEMO_TYPE_DELAY=${HWATU_DEMO_TYPE_DELAY:-0.018}
+# Use a separate runtime lock/socket, but keep the user's authenticated Jcode
+# provider configuration. Tool exposure is deliberately reduced to bash for a
+# small, legible, honest verification session.
+XDG_RUNTIME_DIR="$JCODE_DIR/run" JCODE_NO_TELEMETRY=1 \
+  "$JCODE_BIN" serve --socket "$JCODE_SOCKET" --server-name Demo \
+  --provider jcode --model "$JCODE_MODEL" --tool-profile none --tools bash \
+  --no-update >"$JCODE_LOG" 2>&1 & PIDS+=("$!")
+for _ in $(seq 1 200); do
+  [ -S "$JCODE_SOCKET" ] && break
+  kill -0 "${PIDS[-1]}" 2>/dev/null || { cat "$JCODE_LOG" >&2; fail "Jcode server exited"; }
+  sleep 0.05
+done
+[ -S "$JCODE_SOCKET" ] || { cat "$JCODE_LOG" >&2; fail "Jcode server did not create its socket"; }
+grep -q "Using model: $JCODE_MODEL" "$JCODE_LOG" \
+  || { cat "$JCODE_LOG" >&2; fail "Jcode did not select $JCODE_MODEL"; }
+
+export HWATU_DEMO_TYPE_DELAY=${HWATU_DEMO_TYPE_DELAY:-0.006}
 "$STAGE" up
 
-# Prepare a plain shell before rolling. The environment variables make the
-# commands readable at README width without hiding what they do.
+# Start hwatud with the complete isolated XDG environment before filming. A
+# bare ping creates no page, and the empty-list assertion prevents accidental
+# exposure of restored personal sessions.
+"$STAGE_HWATU" ping >/dev/null
+[ "$("$STAGE_HWATU" list --json)" = "[]" ] || fail "isolated hwatud restored unexpected sessions"
+
+# Enter the real TUI before rolling so the film begins directly on the product.
 old_delay=$HWATU_DEMO_TYPE_DELAY
 export HWATU_DEMO_TYPE_DELAY=0
-"$STAGE" type "export PS1='$ '; REF=http://127.0.0.1:$REF_PORT/; APP=http://127.0.0.1:$APP_PORT/; clear"
+"$STAGE" type "clear; jcode --socket '$JCODE_SOCKET' --remote-working-dir '$REPO_DIR' --no-update"
 export HWATU_DEMO_TYPE_DELAY=$old_delay
-sleep 0.4
+sleep 2.5
 
 "$STAGE" rec "$OUT"
 T0=$(date +%s.%N)
@@ -72,18 +104,40 @@ mark() {
   awk -v now="$now" -v start="$T0" -v label="$1" \
     'BEGIN { printf "%.3f %s\n", now - start, label }' >> "$MARKS"
 }
-run() { mark "$1"; "$STAGE" type "$2"; sleep "$3"; }
 
-run open-reference 'hwatu --headless --json "$REF" | jq '\''{id,mode}'\''' 1.0
-run open-app 'hwatu --headless --json "$APP" | jq '\''{id,mode}'\''' 1.0
-run wait 'hwatu wait-load --id 1; hwatu wait-load --id 2' 0.7
-run verify 'hwatu diff --id 2 --other 1 | jq '\''{match_percent}'\''' 2.0
-run handoff 'hwatu focus 2' 1.5
-run scroll-down 'hwatu scroll --id 2 --to-y 500' 1.2
-run scroll-home 'hwatu scroll --id 2 --to-y 0' 2.0
+REF="http://127.0.0.1:$REF_PORT/"
+APP="http://127.0.0.1:$APP_PORT/"
+PROMPT="Use scripts/demo/record/stage-hwatu.sh to compare APP $APP with REF $REF. It accepts normal hwatu args. Open both headless, use the returned numeric ids to wait and diff, report the score, then focus APP. No file changes."
+mark prompt
+"$STAGE" type "$PROMPT"
+mark submitted
+
+# Completion is observed from the product boundary: the app begins headless and
+# only disappears from the headless mode when Jcode executes the requested
+# state-preserving handoff. This is more robust than sleeping for model latency.
+handed_off=0
+for _ in $(seq 1 600); do
+  windows=$("$STAGE_HWATU" list --json 2>/dev/null || printf '[]')
+  if python3 - "$APP" "$windows" <<'PY' >/dev/null 2>&1
+import json, sys
+app, raw = sys.argv[1:]
+windows = json.loads(raw)
+raise SystemExit(0 if any(w.get('url') == app and w.get('mode') not in ('headless', 'background') for w in windows) else 1)
+PY
+  then
+    handed_off=1
+    break
+  fi
+  sleep 0.1
+done
+(( handed_off )) || fail "Jcode did not hand off the live app within 60 seconds"
+mark handoff
+# The browser becomes visible as soon as the focus tool completes. Keep rolling
+# until Jcode has also streamed the score and returned to its idle prompt.
+sleep 8.0
 
 mark end
 "$STAGE" stoprec
 trap - EXIT HUP INT TERM
 cleanup
-printf 'raw film: %s\nmarkers:  %s\n' "$OUT" "$MARKS"
+printf 'raw film: %s\nmarkers:  %s\nJcode log: %s\n' "$OUT" "$MARKS" "$JCODE_LOG"
