@@ -115,6 +115,8 @@ hwatu close 3
 | `navigate` | `id?`, `url`, `wait?`, `timeout_ms?` | navigate, optionally wait for the load |
 | `screenshot` | `id?`, `path?`, `full?` | PNG of the viewport (`full: true` = whole document), returns the file path |
 | `wait_load` | `id?`, `timeout_ms?` | block until loading settles |
+| `check` | `url`, `eval?`, `shot?`, `shot_path?`, `full?`, `baseline?`, `tolerance?`, `heatmap?`, `until?`, `keep?`, `timeout_ms?` | one-roundtrip verify pass: open headless, load, eval/shot/diff-vs-baseline, close; replies with everything at once |
+| `prefetch` | `url` | start loading in a headless window and return immediately; the next `check` of the same url adopts the warm window (30 s TTL, max 3) |
 | `challenge` | `id?`, `wait?`, `timeout_ms?` | detect CAPTCHA/anti-bot UI; optionally wait for manual/user resolution |
 | `scroll` | `id?`, `selector?`, `nth?`, `contains?`, `to_y?`, `by_pages?` | scroll and report where it landed |
 | `snapshot` | `id?` | token-cheap page state: url, title, text, indexed interactables |
@@ -407,8 +409,9 @@ output as `hwatu diff`. One command answers both "is the DOM right"
 and returns immediately. The next `check` of the same URL adopts the
 warm window instead of navigating, reporting `"prefetched": true` and
 `load_ms` near 0. Fire it right after writing a file, then compose
-your check; by the time you run it, the render is done (measured:
-cold check 180 ms, prefetched check 5 ms on a local fixture).
+your check; by the time you run it, the render is done (measured
+medians on a local fixture: check 84 ms, prefetched check 1 ms; see
+[benchmarks.md](benchmarks.md)).
 
 ```sh
 hwatu prefetch localhost:5173     # returns immediately, page loads in background

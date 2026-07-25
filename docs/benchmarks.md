@@ -107,6 +107,28 @@ fast-settling real pages the two converge (example.com: 52/52 ms;
 a Wikipedia article: 252/271 ms); the win grows with the page's
 subresource tail, which is exactly what ad-heavy real sites have.
 
+### Pay the load while you think: `hwatu prefetch`
+
+`hwatu prefetch <url>` starts the load in a headless window and
+returns immediately; the next `check` of the same URL adopts the
+warm window instead of navigating (`"prefetched": true` in the
+reply). Measured 2026-07-25 on a local fixture, `check` wall-clock
+totals over 10 runs each, 0.5 s of simulated agent think time
+between prefetch and check:
+
+| variant | runs (ms, sorted) | median |
+|---|---|---|
+| `check` (pooled window, no prefetch) | 6 7 7 61 80 88 90 95 96 99 | 84 ms |
+| `prefetch`, think 0.5 s, `check` | 1 1 1 1 1 1 1 2 2 2 | 1 ms |
+
+The unprefetched spread shows the two regimes: sub-10 ms when the
+page was still warm in the recycled window, ~60-100 ms when it
+actually navigated. Prefetch pins the fast regime: the load runs
+during think time, so the check pays only adoption + eval. Unclaimed
+prefetches expire after 30 s into the ordinary check pool (max 3
+outstanding), so speculation never raises the daemon's memory floor,
+and a check with no matching prefetch just loads normally.
+
 ## Memory
 
 Sum of proportional-set-size (PSS) across the daemon and all of its

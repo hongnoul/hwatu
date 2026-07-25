@@ -85,11 +85,11 @@ a human browser polishes rendering:
    immediately; the next `check` of the same URL adopts the warm
    window (`"prefetched": true`, `load_ms` ~0). An agent fires it
    right after the edit, thinks/composes while the page loads, and
-   the verify step costs ~5 ms instead of the full load. Unclaimed
+   the verify step costs ~1 ms instead of the full load. Unclaimed
    prefetches expire after 30 s into the ordinary check pool
    (capped at 3 outstanding), so speculation never raises the memory
-   floor. Measured on the local fixture: cold check 180 ms,
-   prefetched check 5 ms.
+   floor. Measured medians on the local fixture: unprefetched check
+   84 ms, prefetched check 1 ms ([benchmarks](benchmarks.md)).
 5c. **Multi-viewport sweep.** `hwatu check --viewports
    360x640,768x1024,1920x1080` runs the same pass at N sizes
    (sequentially on pooled windows) and reports per-viewport results,
