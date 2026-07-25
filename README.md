@@ -6,7 +6,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![CI](https://github.com/hongnoul/hwatu/actions/workflows/ci.yml/badge.svg)](https://github.com/hongnoul/hwatu/actions/workflows/ci.yml)
 
-**The verification browser for coding agents.**
+**Lightweight verification browser for coding agents.**
 
 </div>
 
