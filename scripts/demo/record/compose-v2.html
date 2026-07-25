@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>hwatu · visual proof</title>
+  <link rel="stylesheet" href="compose-v2.css">
+</head>
+<body>
+  <main id="stage" aria-label="hwatu visual proof presentation">
+    <header class="topline">
+      <div class="wordmark"><span class="mark">h</span> hwatu</div>
+      <div id="sceneIndex" class="scene-index">01 / 03</div>
+      <div id="evidenceStatus" class="evidence-status">EVIDENCE · LOADING</div>
+    </header>
+
+    <section id="measure" class="scene measure" aria-label="Measure visual similarity">
+      <div class="scene-copy">
+        <div class="kicker">01 · MEASURE</div>
+        <h1>See what changed.<br><span>Measure what improved.</span></h1>
+        <p>Pixel diff gives the agent a number to climb.</p>
+      </div>
+      <div class="compare" aria-label="Reference and agent build comparison">
+        <article class="page-card reference-card">
+          <div class="card-label"><span>REFERENCE</span><span>1600 × 900</span></div>
+          <div class="browser-art reference-art">
+            <div class="nav-art"><b>Northstar</b><i></i><i></i><i></i></div>
+            <div class="hero-art"><small>DESIGN SYSTEM</small><strong>Build calmer<br>interfaces.</strong><button>Explore components</button></div>
+            <div class="tiles"><i></i><i></i><i></i></div>
+          </div>
+        </article>
+        <article class="page-card build-card">
+          <div class="card-label"><span>AGENT BUILD</span><span id="checkpointLabel">CHECKPOINT 01</span></div>
+          <div class="browser-art build-art">
+            <div class="nav-art"><b>Northstar</b><i></i><i></i><i></i></div>
+            <div class="hero-art"><small>DESIGN SYSTEM</small><strong>Build calmer<br>interfaces.</strong><button>Explore components</button></div>
+            <div class="tiles"><i></i><i></i><i></i></div>
+            <div class="heat h1"></div><div class="heat h2"></div><div class="heat h3"></div>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section id="motion" class="scene motion" aria-label="Pin animation motion">
+      <div class="scene-copy compact">
+        <div class="kicker">02 · PIN MOTION</div>
+        <h1>Control time.<br><span>Compare the same frame.</span></h1>
+        <p>Seek to the same frame. Compare motion without flakes.</p>
+      </div>
+      <div class="motion-proof">
+        <div class="motion-panes">
+          <article><div class="card-label"><span>REFERENCE</span><span class="frame-readout">FRAME 12</span></div><div class="motion-canvas"><div class="orbit"></div><div class="moving-card"><b>Motion</b><small>precisely placed</small></div></div></article>
+          <article><div class="card-label"><span>AGENT BUILD</span><span class="frame-readout">FRAME 12</span></div><div class="motion-canvas"><div class="orbit"></div><div class="moving-card"><b>Motion</b><small>precisely placed</small></div></div></article>
+        </div>
+        <div class="scrub-proof">
+          <span id="directionBefore" class="direction">FORWARD →</span>
+          <div class="mini-track"><i id="ghostBefore"></i><i id="ghostNow"></i></div>
+          <span id="directionAfter" class="direction">← REVERSE</span>
+          <b id="repeatProof">REPEAT · BYTE-IDENTICAL</b>
+        </div>
+      </div>
+    </section>
+
+    <section id="handoff" class="scene handoff" aria-label="Hand off headless session">
+      <div class="scene-copy compact">
+        <div class="kicker">03 · HAND OFF</div>
+        <h1>Keep the state.<br><span>Bring in the human.</span></h1>
+        <p>When judgment is needed, hand the exact session to a human.</p>
+      </div>
+      <div class="workspace">
+        <div class="workspace-bar"><span>DEVELOPER WORKSPACE</span><span class="session-badge">HEADLESS SESSION · ID 2</span></div>
+        <div class="editor-pane">
+          <div class="file-tree"><b>src</b><span>app.ts</span><span class="selected">motion.css</span><span>tokens.css</span></div>
+          <div class="code-art"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+          <div class="state-chip"><small>SESSION 2 · PRESERVED</small><b>Products / Motion</b><span>scroll 68% · tab 3 · frame 12</span><div class="chip-preview"><i></i></div></div>
+        </div>
+        <div class="handoff-action"><span>FOCUS</span><i></i></div>
+        <div class="live-browser">
+          <div class="live-bar"><span>● ● ●</span><b>Products / Motion</b><em>LIVE</em></div>
+          <div class="live-page"><small>PRODUCTS / MOTION</small><h2>Precision<br>in every frame.</h2><div class="preserved-card"><b>Motion</b><span>precisely placed</span></div><div class="scroll-indicator"><i></i><span>68%</span></div></div>
+          <div class="preserved-tag">✓ SAME TAB · SCROLL 68% · FRAME 12</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="end" class="scene end" aria-label="hwatu summary">
+      <div class="end-mark">h</div>
+      <div class="kicker">VISUAL BROWSER AUTOMATION</div>
+      <h1>hwatu</h1>
+      <p>measure <span>→</span> pin <span>→</span> hand off</p>
+      <small id="proofLine">13 ms windows · 87 ms verification · one binary</small>
+    </section>
+
+    <footer class="measurement-rail">
+      <div class="rail-title" id="railTitle">VISUAL MATCH</div>
+      <div class="rail-value left" id="railLeft">85.13%</div>
+      <div class="rail-track"><div id="railFill" class="rail-fill"></div><div id="railPin" class="rail-pin"></div></div>
+      <div class="rail-value right" id="railRight">98.79%</div>
+      <div class="rail-clock" id="railClock">00.0 / 21.0</div>
+    </footer>
+  </main>
+  <script src="compose-v2.js"></script>
+</body>
+</html>
