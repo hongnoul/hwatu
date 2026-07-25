@@ -3,7 +3,8 @@
 
   const DURATION = 21;
   const params = new URLSearchParams(location.search);
-  const fixedTime = params.has('t') ? Math.max(0, Math.min(DURATION, Number(params.get('t')) || 0)) : null;
+  const autoplay = params.get('autoplay') === '1';
+  const fixedTime = params.has('t') && !autoplay ? Math.max(0, Math.min(DURATION, Number(params.get('t')) || 0)) : null;
   const evidenceDir = params.get('evidence') || './evidence-v2';
   const fixture = {
     scores: [85.13, 93.42, 98.79],
@@ -19,6 +20,25 @@
   const between = (time, start, end) => clamp((time - start) / (end - start));
   const smooth = (value) => value * value * (3 - 2 * value);
 
+  function assetUrl(path) {
+    if (!path) return null;
+    return `${evidenceDir.replace(/\/$/, '')}/${String(path).replace(/^\.\//, '')}`;
+  }
+
+  function setCapturedArt(selector, path) {
+    const element = $(selector);
+    const url = assetUrl(path);
+    if (!element || !url) return;
+    element.classList.add('captured-evidence');
+    element.style.backgroundImage = `url("${url.replace(/"/g, '%22')}")`;
+  }
+
+  function applyEvidenceAssets() {
+    const assets = evidence.assets || {};
+    setCapturedArt('.reference-art', assets.reference);
+    setCapturedArt('.live-page', assets.handoff || assets.handoffLive);
+  }
+
   async function loadEvidence() {
     try {
       const response = await fetch(`${evidenceDir.replace(/\/$/, '')}/manifest.json`, { cache: 'no-store' });
@@ -29,9 +49,11 @@
         ...loaded,
         motion: { ...fixture.motion, ...loaded.motion },
         handoff: { ...fixture.handoff, ...loaded.handoff },
+        assets: { ...(loaded.assets || {}) },
         scores: Array.isArray(loaded.scores) && loaded.scores.length >= 3 ? loaded.scores.slice(0, 3) : fixture.scores
       };
-      $('#evidenceStatus').textContent = 'EVIDENCE · MANIFEST';
+      applyEvidenceAssets();
+      $('#evidenceStatus').textContent = 'EVIDENCE · CAPTURED';
     } catch (_) {
       $('#evidenceStatus').textContent = 'EVIDENCE · DEMO FIXTURE';
       $('#evidenceStatus').style.color = 'var(--amber)';
@@ -55,6 +77,15 @@
     const scoreB = evidence.scores[Math.min(2, checkpoint + 1)];
     const score = checkpoint === 2 ? scoreA : scoreA + (scoreB - scoreA) * clamp(local);
     const error = 1 - progress * .92;
+    const assets = evidence.assets || {};
+    const builds = assets.builds || assets.checkpoints || [];
+    const heatmaps = assets.heatmaps || [];
+    setCapturedArt('.build-art', builds[checkpoint] || assets.build);
+    const buildArt = $('.build-art');
+    if (buildArt.classList.contains('captured-evidence') && heatmaps[checkpoint]) {
+      buildArt.style.setProperty('--heatmap-image', `url("${assetUrl(heatmaps[checkpoint])}")`);
+      buildArt.classList.add('captured-heatmap');
+    }
     $('.build-art').style.setProperty('--error', error.toFixed(3));
     $('#checkpointLabel').textContent = `CHECKPOINT 0${checkpoint + 1}`;
     $('#railTitle').textContent = 'VISUAL MATCH';
@@ -83,6 +114,14 @@
       card.style.setProperty('--motion-y', `${y}cqw`);
       card.style.setProperty('--motion-r', `${rotation}deg`);
     });
+    const motionFrames = (evidence.assets && (evidence.assets.motionFrames || evidence.assets.motion)) || [];
+    if (Array.isArray(motionFrames) && motionFrames.length) {
+      const image = motionFrames[Math.min(motionFrames.length - 1, Math.round(position * (motionFrames.length - 1)))];
+      $$('.motion-canvas').forEach((canvas) => {
+        canvas.classList.add('captured-evidence');
+        canvas.style.backgroundImage = `url("${assetUrl(image)}")`;
+      });
+    }
     const frame = Math.round(position * 24);
     $$('.frame-readout').forEach((label) => { label.textContent = `FRAME ${String(frame).padStart(2, '0')}`; });
     $('#ghostBefore').style.left = `${Math.max(0, position * 100 - 18)}%`;
@@ -140,8 +179,8 @@
 
   let started = performance.now();
   function tick(now) {
-    const elapsed = ((now - started) / 1000) % DURATION;
-    render(elapsed);
+    const elapsed = (Number(params.get('t')) || 0) + ((now - started) / 1000);
+    render(elapsed % DURATION);
     requestAnimationFrame(tick);
   }
 
