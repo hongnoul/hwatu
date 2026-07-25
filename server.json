@@ -1,0 +1,22 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.hongnoul/hwatu",
+  "description": "Verification browser for coding agents: headless WebKit, DOM eval, screenshots, pixel-diff.",
+  "repository": {
+    "url": "https://github.com/hongnoul/hwatu",
+    "source": "github"
+  },
+  "version": "0.6.0",
+  "websiteUrl": "https://github.com/hongnoul/hwatu",
+  "packages": [
+    {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/hongnoul/hwatu/releases/download/v0.6.0/hwatu-mcp-linux-x86_64.tar.gz",
+      "version": "0.6.0",
+      "fileSha256": "08b8b23720fe4bc4806eea7ac82ddf8441d9f10ca56dab97fe8c78521397ad67",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}
