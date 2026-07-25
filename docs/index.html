@@ -5,13 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
-      content="hwatu is a visual verification browser for AI coding agents: daemon-based WebKitGTK, real rendering, ~13ms window spawn, built for tiling WMs and human hand-off."
+      content="hwatu is a fast, interruptible verification browser for AI coding agents: a warm WebKitGTK daemon, 35 ms verify passes, live headless-to-headed hand-off into your tiling WM."
     />
     <link rel="canonical" href="https://hongnoul.github.io/hwatu/" />
     <meta property="og:title" content="hwatu" />
     <meta
       property="og:description"
-      content="Visual verification browser for AI coding agents."
+      content="Fast, interruptible verification browser for AI coding agents."
     />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://hongnoul.github.io/hwatu/" />
@@ -216,9 +216,10 @@
         />
         <h1>hwatu</h1>
         <p class="tagline">
-          A browser built for AI coding agents.<br />
-          Real WebKit rendering, terminal-emulator spawn times, human
-          hand-off into your tiling WM.
+          A warm browser daemon built for AI coding agents.<br />
+          Real WebKit rendering, 35 ms verify passes, and the one thing
+          nobody else has: interruptible sessions — live hand-off
+          between agent and human, into your tiling WM.
         </p>
         <div class="install">
           <code id="install-cmd"
@@ -245,8 +246,8 @@
             <span class="l">median window spawn</span>
           </div>
           <div class="stat">
-            <span class="n">24 ms</span>
-            <span class="l">verify pass: open→eval→screenshot→close (Playwright: 83 ms)</span>
+            <span class="n">35 ms</span>
+            <span class="l">verify pass: open→eval→screenshot→close (warm Playwright: 82 ms)</span>
           </div>
           <div class="stat">
             <span class="n">~56 MB</span>

@@ -259,6 +259,30 @@ async function pwWarmVerify(browser, url, shotPath, waitUntil = "load") {
   return now() - t0;
 }
 
+/** The service-shaped peer of hwatu's CLI+daemon model: the engine
+ * stays warm in a persistent browser server, but each check is a
+ * fresh client process that connects, does the pass, disconnects —
+ * what a shell-driven agent pays per check when it keeps Playwright
+ * warm the way hwatu keeps its daemon warm. */
+async function pwWarmServiceVerify(pwPath, wsEndpoint, url, shotPath) {
+  const script = `
+    const pw = require(${JSON.stringify(pwPath)});
+    (async () => {
+      const browser = await pw.chromium.connect(${JSON.stringify(wsEndpoint)});
+      const context = await browser.newContext();
+      const page = await context.newPage();
+      await page.goto(${JSON.stringify(url)}, { waitUntil: "load" });
+      await page.title();
+      ${shotPath ? `await page.screenshot({ path: ${JSON.stringify(shotPath)} });` : ""}
+      await context.close();
+      await browser.close();
+    })().catch((e) => { console.error(e); process.exit(1); });
+  `;
+  const t0 = now();
+  await execFileP("node", ["-e", script]);
+  return now() - t0;
+}
+
 /** Open a page and have it fully loaded, nothing else. */
 async function hwatuOpenLoaded(url) {
   const t0 = now();
@@ -287,15 +311,18 @@ const shot = (n) => path.join(tmp, `${n}.png`);
 const results = {};
 
 let chromium;
+let pwResolvedPath;
 try {
   ({ chromium } = await import("playwright"));
+  pwResolvedPath = "playwright";
 } catch {
   // Not next to this script: resolve from the invoking directory, so
   // `npm i playwright` in any scratch dir works.
   try {
     const { createRequire } = await import("node:module");
     const req = createRequire(path.join(process.cwd(), "noop.js"));
-    const mod = await import(req.resolve("playwright"));
+    pwResolvedPath = req.resolve("playwright");
+    const mod = await import(pwResolvedPath);
     chromium = mod.chromium ?? mod.default?.chromium;
   } catch {
     console.error("playwright not installed; npm i playwright"); process.exit(1);
@@ -324,7 +351,9 @@ await new Promise((r) => setTimeout(r, 500));
   await pwWarmVerify(browser, url, shot("w1"));
 
   const h = [], hs = [], hd = [], p = [], pd = [], ho = [], po = [];
-  const hc = [], hcs = [], hcd = [], hcsd = [], pdm = [];
+  const hc = [], hcs = [], hcd = [], hcsd = [], pdm = [], psv = [];
+  const server = await chromium.launchServer();
+  await pwWarmServiceVerify(pwResolvedPath, server.wsEndpoint(), url, shot("ps0")); // warmup
   for (let i = 0; i < RUNS; i++) ho.push(await attempt(() => hwatuOpenLoaded(url)));
   for (let i = 0; i < RUNS; i++) po.push(await attempt(() => pwOpenLoaded(browser, url)));
   for (let i = 0; i < RUNS; i++) h.push(await attempt(() => hwatuWarmVerify(url, shot("hw"))));
@@ -337,12 +366,14 @@ await new Promise((r) => setTimeout(r, 500));
   for (let i = 0; i < RUNS; i++) p.push(await attempt(() => pwWarmVerify(browser, url, shot("pw"))));
   for (let i = 0; i < RUNS; i++) pd.push(await attempt(() => pwWarmVerify(browser, url, null)));
   for (let i = 0; i < RUNS; i++) pdm.push(await attempt(() => pwWarmVerify(browser, url, null, "domcontentloaded")));
+  for (let i = 0; i < RUNS; i++) psv.push(await attempt(() => pwWarmServiceVerify(pwResolvedPath, server.wsEndpoint(), url, shot("ps"))));
+  await server.close();
   results.warm = {
     hwatu_open: ho, playwright_open: po, hwatu_cli: h, hwatu_socket: hs,
     hwatu_socket_noshot: hd, playwright: p, playwright_noshot: pd,
     hwatu_check_cli: hc, hwatu_check_socket: hcs,
     hwatu_check_dom_noshot_cli: hcd, hwatu_check_dom_noshot_socket: hcsd,
-    playwright_dcl_noshot: pdm,
+    playwright_dcl_noshot: pdm, playwright_warm_service: psv,
   };
   console.log(`open loaded   hwatu (socket):     ${fmt(ho)}`);
   console.log(`open loaded   playwright:         ${fmt(po)}`);
@@ -353,6 +384,7 @@ await new Promise((r) => setTimeout(r, 500));
   console.log(`warm verify   hwatu check (sock): ${fmt(hcs)}`);
   console.log(`warm verify   playwright:         ${fmt(p)}`);
   console.log(`warm verify   playwright (noshot):${fmt(pd)}`);
+  console.log(`warm service  playwright (fresh client -> warm server): ${fmt(psv)}`);
   console.log(`dom verify    hwatu check --until dom (CLI, noshot):  ${fmt(hcd)}`);
   console.log(`dom verify    hwatu check --until dom (sock, noshot): ${fmt(hcsd)}`);
   console.log(`dom verify    playwright dcl (noshot):                ${fmt(pdm)}`);

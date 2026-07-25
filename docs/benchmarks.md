@@ -1,12 +1,15 @@
 # Benchmarks
 
-**The headline: a full verification pass — open a page, wait for the
-load, read the DOM, screenshot, clean up — costs 24 ms through hwatu
-and 83 ms through Playwright, on the same machine, same page, same
-clock. A DOM-only check is 19 ms vs 35 ms. And hwatu's side of that
-table pays a fresh process spawn per check while Playwright rides a
-warm in-process CDP connection: the bias runs against us and we win
-anyway.** Full data and every caveat in the
+**The headline: hwatu ships warm.** A full verification pass — open a
+page, wait for the load, read the DOM, screenshot, clean up — is one
+command and **35-39 ms** through hwatu, vs **82 ms** through a warm
+in-process Playwright connection, on the same machine, page, and
+clock. A DOM-only check is **21 ms vs 49 ms**. And when Playwright is
+used the way hwatu is used — a fresh client process talking to a
+kept-warm browser server, the shape every shell-driven agent actually
+has — its pass costs **341 ms**: hwatu's architecture is ~9x faster
+at being a warm service, because being a warm service is the whole
+design. Full data and every caveat in the
 [head-to-head section](#head-to-head-hwatu-vs-playwright--headless-chromium).
 
 Every number below was measured on a real run, not estimated. Rerun
@@ -75,10 +78,10 @@ same kind of local fixture, medians over 12 runs:
 
 | variant | median |
 |---|---|
-| 5-command loop (open, wait, eval, shot, close) | 87 ms |
-| `hwatu check --eval ... --shot` (one CLI spawn) | 32 ms |
-| same, over the socket (persistent client) | 24 ms |
-| `check --eval` only, `--until dom` | 19 ms |
+| 5-command loop (open, wait, eval, shot, close) | 103 ms |
+| `hwatu check --eval ... --shot` (one CLI spawn) | 39 ms |
+| same, over the socket (persistent client) | 35 ms |
+| `check --eval` only, `--until dom` | 21-22 ms |
 
 Beyond the wall clock, `check` removes 4 process spawns + 4 socket
 roundtrips, the window-leak failure mode (its window always closes or
@@ -132,38 +135,47 @@ which kills their web process and returns that ~56 MB until refocus.
 
 `scripts/bench-vs-playwright.mjs` runs both tools against the same
 local fixture page (40 cards, no network), same machine, same clock.
-Medians over 12 runs, measured 2026-07-25 (hwatu 83e87ed with the
+Medians over 16 runs, measured 2026-07-25 (hwatu 83e87ed with the
 composite `check` + window recycling, Playwright 1.5x headless-shell
 Chromium):
 
 | scenario | hwatu | Playwright |
 |---|---|---|
-| verify pass, cold engine (start, open, load, eval, shot, teardown) | 392 ms | 176 ms |
-| open + full load, warm engine | 82 ms | 21 ms |
-| verify pass, warm (5 separate commands: open, load, eval, shot, close) | 87 ms | 83 ms |
-| **verify pass, warm (`hwatu check`, one CLI spawn)** | **32 ms** | 83 ms |
-| **verify pass, warm (`check` over the socket)** | **24 ms** | 83 ms |
-| verify pass, warm, no screenshot (5 separate commands) | 84 ms | 36 ms |
-| **DOM verify, no screenshot (`check --until dom` vs `waitUntil:"domcontentloaded"`)** | **19 ms** | 35 ms |
+| verify pass, cold engine (start, open, load, eval, shot, teardown) | 435 ms | 190 ms |
+| open + full load, warm engine | 96 ms | 26 ms |
+| verify pass, warm (5 separate commands: open, load, eval, shot, close) | 103 ms | 82 ms |
+| **verify pass, warm (`hwatu check`, one CLI spawn)** | **39 ms** | 82 ms |
+| **verify pass, warm (`check` over the socket)** | **35 ms** | 82 ms |
+| **verify pass as a warm *service* (fresh client process → warm engine)** | **39 ms** | 341 ms |
+| verify pass, warm, no screenshot (5 separate commands) | 93 ms | 42 ms |
+| **DOM verify, no screenshot (`check --until dom` vs `waitUntil:"domcontentloaded"`)** | **21 ms** | 49 ms |
 | page-state payload (snapshot JSON vs ARIA snapshot) | 7.3 KB | 5.1 KB |
-| memory, 5 pages open (tree PSS, fresh engine) | 813 MB | 259 MB |
+| memory, 5 pages open (tree PSS, fresh engine) | 774 MB | 260 MB |
 
-Read it honestly: cold start, bare open+load, and memory still go to
-Playwright. But the row agents actually live in flipped. The verify
-pass — the thing you run hundreds of times while iterating on a page —
-is now **32 ms with a screenshot vs Playwright's 83, and 19 ms vs 35
-for a DOM-level check**, both through hwatu's worst-case transport (a
-fresh CLI process per check) against Playwright's best case (a warm
-in-process CDP connection). Two changes did it: `check` collapses the
-pass into one roundtrip, and finished checks park their window for
-the next one, so steady-state checks skip window construction
-entirely (the same trick Playwright's context reuse plays, now on
-both sides of the table).
+The rows mean different things, so read them separately:
+
+- **Warm in-process (82 ms)** is Playwright at its best: a Node
+  program holding a live CDP connection. If your agent IS a
+  long-running Node process, this is what it pays. hwatu's `check`
+  still beats it 2x+, *through a fresh CLI process per call*.
+- **Warm service (341 ms)** is Playwright shaped like hwatu: engine
+  kept warm in `launchServer()`, each check a fresh client that
+  connects and disconnects — which is what "keep Playwright warm"
+  means for any shell-driven agent, CI step, or MCP tool that
+  shells out. Node startup + WebSocket connect + remote context
+  creation eat 300 ms before any browsing happens. hwatu's whole
+  design is being that warm service: one Unix socket roundtrip, 39
+  ms, ~9x faster. Playwright is a library that must be *made* warm;
+  hwatu is a daemon that cannot be cold (first client spawn
+  autostarts it).
+- **Cold engine (190 vs 435 ms)** still goes to Playwright — paid
+  once per boot on hwatu's side, once per script invocation for
+  library-style Playwright use.
 
 Two widespread claims about the incumbent are simply outdated and
 hwatu's docs no longer repeat them: headless-shell Chromium
-cold-starts in ~150 ms (not seconds), and 5 shared-browser contexts
-cost ~260 MB (not GBs).
+cold-starts in ~150-200 ms (not seconds), and 5 shared-browser
+contexts cost ~260 MB (not GBs).
 
 What the table does not capture, and why hwatu still exists:
 
@@ -179,7 +191,7 @@ What the table does not capture, and why hwatu still exists:
   one-line JSON, no client library or session objects; for coding
   agents the invocation cost (tokens, not milliseconds) is the scarce
   resource.
-- **Absolute cost is tiny either way.** 32 ms per screenshot-included
+- **Absolute cost is tiny either way.** 39 ms per screenshot-included
   check is far below any agent's thinking time. The fight is not won
   on stopwatch deltas.
 
@@ -189,7 +201,7 @@ sidesteps it via recycling but `open` still pays it). Fixed so far:
 screenshot encode (was 90 ms of the pass; threaded fast-PNG encode,
 ~14 ms), load-settle tail (`--until dom`, 2026-07-25), and per-pass
 overhead (composite `check` + window recycling, 2026-07-25, which
-took the warm screenshot pass from 83 ms to 24-32 ms). Tracked in
+took the warm screenshot pass from ~100 ms to 35-39 ms). Tracked in
 [roadmap.md](roadmap.md).
 
 Caveat on method: hwatu steps go through CLI process spawns (5 per
