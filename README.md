@@ -14,7 +14,7 @@
 - **STOP browser windows stealing your focus. Headless by default, you keep typing.**
 - **STOP shipping 170 MB of Chromium. One static binary + your distro's webkitgtk.**
 
-![hwatu spawning windows in ~48ms from a warm daemon](docs/assets/spawn-demo.svg)
+<a href="https://github.com/hongnoul/hwatu/releases/download/readme-assets/demo-v2.mp4"><img src="https://github.com/hongnoul/hwatu/releases/download/readme-assets/demo-v2.webp" alt="hwatu demo: measure pixel parity, pin both pages to exact animation frames, and reveal an offscreen browser with its state preserved" width="800"></a>
 
 ## Documents
 
