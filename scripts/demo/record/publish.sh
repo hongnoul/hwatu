@@ -41,13 +41,23 @@ MP4_URL="https://github.com/$REPO/releases/download/$TAG/$(basename "$MP4")"
 WEBP_URL="https://github.com/$REPO/releases/download/$TAG/$(basename "$WEBP")"
 
 # ---- 2. README hero ----------------------------------------------
-HERO="<a href=\"$MP4_URL\"><img src=\"$WEBP_URL\" alt=\"hwatu demo: measure pixel parity, pin both pages to exact animation frames, and reveal an offscreen browser with its state preserved\" width=\"800\"></a>"
+HERO="<a href=\"$MP4_URL\"><img src=\"$WEBP_URL\" alt=\"hwatu real workflow: open headless, verify the rendered page, then hand the live browser to a human\" width=\"800\"></a>"
 cd "$REPO_DIR"
 if grep -q "spawn-demo.svg" README.md; then
   # Replace the old hero line wholesale.
   sed -i "s|!\[hwatu spawning windows.*spawn-demo.svg)|$HERO|" README.md
-elif grep -q "hwatu-demo.webp" README.md; then
-  echo "README already references the demo webp (URLs are stable); no edit needed."
+elif grep -q 'releases/download/readme-assets/.*\.webp' README.md; then
+  python3 - "$HERO" <<'PY'
+import pathlib, re, sys
+p = pathlib.Path('README.md')
+text = p.read_text()
+hero = sys.argv[1]
+pattern = r'<a href="https://github\.com/hongnoul/hwatu/releases/download/readme-assets/[^\"]+\.mp4"><img src="https://github\.com/hongnoul/hwatu/releases/download/readme-assets/[^\"]+\.webp"[^>]*></a>'
+updated, count = re.subn(pattern, hero, text, count=1)
+if count != 1:
+    raise SystemExit('publish: could not replace existing README hero')
+p.write_text(updated)
+PY
 else
   echo "WARNING: no hero anchor found in README.md; insert manually:"; echo "$HERO"
 fi
