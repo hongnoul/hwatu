@@ -96,6 +96,16 @@ export HWATU_DEMO_TYPE_DELAY=0
 export HWATU_DEMO_TYPE_DELAY=$old_delay
 sleep 2.5
 
+REF="http://127.0.0.1:$REF_PORT/"
+APP="http://127.0.0.1:$APP_PORT/"
+PROMPT="Use scripts/demo/record/stage-hwatu.sh to compare APP $APP with REF $REF. It accepts normal hwatu args. Open both headless, use the returned numeric ids to wait and diff, report the score, then focus APP. No file changes."
+# The film opens with the full prompt already sent: paste it in one shot (no
+# typing animation), submit, then start rolling so the first frame shows the
+# prompt delivered to Jcode.
+"$STAGE" paste "$PROMPT"
+sleep 0.2
+"$STAGE" key enter
+
 "$STAGE" rec "$OUT"
 T0=$(date +%s.%N)
 mark() {
@@ -104,12 +114,7 @@ mark() {
   awk -v now="$now" -v start="$T0" -v label="$1" \
     'BEGIN { printf "%.3f %s\n", now - start, label }' >> "$MARKS"
 }
-
-REF="http://127.0.0.1:$REF_PORT/"
-APP="http://127.0.0.1:$APP_PORT/"
-PROMPT="Use scripts/demo/record/stage-hwatu.sh to compare APP $APP with REF $REF. It accepts normal hwatu args. Open both headless, use the returned numeric ids to wait and diff, report the score, then focus APP. No file changes."
 mark prompt
-"$STAGE" type "$PROMPT"
 mark submitted
 
 # Completion is observed from the product boundary: the app begins headless and

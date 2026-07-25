@@ -17,6 +17,7 @@
 #   scripts/demo/record/stage.sh shot FILE # single PNG frame (grim)
 #   scripts/demo/record/stage.sh type CMD  # type + run CMD in the terminal
 #   scripts/demo/record/stage.sh text TEXT # type without submitting
+#   scripts/demo/record/stage.sh paste TEXT # insert TEXT instantly (no typing animation)
 #   scripts/demo/record/stage.sh key KEY   # send a raw key (e.g. enter, ctrl+c)
 #   scripts/demo/record/stage.sh env       # print env exports for manual use
 #   scripts/demo/record/stage.sh down      # tear everything down
@@ -114,6 +115,15 @@ type_text() {
   done
 }
 
+# Insert the full text in a single send, with no per-character rhythm.
+# Used when a shot should open on a fully entered prompt instead of a
+# typing animation.
+paste_text() {
+  local text="${1:?usage: stage.sh paste 'text'}"
+  stage_env
+  kitty @ --to "unix:$HWATU_DEMO_KITTY_SOCK" send-text -- "$text"
+}
+
 type_cmd() {
   type_text "${1:?usage: stage.sh type 'command'}"
   sleep 0.1
@@ -143,6 +153,7 @@ case "${1:-}" in
   shot) shot "${2:-}" ;;
   type) type_cmd "${2:-}" ;;
   text) type_text "${2:-}" ;;
+  paste) paste_text "${2:-}" ;;
   key) press_key "${2:-}" ;;
   env) echo "export XDG_RUNTIME_DIR=$STAGE_DIR/run XDG_CONFIG_HOME=$STAGE_DIR/config XDG_CACHE_HOME=$STAGE_DIR/cache XDG_STATE_HOME=$STAGE_DIR/state XDG_DATA_HOME=$STAGE_DIR/data WAYLAND_DISPLAY=wayland-1 SWAYSOCK=\$(ls $STAGE_DIR/run/sway-ipc.*.sock)" ;;
   down) down ;;
