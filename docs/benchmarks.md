@@ -56,20 +56,23 @@ the threaded-encode change; the loop was 216 ms before.
 `hwatu check <url> [--eval <js>] [--shot[=path]]` runs the whole loop
 above daemon-side in one IPC roundtrip: open headless, wait, eval,
 screenshot, close, one JSON reply (url, title, eval result, shot
-path, console errors, timings). Measured 2026-07-25 against the same
-kind of local fixture, medians over 10 runs:
+path, console errors, timings). Finished checks also *recycle*: the
+window parks (blanked, console drained, 60 s TTL, max 2) and the next
+check navigates it instead of building a new window, which is where
+most of the old pass's time went. Measured 2026-07-25 against the
+same kind of local fixture, medians over 12 runs:
 
 | variant | median |
 |---|---|
-| 5-command loop (open, wait, eval, shot, close) | 56 ms |
-| `hwatu check --eval ... --shot` | 55 ms |
+| 5-command loop (open, wait, eval, shot, close) | 87 ms |
+| `hwatu check --eval ... --shot` (one CLI spawn) | 32 ms |
+| same, over the socket (persistent client) | 24 ms |
+| `check --eval` only, `--until dom` | 19 ms |
 
-On a loopback fixture the load dominates, so the wall-clock tie is
-expected; what `check` removes is 4 process spawns + 4 socket
-roundtrips of constant overhead, the window-leak failure mode (its
-window always closes, even on timeout), and 4 tool invocations of
-agent token cost. It also bundles the console capture the loop
-version never read.
+Beyond the wall clock, `check` removes 4 process spawns + 4 socket
+roundtrips, the window-leak failure mode (its window always closes or
+parks, even on timeout), and 4 tool invocations of agent token cost.
+It also bundles the console capture the loop version never read.
 
 ### Wait for the stage you need: `--until dom`
 
@@ -118,25 +121,38 @@ which kills their web process and returns that ~56 MB until refocus.
 
 `scripts/bench-vs-playwright.mjs` runs both tools against the same
 local fixture page (40 cards, no network), same machine, same clock.
-Medians over 12 runs, measured 2026-07-22 (hwatu 1a75785, Playwright
-1.5x headless-shell Chromium):
+Medians over 12 runs, measured 2026-07-25 (hwatu 83e87ed with the
+composite `check` + window recycling, Playwright 1.5x headless-shell
+Chromium):
 
 | scenario | hwatu | Playwright |
 |---|---|---|
-| verify pass, cold engine (start, open, load, eval, shot, teardown) | 392 ms | 137 ms |
-| open + full load, warm engine | 92 ms | 23 ms |
-| verify pass, warm engine (open, load, eval, shot, close) | 83 ms | 82 ms |
-| verify pass, warm, no screenshot | 82 ms | 32 ms |
+| verify pass, cold engine (start, open, load, eval, shot, teardown) | 392 ms | 176 ms |
+| open + full load, warm engine | 82 ms | 21 ms |
+| verify pass, warm (5 separate commands: open, load, eval, shot, close) | 87 ms | 83 ms |
+| **verify pass, warm (`hwatu check`, one CLI spawn)** | **32 ms** | 83 ms |
+| **verify pass, warm (`check` over the socket)** | **24 ms** | 83 ms |
+| verify pass, warm, no screenshot (5 separate commands) | 84 ms | 36 ms |
+| **DOM verify, no screenshot (`check --until dom` vs `waitUntil:"domcontentloaded"`)** | **19 ms** | 35 ms |
 | page-state payload (snapshot JSON vs ARIA snapshot) | 7.3 KB | 5.1 KB |
-| memory, 5 pages open (tree PSS, fresh engine) | 630 MB | 238 MB |
+| memory, 5 pages open (tree PSS, fresh engine) | 813 MB | 259 MB |
 
-Read it honestly: cold start, load-settle, and memory go to
-Playwright; the warm verify pass with a screenshot is a tie (hwatu's
-threaded fast-PNG encode landed screenshots at ~14 ms). Two
-widespread claims about the incumbent are simply outdated and hwatu's
-docs no longer repeat them: headless-shell Chromium cold-starts in
-~150 ms (not seconds), and 5 shared-browser contexts cost ~240 MB
-(not GBs).
+Read it honestly: cold start, bare open+load, and memory still go to
+Playwright. But the row agents actually live in flipped. The verify
+pass — the thing you run hundreds of times while iterating on a page —
+is now **32 ms with a screenshot vs Playwright's 83, and 19 ms vs 35
+for a DOM-level check**, both through hwatu's worst-case transport (a
+fresh CLI process per check) against Playwright's best case (a warm
+in-process CDP connection). Two changes did it: `check` collapses the
+pass into one roundtrip, and finished checks park their window for
+the next one, so steady-state checks skip window construction
+entirely (the same trick Playwright's context reuse plays, now on
+both sides of the table).
+
+Two widespread claims about the incumbent are simply outdated and
+hwatu's docs no longer repeat them: headless-shell Chromium
+cold-starts in ~150 ms (not seconds), and 5 shared-browser contexts
+cost ~260 MB (not GBs).
 
 What the table does not capture, and why hwatu still exists:
 
@@ -152,18 +168,18 @@ What the table does not capture, and why hwatu still exists:
   one-line JSON, no client library or session objects; for coding
   agents the invocation cost (tokens, not milliseconds) is the scarce
   resource.
-- **Absolute cost is tiny either way.** 83 ms per screenshot-included
+- **Absolute cost is tiny either way.** 32 ms per screenshot-included
   check is far below any agent's thinking time. The fight is not won
   on stopwatch deltas.
 
-Known optimization targets from this data: load-settle latency
-(WebKitGTK reports loads settled ~50 ms behind Chromium on this
-fixture) and cold engine init. Screenshot encode was the previous
-target (90 ms of the pass) and was fixed by moving a fast-filter PNG
-encode off the main loop: shots now cost ~14 ms. Load-settle tail
-latency is now addressable from the client side too: `--until dom`
-(2026-07-25) stops paying for subresource tails at all when the check
-only needs the DOM. Tracked in [roadmap.md](roadmap.md).
+Known optimization targets from this data: cold engine init and the
+bare open+load path (window construction dominates it; `check`
+sidesteps it via recycling but `open` still pays it). Fixed so far:
+screenshot encode (was 90 ms of the pass; threaded fast-PNG encode,
+~14 ms), load-settle tail (`--until dom`, 2026-07-25), and per-pass
+overhead (composite `check` + window recycling, 2026-07-25, which
+took the warm screenshot pass from 83 ms to 24-32 ms). Tracked in
+[roadmap.md](roadmap.md).
 
 Caveat on method: hwatu steps go through CLI process spawns (5 per
 pass, the worst case for it) except in the socket variants, while
