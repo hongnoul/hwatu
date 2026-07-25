@@ -75,7 +75,27 @@ a human browser polishes rendering:
 5. **Assertion primitives.** **Shipped:** `hwatu expect <selector>
    [--text X] [--absent]` polls until the assertion holds (failure
    names what WAS found), and `hwatu diff` covers pixel comparison
-   against windows or baselines.
+   against windows or baselines. **Extended 2026-07-25:** `hwatu
+   check --baseline <png> [--tolerance] [--heatmap]` folds the pixel
+   tier into the one-roundtrip check, so DOM assertion (`--eval`) and
+   visual regression (`--baseline`) are one command, one window, one
+   reply.
+5b. **Speculative pre-render.** **Shipped 2026-07-25:** `hwatu
+   prefetch <url>` starts the load in a headless window and returns
+   immediately; the next `check` of the same URL adopts the warm
+   window (`"prefetched": true`, `load_ms` ~0). An agent fires it
+   right after the edit, thinks/composes while the page loads, and
+   the verify step costs ~5 ms instead of the full load. Unclaimed
+   prefetches expire after 30 s into the ordinary check pool
+   (capped at 3 outstanding), so speculation never raises the memory
+   floor. Measured on the local fixture: cold check 180 ms,
+   prefetched check 5 ms.
+5c. **Multi-viewport sweep.** `hwatu check --viewports
+   360x640,768x1024,1920x1080` runs the same pass at N sizes
+   (sequentially on pooled windows) and reports per-viewport results,
+   directly answering the diff envelope's "other widths unverified"
+   caveat in one call. Composes with `--baseline-dir` for per-size
+   baselines.
 6. **Virtual time.** **Prototyped (proto/clock):** `hwatu clock
    pause|resume|step <ms>|set <ms>` puts rAF, `performance.now`,
    `Date.now`, and timers behind one controllable timeline (plus
@@ -89,6 +109,14 @@ a human browser polishes rendering:
 6. **Profiles.** `--profile <name>`: separate cookie jars/site data
    per profile, so parallel agents (or one agent testing two accounts)
    don't share sessions. One daemon, N isolated headless sessions.
+   Extension for parallel-agent infra: derive the default profile
+   from the caller's git worktree (hash of the repo root), so N
+   agents in N worktrees get isolation with zero flags.
+6b. **Client fairness.** One runaway agent must not starve the
+   daemon: per-client window quotas and a bounded per-connection
+   request rate, with structured "over quota" errors instead of
+   silent queueing. Cheap bulkheads before parallel-agent use gets
+   heavy.
 7. **Display-free operation.** hwatud currently needs a Wayland/X
    session even for headless windows. Promoted to the generative-UI
    workstream as [G4](#g4-display-free-operation-promoted-from-p2-item-7).
@@ -128,6 +156,32 @@ worth native features; the rest stay non-goals.
    generalize the pattern: agent flags "needs human" with a reason,
    the window materializes with the reason in the bar, the agent
    awaits resolution. One command pair, any reason.
+11. **Hand-off queue.** The async half of item 10: `hwatu handoff
+   <id> --reason <text>` queues instead of materializing, `hwatu
+   handoffs` lists pending items with reasons, and the human drains
+   the queue on their own schedule (each entry promotes its window on
+   selection). Respects flow: an agent that needs a human at 14:02
+   should not steal focus at 14:02. Log queued-at/answered-at so the
+   cost of waiting on a human (and of interrupting one) is a measured
+   number, not a vibe.
+
+### P3: context hygiene (snapshot output as a budgeted resource)
+
+Snapshot text goes straight into agent context, so its size and its
+trustworthiness are product surfaces:
+
+12. **Budgeted snapshots.** `snapshot --budget <chars>`:
+   multiresolution output that degrades coarse-to-fine (landmarks +
+   counts, then interactables, then full text) instead of truncating
+   arbitrarily. Pairs with snapshot diffing (item 3) to keep iterate
+   loops token-flat.
+13. **Injection quarantine.** Page text is untrusted input that gets
+   pasted into an agent's context. Flag instruction-shaped content
+   ("ignore previous instructions", agent-addressed imperatives) and
+   move it to a `suspect` field instead of inline text, so a harness
+   can drop or fence it. Heuristic and honest about being heuristic:
+   a tripwire, not a guarantee. The first verification harness with a
+   real answer to snapshot-mediated prompt injection wins trust.
 
 ## Workstream: the generative-UI substrate
 

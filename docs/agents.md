@@ -392,7 +392,34 @@ never leak a window, even on timeout.
 hwatu check localhost:5173 --eval 'document.title' --shot=/tmp/after.png
 hwatu check localhost:5173 --until dom      # don't wait for slow images
 hwatu check localhost:5173 --keep           # keep the window, returns id
+hwatu check localhost:5173 --baseline /tmp/before.png --heatmap /tmp/heat.png
+                                            # + pixel diff vs a baseline PNG
 ```
+
+With `--baseline`, the reply gains a `diff` field: `match_percent`,
+mismatch regions, and the envelope (engine/viewport/caveats), same
+output as `hwatu diff`. One command answers both "is the DOM right"
+(`--eval`) and "does it look right" (`--baseline`).
+
+### Speculative pre-render: pay the load while you think
+
+`hwatu prefetch <url>` starts loading the page in a headless window
+and returns immediately. The next `check` of the same URL adopts the
+warm window instead of navigating, reporting `"prefetched": true` and
+`load_ms` near 0. Fire it right after writing a file, then compose
+your check; by the time you run it, the render is done (measured:
+cold check 180 ms, prefetched check 5 ms on a local fixture).
+
+```sh
+hwatu prefetch localhost:5173     # returns immediately, page loads in background
+# ... agent formulates the verification ...
+hwatu check localhost:5173 --eval '...' --shot   # adopts the warm window, ~5 ms
+```
+
+Unclaimed prefetches expire after 30 s (the page would be stale
+anyway); at most 3 are held at once. A prefetch is never required
+for correctness: a check with no matching prefetch just loads
+normally.
 
 For multi-step interaction, sticky targeting means the loop needs no
 ids: each command follows the window the previous one drove.

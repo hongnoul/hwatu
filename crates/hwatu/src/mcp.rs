@@ -225,9 +225,15 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
             shot: opt_bool(args, "shot").unwrap_or(false),
             shot_path: opt_str(args, "shot_path"),
             full: opt_bool(args, "full").unwrap_or(false),
+            baseline: opt_str(args, "baseline"),
+            tolerance: opt_u64(args, "tolerance").map(|v| v.min(255) as u8),
+            heatmap: opt_str(args, "heatmap"),
             until: parse_until(args)?,
             keep: opt_bool(args, "keep").unwrap_or(false),
             timeout_ms,
+        }),
+        "prefetch" => Ok(Request::Prefetch {
+            url: req_str(args, "url")?,
         }),
         "snapshot" => Ok(Request::Snapshot { id, timeout_ms }),
         "expect" => Ok(Request::Expect {
@@ -437,20 +443,36 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         tool(
             "check",
             "One-call verification pass: open a headless window, load the url, \
-             wait for it, optionally eval JS and screenshot, then close the \
-             window. Returns url, title, eval result, shot path, console \
-             errors, and timings in one reply. Prefer this over separate \
+             wait for it, optionally eval JS, screenshot, and pixel-diff against \
+             a baseline PNG, then close the window. Returns url, title, eval \
+             result, shot path, diff score/regions, console errors, and timings \
+             in one reply. Prefer this over separate \
              open/wait_load/eval/screenshot/close calls for one-shot checks.",
             json!({
                 "url": prop("string", "URL to load (https:// implied)."),
                 "eval": prop("string", "JS to run once loaded (expression or function body)."),
                 "shot": prop("boolean", "Take a screenshot to a temp file."),
                 "shot_path": prop("string", "Screenshot destination (implies shot)."),
-                "full": prop("boolean", "Screenshot the full document, not just the viewport."),
+                "full": prop("boolean", "Screenshot/diff the full document, not just the viewport."),
+                "baseline": prop("string", "Baseline PNG path: pixel-diff the loaded page against it and include match_percent + mismatch regions in the reply."),
+                "tolerance": prop("integer", "Per-channel diff tolerance 0-255 (default 8; only with baseline)."),
+                "heatmap": prop("string", "Write a mismatch heatmap PNG here (only with baseline)."),
                 "until": { "type": "string", "enum": ["committed", "dom", "settled"],
                     "description": "Load stage gating eval/shot (default settled)." },
                 "keep": prop("boolean", "Keep the window open and return its id."),
                 "timeout_ms": prop("integer", "Deadline for the whole pass in ms."),
+            }),
+            &["url"],
+        ),
+        tool(
+            "prefetch",
+            "Speculatively start loading a url in a headless window and return \
+             immediately. The next `check` of the same url adopts the warm \
+             window, paying ~0 load latency. Call it right after editing code \
+             (while the dev server rebuilds and you compose the check). \
+             Fire-and-forget: unclaimed prefetches expire after ~30s.",
+            json!({
+                "url": prop("string", "URL to start loading (https:// implied)."),
             }),
             &["url"],
         ),
@@ -821,6 +843,7 @@ mod tests {
             "list_windows": {},
             "goto": { "url": "example.com" },
             "check": { "url": "example.com" },
+            "prefetch": { "url": "example.com" },
             "snapshot": {},
             "expect": { "selector": "h1" },
             "click": { "ref": 0 },

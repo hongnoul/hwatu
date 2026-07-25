@@ -523,6 +523,88 @@ fn capture(daemon: &Rc<Daemon>, id: u64, full: bool, done: Box<dyn FnOnce(Result
     );
 }
 
+/// Compare two frames and build the structured diff report: match
+/// score, region hints, envelope, optional heatmap. Shared by
+/// [`diff`] and by `check --baseline` (which folds the pixel tier
+/// into the one-roundtrip check).
+fn diff_value(
+    a: &Frame,
+    b: &Frame,
+    tolerance: u8,
+    heatmap: Option<String>,
+    full: bool,
+) -> Result<serde_json::Value, String> {
+    let result = diff_frames(a, b, tolerance);
+    let match_percent = if result.total == 0 {
+        100.0
+    } else {
+        100.0 * (result.total - result.mismatched) as f64 / result.total as f64
+    };
+    let regions = mismatch_regions(&result);
+    let mut heatmap_path = None;
+    if let Some(path) = heatmap {
+        write_heatmap(a, &result, &path)?;
+        heatmap_path = Some(path);
+    }
+    // The envelope: exactly what this score is a claim about, and
+    // nothing more. A diff verifies one engine at one viewport at
+    // one moment; scores quoted without their envelope get read as
+    // "the page is pixel-perfect everywhere", which is how broken
+    // responsive layouts sail through verification.
+    let envelope = serde_json::json!({
+        "engine": format!(
+            "webkitgtk {}.{}.{}",
+            webkit6::functions::major_version(),
+            webkit6::functions::minor_version(),
+            webkit6::functions::micro_version(),
+        ),
+        "viewport": { "width": a.width, "height": a.height },
+        "region": if full { "full_document" } else { "visible" },
+        "caveat": "score covers only this engine/viewport/frame; other widths, engines, and animation times are unverified",
+    });
+    let mut value = serde_json::json!({
+        "match_percent": (match_percent * 100.0).round() / 100.0,
+        "mismatched_pixels": result.mismatched,
+        "total_pixels": result.total,
+        "a": { "width": a.width, "height": a.height },
+        "b": { "width": b.width, "height": b.height },
+        "tolerance": tolerance,
+        "regions": regions,
+        "envelope": envelope,
+    });
+    if let Some(p) = heatmap_path {
+        value["heatmap"] = serde_json::Value::String(p);
+    }
+    Ok(value)
+}
+
+/// Diff window `id` against a baseline PNG and hand the structured
+/// diff JSON to `done`. The callback shape (instead of a `Reply`)
+/// lets `check` embed the diff as one field of its combined reply.
+pub fn diff_against_baseline(
+    daemon: &Rc<Daemon>,
+    id: u64,
+    baseline: String,
+    tolerance: Option<u8>,
+    heatmap: Option<String>,
+    full: bool,
+    done: Box<dyn FnOnce(Result<serde_json::Value, String>)>,
+) {
+    let tolerance = tolerance.unwrap_or(8);
+    capture(
+        daemon,
+        id,
+        full,
+        Box::new(move |a| {
+            let value = a.and_then(|a| {
+                let b = Frame::from_png(&baseline)?;
+                diff_value(&a, &b, tolerance, heatmap, full)
+            });
+            done(value);
+        }),
+    );
+}
+
 /// Diff two windows (or one window against a baseline PNG): capture
 /// both frames, compare, reply with a match score and region hints.
 #[allow(clippy::too_many_arguments)]
@@ -543,51 +625,11 @@ pub fn diff(
         ));
     }
 
-    let finish = move |a: Frame, b: Frame, reply: Reply| {
-        let result = diff_frames(&a, &b, tolerance);
-        let match_percent = if result.total == 0 {
-            100.0
-        } else {
-            100.0 * (result.total - result.mismatched) as f64 / result.total as f64
-        };
-        let regions = mismatch_regions(&result);
-        let mut heatmap_path = None;
-        if let Some(path) = heatmap {
-            if let Err(e) = write_heatmap(&a, &result, &path) {
-                return reply(Response::err(e));
-            }
-            heatmap_path = Some(path);
-        }
-        // The envelope: exactly what this score is a claim about, and
-        // nothing more. A diff verifies one engine at one viewport at
-        // one moment; scores quoted without their envelope get read as
-        // "the page is pixel-perfect everywhere", which is how broken
-        // responsive layouts sail through verification.
-        let envelope = serde_json::json!({
-            "engine": format!(
-                "webkitgtk {}.{}.{}",
-                webkit6::functions::major_version(),
-                webkit6::functions::minor_version(),
-                webkit6::functions::micro_version(),
-            ),
-            "viewport": { "width": a.width, "height": a.height },
-            "region": if full { "full_document" } else { "visible" },
-            "caveat": "score covers only this engine/viewport/frame; other widths, engines, and animation times are unverified",
-        });
-        let mut value = serde_json::json!({
-            "match_percent": (match_percent * 100.0).round() / 100.0,
-            "mismatched_pixels": result.mismatched,
-            "total_pixels": result.total,
-            "a": { "width": a.width, "height": a.height },
-            "b": { "width": b.width, "height": b.height },
-            "tolerance": tolerance,
-            "regions": regions,
-            "envelope": envelope,
-        });
-        if let Some(p) = heatmap_path {
-            value["heatmap"] = serde_json::Value::String(p);
-        }
-        reply(Response::value(value));
+    let finish = move |a: Frame, b: Frame, reply: Reply| match diff_value(
+        &a, &b, tolerance, heatmap, full,
+    ) {
+        Ok(value) => reply(Response::value(value)),
+        Err(e) => reply(Response::err(e)),
     };
 
     match (other, baseline) {

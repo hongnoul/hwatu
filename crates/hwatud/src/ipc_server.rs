@@ -107,13 +107,20 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
             shot,
             shot_path,
             full,
+            baseline,
+            tolerance,
+            heatmap,
             until,
             keep,
             timeout_ms,
         } => {
             return automation::check(
-                daemon, url, eval, shot, shot_path, full, until, keep, timeout_ms, reply,
+                daemon, url, eval, shot, shot_path, full, baseline, tolerance, heatmap, until,
+                keep, timeout_ms, reply,
             );
+        }
+        Request::Prefetch { url } => {
+            return automation::prefetch(daemon, url, reply);
         }
         Request::Challenge {
             id,
@@ -309,6 +316,7 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
         | Request::Screenshot { .. }
         | Request::WaitLoad { .. }
         | Request::Check { .. }
+        | Request::Prefetch { .. }
         | Request::Challenge { .. }
         | Request::Upload { .. }
         | Request::Scroll { .. }

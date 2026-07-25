@@ -683,6 +683,9 @@ pub fn check(
     shot: bool,
     shot_path: Option<String>,
     full: bool,
+    baseline: Option<String>,
+    tolerance: Option<u8>,
+    heatmap: Option<String>,
     until: LoadStage,
     keep: bool,
     timeout_ms: Option<u64>,
@@ -692,7 +695,14 @@ pub fn check(
     let started = std::time::Instant::now();
 
     let url = crate::ipc_server::normalize_url(url);
-    let (win, view) = match acquire_check_window(daemon, &url) {
+    // A prefetched window for this URL is already loading (or loaded):
+    // adopt it and skip the navigation entirely.
+    let prefetched = claim_prefetch(daemon, &url);
+    let adopted = prefetched.is_some();
+    let (win, view) = match prefetched
+        .map(Ok)
+        .unwrap_or_else(|| acquire_check_window(daemon, &url))
+    {
         Ok(pair) => pair,
         Err(resp) => return reply.send(*resp),
     };
@@ -717,7 +727,7 @@ pub fn check(
     }
 
     let daemon = daemon.clone();
-    wire_load_stage(&view, win.clone(), until, move |view| {
+    let proceed = move |view: &webkit6::WebView| {
         if reply.is_spent() {
             return; // timeout already answered (and closed the window)
         }
@@ -728,6 +738,11 @@ pub fn check(
         })));
         if keep {
             result.borrow_mut()["id"] = serde_json::json!(win_id);
+        }
+        if adopted {
+            // The load was already warm from a `prefetch`; load_ms
+            // measures adoption, not a navigation.
+            result.borrow_mut()["prefetched"] = serde_json::json!(true);
         }
 
         // Eval and screenshot are independent of each other; run both
@@ -829,8 +844,56 @@ pub fn check(
                 }),
             );
         }
+        if let Some(png) = baseline {
+            pending.set(pending.get() + 1);
+            let finish = finish.clone();
+            let result = result.clone();
+            crate::verify::diff_against_baseline(
+                &daemon,
+                win_id,
+                png,
+                tolerance,
+                heatmap,
+                full,
+                Box::new(move |value| {
+                    result.borrow_mut()["diff"] = match value {
+                        Ok(v) => v,
+                        Err(e) => serde_json::json!({ "error": e }),
+                    };
+                    finish();
+                }),
+            );
+        }
         finish(); // release the base hold; replies if nothing else is pending
-    });
+    };
+
+    // An adopted prefetch window's load may have engaged before this
+    // request arrived, so the requested stage's signal may already
+    // have fired; waiting for it again would stall until timeout.
+    // Once the document has Committed (and no navigation is pending),
+    // dispatch on what is left: nothing loading means every stage
+    // passed, otherwise committed/dom resolve in-page and settled
+    // waits for the still-coming Finished. A prefetch that has not
+    // Committed yet behaves exactly like a fresh check navigation
+    // (prefetch marks nav_pending the same way), so the normal stage
+    // wiring is correct for it.
+    if adopted && win.load_committed() && !win.nav_pending() {
+        if !view.is_loading() {
+            let view = view.clone();
+            glib::idle_add_local_once(move || proceed(&view));
+        } else {
+            match until {
+                LoadStage::Committed => {
+                    let view = view.clone();
+                    glib::idle_add_local_once(move || proceed(&view));
+                }
+                LoadStage::Dom => await_dom_ready(&view, proceed),
+                LoadStage::Settled => wire_load_settled(&view, win.clone(), proceed),
+            }
+        }
+    } else {
+        wire_load_stage(&view, win.clone(), until, proceed);
+    }
 }
 
 /// How long an idle pooled check window is kept before being closed.
@@ -935,6 +998,107 @@ fn close_check_window(daemon: &Rc<Daemon>, id: u64, keep: bool) {
     if let Some(win) = win {
         win.close();
     }
+}
+
+/// How long an unclaimed prefetch is kept before its window returns
+/// to the check pool. Short on purpose: a prefetched page goes stale
+/// the moment the dev server rebuilds, and a check adopting stale
+/// content would verify the wrong build.
+const PREFETCH_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Cap on outstanding prefetch windows: speculation must never raise
+/// the daemon's memory floor unboundedly.
+const PREFETCH_MAX: usize = 3;
+
+/// Speculatively load `url` in a headless window and reply
+/// immediately. The next `check` of the same URL adopts the window
+/// (see [`claim_prefetch`]); an unclaimed prefetch is released to the
+/// check pool after [`PREFETCH_TTL`]. Prefetching a URL that already
+/// has an outstanding prefetch re-navigates that window (the page may
+/// have been rebuilt since), rather than stacking a second one.
+pub fn prefetch(daemon: &Rc<Daemon>, url: String, reply: Reply) {
+    let url = crate::ipc_server::normalize_url(url);
+
+    // Re-navigate an existing prefetch of the same URL in place.
+    let existing = {
+        let pool = daemon.prefetch_pool.borrow();
+        pool.iter().find(|(u, ..)| *u == url).map(|&(_, id, _)| id)
+    };
+    if let Some(id) = existing {
+        if let Some(view) = daemon.windows.borrow().get(&id).and_then(|w| {
+            w.mark_nav_pending(&url);
+            w.live_webview()
+        }) {
+            view.load_uri(&url);
+            return reply(Response::value(
+                serde_json::json!({ "prefetching": url, "id": id }),
+            ));
+        }
+        // Window vanished behind our back: drop the stale entry.
+        daemon
+            .prefetch_pool
+            .borrow_mut()
+            .retain(|(_, i, _)| *i != id);
+    }
+
+    if daemon.prefetch_pool.borrow().len() >= PREFETCH_MAX {
+        // Evict the oldest speculation: newer intent is better intent.
+        let (_, old_id, _) = daemon.prefetch_pool.borrow_mut().remove(0);
+        release_check_window(daemon, old_id, false);
+    }
+
+    let (win, _view) = match acquire_check_window(daemon, &url) {
+        Ok(pair) => pair,
+        Err(resp) => return reply(*resp),
+    };
+    let win_id = win.id;
+    let token = daemon.alloc_id();
+    daemon
+        .prefetch_pool
+        .borrow_mut()
+        .push((url.clone(), win_id, token));
+
+    // TTL: an unclaimed prefetch returns to the ordinary check pool
+    // (blanked), so speculation misses cost only the load, not RAM.
+    {
+        let daemon = daemon.clone();
+        glib::timeout_add_local_once(PREFETCH_TTL, move || {
+            let expired = {
+                let mut pool = daemon.prefetch_pool.borrow_mut();
+                match pool.iter().position(|&(_, i, t)| (i, t) == (win_id, token)) {
+                    Some(idx) => {
+                        pool.remove(idx);
+                        true
+                    }
+                    None => false, // claimed, or re-navigated (new token)
+                }
+            };
+            if expired {
+                release_check_window(&daemon, win_id, false);
+            }
+        });
+    }
+
+    reply(Response::value(
+        serde_json::json!({ "prefetching": url, "id": win_id }),
+    ))
+}
+
+/// Claim the prefetched window for `url`, if one is outstanding and
+/// still alive. The caller (check) adopts its in-flight load.
+fn claim_prefetch(daemon: &Rc<Daemon>, url: &str) -> Option<(Rc<BrowserWindow>, webkit6::WebView)> {
+    let (id, _token) = {
+        let mut pool = daemon.prefetch_pool.borrow_mut();
+        let idx = pool.iter().position(|(u, ..)| u == url)?;
+        let (_, id, token) = pool.remove(idx);
+        (id, token)
+    };
+    let win = daemon.windows.borrow().get(&id).cloned()?;
+    let Some(view) = win.live_webview() else {
+        close_check_window(daemon, id, false); // discarded: unusable
+        return None;
+    };
+    Some((win, view))
 }
 
 /// Capture the page as a PNG on disk: the visible viewport, or the

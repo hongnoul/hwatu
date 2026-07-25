@@ -127,6 +127,19 @@ pub enum Request {
         /// Screenshot the full document instead of the viewport.
         #[serde(default)]
         full: bool,
+        /// Pixel-diff the loaded page against this baseline PNG and
+        /// include the score/regions in the reply (same output as
+        /// [`Request::Diff`]). Folds the verify loop's pixel tier into
+        /// the one roundtrip: `--eval` answers "is the DOM right",
+        /// `--baseline` answers "does it look right".
+        #[serde(default)]
+        baseline: Option<String>,
+        /// Per-channel diff tolerance 0-255 (default 8); only with `baseline`.
+        #[serde(default)]
+        tolerance: Option<u8>,
+        /// Write a mismatch heatmap PNG here; only with `baseline`.
+        #[serde(default)]
+        heatmap: Option<String>,
         /// Load stage gating eval/shot (default: settled).
         #[serde(default)]
         until: LoadStage,
@@ -136,6 +149,14 @@ pub enum Request {
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
+    /// Speculatively start loading `url` in a parked headless window,
+    /// replying immediately. The next [`Request::Check`] of the same
+    /// URL adopts the window instead of navigating a fresh one, so the
+    /// load happens while the agent is still thinking (or while the
+    /// dev server rebuilds) and the check pays ~0 load latency.
+    /// Unclaimed prefetches expire after a short TTL. Fire-and-forget:
+    /// a prefetch is never required for correctness.
+    Prefetch { url: String },
     /// Detect CAPTCHA / anti-bot challenge UI, and optionally wait for a
     /// human to clear it. This does not solve or bypass the challenge; it
     /// returns structured state so an agent can pause/resume safely.

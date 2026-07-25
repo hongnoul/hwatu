@@ -516,6 +516,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 .get(1)
                 .ok_or(
                     "usage: hwatu check <url> [--eval <js>] [--shot | --shot=<png>] [--full] \
+                     [--baseline <png> [--tolerance <0-255>] [--heatmap <png>]] \
                      [--until (committed|dom|settled)] [--keep] [--timeout-ms <ms>]",
                 )?
                 .to_string();
@@ -525,10 +526,20 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 shot,
                 shot_path,
                 full,
+                baseline,
+                tolerance,
+                heatmap,
                 until: until.unwrap_or_default(),
                 keep,
                 timeout_ms,
             })
+        }
+        Some("prefetch") => {
+            let url = rest
+                .get(1)
+                .ok_or("usage: hwatu prefetch <url>")?
+                .to_string();
+            Ok(Request::Prefetch { url })
         }
         Some("challenge") | Some("detect-challenge") => Ok(Request::Challenge {
             id,
@@ -753,7 +764,8 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--foc
 | list [--json] | close <id> | focus <id> \
 | eval [--id <id>] [--timeout-ms <ms>] <js> | goto [--id <id>] [--no-wait] [--until <stage>] <url> \
     | shot [--id <id>] [--full] [path] | wait-load [--id <id>] [--until (committed|dom|settled)] \
-    | check <url> [--eval <js>] [--shot | --shot=<png>] [--full] [--until <stage>] [--keep] \
+    | check <url> [--eval <js>] [--shot | --shot=<png>] [--full] [--baseline <png> [--tolerance <0-255>] [--heatmap <png>]] [--until <stage>] [--keep] \
+    | prefetch <url> \
     | challenge [--id <id>] [--wait] \
     | upload [--id <id>] <selector> <path> \
 | scroll [--id <id>] [<selector> [nth]] [--contains <text>] [--to-y <px>] [--by <pages>] \
@@ -850,11 +862,46 @@ mod tests {
     }
 
     #[test]
+    fn check_parses_baseline_diff_flags() {
+        let Ok(Request::Check {
+            baseline,
+            tolerance,
+            heatmap,
+            ..
+        }) = parse(&args(&[
+            "check",
+            "localhost:3000",
+            "--baseline",
+            "/tmp/base.png",
+            "--tolerance",
+            "12",
+            "--heatmap",
+            "/tmp/heat.png",
+        ]))
+        else {
+            panic!("expected Check");
+        };
+        assert_eq!(baseline.as_deref(), Some("/tmp/base.png"));
+        assert_eq!(tolerance, Some(12));
+        assert_eq!(heatmap.as_deref(), Some("/tmp/heat.png"));
+    }
+
+    #[test]
+    fn prefetch_parses_and_requires_url() {
+        let Ok(Request::Prefetch { url }) = parse(&args(&["prefetch", "localhost:3000"])) else {
+            panic!("expected Prefetch");
+        };
+        assert_eq!(url, "localhost:3000");
+        assert!(parse(&args(&["prefetch"])).is_err());
+    }
+
+    #[test]
     fn check_defaults_are_minimal() {
         let Ok(Request::Check {
             eval,
             shot,
             shot_path,
+            baseline,
             until,
             keep,
             ..
@@ -865,6 +912,7 @@ mod tests {
         assert_eq!(eval, None);
         assert!(!shot);
         assert_eq!(shot_path, None);
+        assert_eq!(baseline, None);
         assert_eq!(until, hwatu_ipc::LoadStage::Settled);
         assert!(!keep);
     }

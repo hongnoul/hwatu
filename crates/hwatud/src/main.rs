@@ -62,6 +62,11 @@ pub struct Daemon {
     /// a park token so a TTL timer from an earlier park of the same
     /// window cannot close a later park.
     pub check_pool: RefCell<Vec<(u64, u64)>>,
+    /// Speculative loads awaiting adoption: url -> (window id, park
+    /// token). `hwatu prefetch <url>` starts the load; the next
+    /// `check` of the same URL claims the window instead of paying
+    /// the navigation. Tokens work like [`Self::check_pool`]'s.
+    pub prefetch_pool: RefCell<Vec<(String, u64, u64)>>,
     /// Debounce timer for crash-resilience session snapshots.
     session_save_timer: RefCell<Option<glib::SourceId>>,
 }
@@ -78,6 +83,7 @@ impl Daemon {
             keymap: keys::Keymap::load(),
             last_target: RefCell::new(None),
             check_pool: RefCell::new(Vec::new()),
+            prefetch_pool: RefCell::new(Vec::new()),
             session_save_timer: RefCell::new(None),
         })
     }
