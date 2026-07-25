@@ -728,6 +728,14 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 .ok_or("usage: hwatu focus <id>")?;
             Ok(Request::Focus { id })
         }
+        Some("unfocus") | Some("hide") => {
+            let id = rest
+                .get(1)
+                .and_then(|s| s.parse().ok())
+                .or(id)
+                .ok_or("usage: hwatu unfocus <id>")?;
+            Ok(Request::Unfocus { id })
+        }
         Some("adblock") => {
             let action = match rest.get(1).map(|s| s.as_str()) {
                 Some("on") => AdblockCmd::On,
@@ -761,7 +769,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
 const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--focus] [url] \
 (agent environments default to --headless; set HWATU_AGENT_MODE or \
 \"agent_mode\" in ~/.config/hwatu/config.json to normal|background|headless) \
-| list [--json] | close <id> | focus <id> \
+| list [--json] | close <id> | focus <id> | unfocus <id> \
 | eval [--id <id>] [--timeout-ms <ms>] <js> | goto [--id <id>] [--no-wait] [--until <stage>] <url> \
     | shot [--id <id>] [--full] [path] | wait-load [--id <id>] [--until (committed|dom|settled)] \
     | check <url> [--eval <js>] [--shot | --shot=<png>] [--full] [--baseline <png> [--tolerance <0-255>] [--heatmap <png>]] [--until <stage>] [--keep] \

@@ -510,7 +510,7 @@ function detectHwatuChallenge() {
 }
 "#;
 
-fn challenge_detector_js() -> &'static str {
+pub(crate) fn challenge_detector_js() -> &'static str {
     CHALLENGE_DETECTOR_JS
 }
 

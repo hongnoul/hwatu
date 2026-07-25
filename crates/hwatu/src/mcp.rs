@@ -197,6 +197,9 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
         "focus" => Ok(Request::Focus {
             id: opt_u64(args, "id").ok_or("missing required argument: id")?,
         }),
+        "unfocus" => Ok(Request::Unfocus {
+            id: opt_u64(args, "id").ok_or("missing required argument: id")?,
+        }),
         "goto" => Ok(Request::Navigate {
             id,
             url: req_str(args, "url")?,
@@ -691,8 +694,20 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         tool(
             "focus",
             "Raise and focus a window, promoting headless/background windows to \
-             normal: the human sees the agent's live session, cookies and all.",
+             normal: the human sees the agent's live session, cookies and all. \
+             Use ONLY when a human must see or act on the page (CAPTCHA, OAuth \
+             consent, judgment call); call unfocus as soon as their part is \
+             done. Unattended promoted windows auto-demote after a timeout.",
             json!({ "id": prop("integer", "Window id to show.") }),
+            &["id"],
+        ),
+        tool(
+            "unfocus",
+            "Hide a window again: the inverse of focus. Returns the window to \
+             the mode it had before promotion (headless windows go fully \
+             invisible; the live session, cookies, and page state survive). \
+             Call this the moment the human's part is done.",
+            json!({ "id": prop("integer", "Window id to hide.") }),
             &["id"],
         ),
         tool(
@@ -860,6 +875,7 @@ mod tests {
             "clock": { "action": "pause" },
             "diff": { "id": 1, "other": 2 },
             "focus": { "id": 1 },
+            "unfocus": { "id": 1 },
             "close": { "id": 1 },
         });
         for def in tool_definitions() {

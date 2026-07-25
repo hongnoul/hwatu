@@ -290,6 +290,16 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
                 None => Response::err(format!("no window {id}")),
             }
         }
+        Request::Unfocus { id } => {
+            let win = daemon.windows.borrow().get(&id).cloned();
+            match win {
+                Some(w) => {
+                    w.unfocus();
+                    Response::ok()
+                }
+                None => Response::err(format!("no window {id}")),
+            }
+        }
         Request::Adblock { action } => {
             match action {
                 AdblockCmd::On => Adblock::set_enabled(daemon, true),

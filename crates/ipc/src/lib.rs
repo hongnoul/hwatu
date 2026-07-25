@@ -171,6 +171,12 @@ pub enum Request {
     },
     /// Present (raise/focus) a window.
     Focus { id: u64 },
+    /// The inverse of [`Request::Focus`]: unmap the window and return
+    /// it to the mode it had before a `Focus` promoted it (headless
+    /// for windows that were never promoted). Lets agents hand a
+    /// window back out of the user's way once it no longer needs
+    /// human attention.
+    Unfocus { id: u64 },
     /// Set a `<input type=file>`'s files from a path on disk. The
     /// daemon reads the file and injects it into the page as a `File`
     /// via `DataTransfer`, the standard automation-harness technique

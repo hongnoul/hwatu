@@ -30,6 +30,16 @@ fn discard_timeout_secs() -> u64 {
         .unwrap_or(120)
 }
 
+/// How long a focus-promoted window may sit unattended before the
+/// auto-demote watchdog checks it (see `try_auto_demote`). Override
+/// with HWATU_AUTO_DEMOTE_SECS; 0 disables the watchdog.
+fn auto_demote_secs() -> u64 {
+    std::env::var("HWATU_AUTO_DEMOTE_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(120)
+}
+
 /// Viewport pushed into headless windows, `WIDTHxHEIGHT`. Override
 /// with HWATU_HEADLESS_SIZE. Defaults to a common desktop size so
 /// responsive pages render their desktop layout instead of tripping
@@ -133,6 +143,14 @@ pub struct BrowserWindow {
     /// it spawns inherit it so a headless page can't steal focus. A
     /// `focus` request promotes the window to Normal.
     mode: std::cell::Cell<OpenMode>,
+    /// The mode this window had before a `focus` request promoted it
+    /// to Normal. Present only while promoted: `unfocus` (explicit or
+    /// via the auto-demote watchdog) restores it, so an agent window
+    /// surfaced for a CAPTCHA or OAuth click goes back out of the
+    /// user's way instead of squatting in the WM forever.
+    promoted_from: std::cell::Cell<Option<OpenMode>>,
+    /// Watchdog for promoted windows; see [`Self::schedule_auto_demote`].
+    demote_timer: RefCell<Option<glib::SourceId>>,
     /// Per-window viewport override (CSS px), set by `hwatu resize`.
     /// None means the headless_size() default. Headless allocation and
     /// ensure_viewport() re-assert whichever is current, so a resized
@@ -457,6 +475,8 @@ impl BrowserWindow {
             process_group: RefCell::new(None),
             app_id,
             mode: std::cell::Cell::new(mode),
+            promoted_from: std::cell::Cell::new(None),
+            demote_timer: RefCell::new(None),
             viewport: std::cell::Cell::new(None),
             nav_pending: RefCell::new(None),
             nav_target: RefCell::new(None),
@@ -972,9 +992,116 @@ impl BrowserWindow {
 
     /// Raise and focus, promoting background/headless windows to
     /// normal: an explicit focus request means "show me this window".
-    pub fn present(&self) {
+    /// The prior mode is remembered so `unfocus` (or the auto-demote
+    /// watchdog) can put the window back out of the user's way, and a
+    /// watchdog is armed: a promoted window that no longer shows any
+    /// need for a human (not focused, no bar prompt, no CAPTCHA)
+    /// demotes itself instead of squatting in the WM forever.
+    pub fn present(self: &Rc<Self>) {
+        let prev = self.mode.get();
+        if prev != OpenMode::Normal && self.promoted_from.get().is_none() {
+            self.promoted_from.set(Some(prev));
+        }
         self.mode.set(OpenMode::Normal);
         self.window.present();
+        self.schedule_auto_demote();
+    }
+
+    /// The inverse of [`Self::present`]: unmap the window and restore
+    /// the mode it had before promotion (headless if it was never
+    /// promoted, hiding is the caller's evident intent).
+    pub fn unfocus(self: &Rc<Self>) {
+        self.cancel_demote_timer();
+        let restored = self.promoted_from.take().unwrap_or(OpenMode::Headless);
+        self.mode.set(restored);
+        match restored {
+            OpenMode::Background => {
+                // Re-map without an activation request: visible in the
+                // layout, focus goes back to wherever the WM sends it.
+                self.window.set_visible(false);
+                self.window.set_visible(true);
+            }
+            // Normal can't be restored-to (promotion only records
+            // non-Normal modes); treat it like headless for safety.
+            OpenMode::Headless | OpenMode::Normal => {
+                self.window.set_visible(false);
+                // Unmapping drops the allocation; push the offscreen
+                // viewport back so the page keeps rendering.
+                self.allocate_viewport();
+            }
+        }
+    }
+
+    /// Arm (or re-arm) the promoted-window watchdog. Windows are only
+    /// ever visible on the user's desktop for one of two reasons: a
+    /// human opened them, or an agent surfaced them for human input.
+    /// For the second kind, "needs a human" is checkable, so check it:
+    /// every `HWATU_AUTO_DEMOTE_SECS` (default 120, 0 disables) a
+    /// promoted window verifies that it is focused, has a pending
+    /// prompt, or shows a CAPTCHA/anti-bot challenge; failing all
+    /// three it returns to its pre-promotion mode.
+    fn schedule_auto_demote(self: &Rc<Self>) {
+        let secs = auto_demote_secs();
+        if secs == 0 || self.promoted_from.get().is_none() {
+            return;
+        }
+        self.cancel_demote_timer();
+        let this = self.clone();
+        let source =
+            glib::timeout_add_local_once(std::time::Duration::from_secs(secs), move || {
+                this.demote_timer.replace(None);
+                this.try_auto_demote();
+            });
+        self.demote_timer.replace(Some(source));
+    }
+
+    fn cancel_demote_timer(&self) {
+        if let Some(source) = self.demote_timer.borrow_mut().take() {
+            source.remove();
+        }
+    }
+
+    /// Watchdog body: demote the window unless something still needs a
+    /// human. GTK-visible engagement (focus, bar, prompts) is checked
+    /// synchronously; page-level challenges need an async eval, and the
+    /// demote only happens when that eval reports the page clear.
+    fn try_auto_demote(self: &Rc<Self>) {
+        if self.promoted_from.get().is_none() {
+            return;
+        }
+        if self.window.is_active() || self.bar.is_open() || self.prompts.has_pending() {
+            self.schedule_auto_demote();
+            return;
+        }
+        let Some(webview) = self.live_webview() else {
+            // Discarded while promoted: nothing on screen needs a human.
+            self.unfocus();
+            return;
+        };
+        let js = format!(
+            "{}\ndetectHwatuChallenge().status",
+            crate::automation::challenge_detector_js()
+        );
+        let this = self.clone();
+        webview.evaluate_javascript(
+            &js,
+            None,
+            None,
+            gtk::gio::Cancellable::NONE,
+            move |result| {
+                let challenged = result
+                    .ok()
+                    .map(|v| v.to_str() == "challenge")
+                    .unwrap_or(false);
+                // Re-check engagement: the user may have focused the
+                // window during the async gap.
+                if challenged || this.window.is_active() || this.prompts.has_pending() {
+                    this.schedule_auto_demote();
+                } else {
+                    this.unfocus();
+                }
+            },
+        );
     }
 
     pub fn info(&self) -> WindowInfo {
