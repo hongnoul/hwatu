@@ -88,6 +88,10 @@ hwatu localhost:3000       # open a window like you open a terminal
 
 ## Why not Playwright or chrome-devtools-mcp?
 
+Cold daemon = fast call, but not accurate, unoptimized for agent harness loops (current method)
+Warm daemon = unnecessary resource allocation on browser (chromium), entire browser stealing your focus
+Hwatu = "the coldest warm daemon," interruptible reactively, optimized for agent loops
+
 Playwright and chrome-devtools-mcp are, at their core, automation
 APIs: they let an agent *drive* a browser, then hand back raw
 screenshots and DOM for the agent to eyeball.
