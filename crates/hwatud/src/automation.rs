@@ -742,11 +742,6 @@ pub fn check(
                 if pending.get() > 0 || reply.is_spent() {
                     return;
                 }
-                // Title last, not at load time: WebKit publishes the
-                // title property a beat after the load settles, and on
-                // a recycled window the stale value would win the race.
-                result.borrow_mut()["title"] =
-                    serde_json::json!(view.title().map(|t| t.to_string()).unwrap_or_default());
                 // Console capture last: it sees everything the load
                 // and the eval produced. Drained (`clear`) because the
                 // window may be recycled for the next check.
@@ -761,10 +756,33 @@ pub fn check(
                     if !console.is_empty() {
                         r["console"] = serde_json::to_value(&console).unwrap_or_default();
                     }
-                    r["total_ms"] = serde_json::json!(started.elapsed().as_millis() as u64);
                 }
-                release_check_window(&daemon, win_id, keep);
-                reply.send(Response::value(result.borrow().clone()));
+                // Title from the DOM, not view.title(): WebKit
+                // publishes the title property asynchronously after
+                // the load, so on fast/recycled checks it lags (or
+                // holds the previous page's value).
+                let daemon = daemon.clone();
+                let result = result.clone();
+                let reply = reply.clone();
+                let started = started;
+                view.evaluate_javascript(
+                    "document.title",
+                    None,
+                    None,
+                    gio::Cancellable::NONE,
+                    move |title| {
+                        {
+                            let mut r = result.borrow_mut();
+                            r["title"] = serde_json::json!(title
+                                .ok()
+                                .map(|v| v.to_str().to_string())
+                                .unwrap_or_default());
+                            r["total_ms"] = serde_json::json!(started.elapsed().as_millis() as u64);
+                        }
+                        release_check_window(&daemon, win_id, keep);
+                        reply.send(Response::value(result.borrow().clone()));
+                    },
+                );
             })
         };
 
@@ -848,9 +866,8 @@ fn acquire_check_window(
         .get(&info.id)
         .cloned()
         .ok_or_else(|| Box::new(Response::err("check: window vanished at open")))?;
-    let view = live_view(&win).map_err(|resp| {
+    let view = live_view(&win).inspect_err(|_| {
         close_check_window(daemon, info.id, false);
-        resp
     })?;
     Ok((win, view))
 }
