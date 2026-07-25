@@ -93,9 +93,38 @@ a human browser polishes rendering:
    session even for headless windows. A nested headless compositor
    path unlocks CI.
 
+### P2 — closing the general-automation gaps that matter
+
+Measured against Playwright, hwatu's real coverage gaps are trusted
+input, cross-origin iframes, and network visibility. Two of those are
+worth native features; the rest stay non-goals.
+
+8. **Trusted input synthesis.** `click`/`type` today dispatch
+   synthetic JS events: `isTrusted` is false, and cross-origin iframes
+   (hosted payment fields: Stripe Elements, Braintree, Adyen) are
+   unreachable from the top frame's JS world entirely. Synthesizing
+   input at the GTK/GDK level instead makes events trusted AND lands
+   them on whatever is under the pointer, iframes included — one
+   feature closes both gaps. Plan: `click --trusted` / `type
+   --trusted` (opt-in; the JS path stays default for its landing
+   reports), coordinates resolved from the same selector/ref
+   machinery. Open question: event delivery into unrealized headless
+   windows; may require the offscreen-compositor path from item 7.
+   Explicitly NOT an anti-bot evasion feature: it makes real forms
+   accept real input, same as every driver-level automation tool.
+9. **Network observation (and small-bore stubbing).** An agent
+   verifying a form submit should assert "the POST to /api/charge
+   returned 200", not squint at a success toast. `console` already
+   captures failures (HTTP >= 400); generalize to `hwatu net [--clear]`:
+   a structured per-window request log (method, url, status, type,
+   timing) from WebKit's resource-load signals. Full Playwright-style
+   route interception is out (WebKitGTK does not expose it); if
+   stubbing is ever needed for deterministic offline checks, a tiny
+   built-in proxy is the honest mechanism, and it stays optional.
+
 ### P3 — the hand-off loop, productized
 
-8. **Generalized hand-off.** `challenge` already detects CAPTCHAs;
+10. **Generalized hand-off.** `challenge` already detects CAPTCHAs;
    generalize the pattern: agent flags "needs human" with a reason,
    the window materializes with the reason in the bar, the agent
    awaits resolution. One command pair, any reason.
