@@ -10,6 +10,26 @@ env:
   CARGO_INCREMENTAL: "0"
 
 jobs:
+  ipc-conformance:
+    name: IPC conformance (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ipc-${{ matrix.os }}
+
+      - name: Test IPC protocol
+        run: cargo test -p hwatu-ipc --locked
+
   check:
     name: Build, clippy, test
     runs-on: ubuntu-latest

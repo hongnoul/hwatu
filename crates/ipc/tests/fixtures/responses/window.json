@@ -1,0 +1,12 @@
+{
+  "status": "ok",
+  "window": {
+    "id": 7,
+    "url": "https://example.test/",
+    "title": "Example",
+    "focused": true,
+    "suspended": false,
+    "app_id": "dev.hwatu.test",
+    "mode": "background"
+  }
+}

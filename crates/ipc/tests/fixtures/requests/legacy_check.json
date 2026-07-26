@@ -1,0 +1,5 @@
+{
+  "cmd": "check",
+  "url": "http://localhost:3000",
+  "shot": true
+}

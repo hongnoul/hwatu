@@ -1,0 +1,10 @@
+{
+  "event": "load",
+  "seq": 3,
+  "window_id": 7,
+  "ts_ms": 1700000000123,
+  "data": {
+    "state": "finished",
+    "url": "https://example.test/"
+  }
+}

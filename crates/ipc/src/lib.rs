@@ -7,10 +7,12 @@
 //! [`Response`], disconnect.
 
 use serde::{Deserialize, Serialize};
+#[cfg(unix)]
 use std::path::PathBuf;
 
 /// Resolve the daemon socket path: `$XDG_RUNTIME_DIR/hwatu.sock`,
 /// falling back to `/tmp/hwatu-$UID.sock`.
+#[cfg(unix)]
 pub fn socket_path() -> PathBuf {
     if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
         return PathBuf::from(dir).join("hwatu.sock");
@@ -20,6 +22,7 @@ pub fn socket_path() -> PathBuf {
 }
 
 // Tiny FFI shim so the client stays dependency-free.
+#[cfg(unix)]
 extern "C" {
     #[link_name = "geteuid"]
     fn libc_geteuid() -> u32;
