@@ -142,6 +142,15 @@ hwatu check localhost:5173 --eval 'document.title' --shot=/tmp/after.png
 #  "console":[...],"load_ms":13,"total_ms":35}
 ```
 
+Generated HTML in hand and no server? `hwatu render` is the same
+one-call pass with the markup as input: no temp file, no
+`python3 -m http.server`:
+
+```sh
+echo '<h1>generated</h1>' | hwatu render --stdin --shot=/tmp/gen.png
+# {"rendered":true,"shot":"/tmp/gen.png","load_ms":5,"total_ms":28}
+```
+
 The same pass through Playwright's warm in-process CDP connection,
 its best case, is 82 ms and five API calls. Shaped like hwatu
 actually runs (a fresh client each check against a kept-warm
