@@ -131,16 +131,38 @@ fn wire_download(daemon: &Rc<Daemon>, download: &webkit6::Download) {
                 .destination()
                 .map(|d| d.to_string())
                 .unwrap_or_default();
+            daemon.events.emit(
+                "download",
+                owner_window_id(&daemon, download),
+                serde_json::json!({ "state": "finished", "path": dest }),
+            );
             flash_on_owner(&daemon, download, &format!("saved {dest}"), 5);
         });
     }
     {
         let daemon = daemon.clone();
         download.connect_failed(move |download, error| {
+            daemon.events.emit(
+                "download",
+                owner_window_id(&daemon, download),
+                serde_json::json!({ "state": "failed", "error": error.to_string() }),
+            );
             // Cancel also lands here; stay quiet about user cancels.
             flash_on_owner(&daemon, download, &format!("download failed: {error}"), 8);
         });
     }
+}
+
+/// The id of the window whose WebView started this download, if that
+/// window is still open.
+fn owner_window_id(daemon: &Rc<Daemon>, download: &webkit6::Download) -> Option<u64> {
+    let origin = download.web_view()?;
+    daemon
+        .windows
+        .borrow()
+        .values()
+        .find(|w| w.live_webview().is_some_and(|wv| wv == origin))
+        .map(|w| w.id)
 }
 
 /// Flash a message on the bar of the window that started the download,

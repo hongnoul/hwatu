@@ -58,22 +58,47 @@ fn now_ms() -> u64 {
 /// Bounded per-window entry queue. Cloned into signal closures; the
 /// window owns the canonical handle, so entries survive a discard
 /// (the page's own state doesn't, but what it logged did happen).
+/// An optional hook observes every push (push-IPC event fan-out).
 #[derive(Clone, Default)]
-pub struct Buffer(Rc<RefCell<VecDeque<Entry>>>);
+pub struct Buffer(Rc<Inner>);
+
+/// Observer invoked on every buffered entry (push-IPC fan-out).
+type Hook = Rc<dyn Fn(&Entry)>;
+
+#[derive(Default)]
+struct Inner {
+    queue: RefCell<VecDeque<Entry>>,
+    hook: RefCell<Option<Hook>>,
+}
 
 impl Buffer {
     pub fn push(&self, entry: Entry) {
-        let mut q = self.0.borrow_mut();
-        if q.len() == CAP {
-            q.pop_front();
+        {
+            let mut q = self.0.queue.borrow_mut();
+            if q.len() == CAP {
+                q.pop_front();
+            }
+            q.push_back(entry.clone());
         }
-        q.push_back(entry);
+        // Hook after the buffer write, outside the borrow: the hook
+        // fans out to IPC subscribers and must not re-enter a held
+        // borrow.
+        let hook = self.0.hook.borrow().clone();
+        if let Some(hook) = hook {
+            hook(&entry);
+        }
+    }
+
+    /// Observe every future push (one hook per buffer; the window
+    /// installs it once at build time).
+    pub fn set_hook(&self, hook: impl Fn(&Entry) + 'static) {
+        self.0.hook.replace(Some(Rc::new(hook)));
     }
 
     /// Read the last `limit` entries (all when `None`); `clear` drains
     /// the whole buffer after reading.
     pub fn read(&self, clear: bool, limit: Option<usize>) -> Vec<Entry> {
-        let mut q = self.0.borrow_mut();
+        let mut q = self.0.queue.borrow_mut();
         let skip = limit.map_or(0, |n| q.len().saturating_sub(n));
         let out = q.iter().skip(skip).cloned().collect();
         if clear {

@@ -447,6 +447,22 @@ pub enum Request {
         width: i32,
         height: i32,
     },
+    /// Hold the connection open and stream server-initiated [`Event`]s
+    /// as JSON lines (the push half of the protocol; everything else
+    /// stays one-shot). The daemon answers with one `subscribed`
+    /// event, then pushes matching events until the client closes the
+    /// connection. No daemon-side queues for dead clients: a dropped
+    /// or stuck connection (write buffer over its cap) is discarded,
+    /// never buffered for later.
+    Subscribe {
+        /// Only these event kinds (e.g. `["load", "console"]`).
+        /// Absent = all kinds.
+        #[serde(default)]
+        kinds: Option<Vec<String>>,
+        /// Only events for this window. Absent = all windows.
+        #[serde(default)]
+        window: Option<u64>,
+    },
 }
 
 fn default_true() -> bool {
@@ -633,6 +649,37 @@ impl Response {
     }
 }
 
+/// Event kinds the daemon emits (see [`Event::event`]; `subscribed`
+/// is the ack, not a filterable kind). Shared so client-side filter
+/// validation cannot drift from the daemon.
+pub const EVENT_KINDS: &[&str] = &["load", "console", "download", "window"];
+
+/// One pushed event on a subscribed connection (see
+/// [`Request::Subscribe`]). Serialized as a JSON line, tagged
+/// `"event"` so a subscriber can tell events from the initial
+/// [`Response`] if it ever multiplexes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Event {
+    /// Event kind: `subscribed` (the ack, seq 0), `load` (lifecycle:
+    /// state=started|committed|finished|failed), `console` (a captured
+    /// console/exception/network entry), `download`
+    /// (state=finished|failed), `window` (state=opened|closed|focused).
+    pub event: String,
+    /// Strictly monotonic per connection, starting at 0 for the
+    /// `subscribed` ack. A gap means the daemon dropped this client
+    /// (it never silently skips), so gaps are impossible to observe:
+    /// the connection dies instead.
+    pub seq: u64,
+    /// Window the event belongs to, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_id: Option<u64>,
+    /// Milliseconds since UNIX epoch, stamped at emit time.
+    pub ts_ms: u64,
+    /// Kind-specific payload (load state, console entry, ...).
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub data: serde_json::Value,
+}
+
 /// State of the built-in content blocker, as reported by the daemon.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdblockStatus {
@@ -726,5 +773,65 @@ mod tests {
         };
         assert_eq!(render.as_deref(), Some("<h1>hi</h1>"));
         assert_eq!(base.as_deref(), Some("http://localhost:3000/"));
+    }
+
+    /// Subscribe roundtrips with and without filters; a bare
+    /// `{"cmd":"subscribe"}` (defaults) is valid so shell one-liners
+    /// stay terse.
+    #[test]
+    fn subscribe_roundtrips_with_defaults() {
+        let Ok(Request::Subscribe { kinds, window }) =
+            serde_json::from_str::<Request>(r#"{"cmd":"subscribe"}"#)
+        else {
+            panic!("bare subscribe failed to parse");
+        };
+        assert_eq!(kinds, None);
+        assert_eq!(window, None);
+
+        let req = Request::Subscribe {
+            kinds: Some(vec!["load".into(), "console".into()]),
+            window: Some(7),
+        };
+        let wire = serde_json::to_string(&req).unwrap();
+        let Ok(Request::Subscribe { kinds, window }) = serde_json::from_str::<Request>(&wire)
+        else {
+            panic!("subscribe failed to roundtrip");
+        };
+        assert_eq!(
+            kinds.as_deref(),
+            Some(&["load".to_string(), "console".to_string()][..])
+        );
+        assert_eq!(window, Some(7));
+    }
+
+    /// Events serialize with seq + window_id and omit empty payloads;
+    /// the `event` tag is what stream consumers dispatch on.
+    #[test]
+    fn event_wire_shape() {
+        let e = Event {
+            event: "load".into(),
+            seq: 3,
+            window_id: Some(9),
+            ts_ms: 1234,
+            data: serde_json::json!({ "state": "finished" }),
+        };
+        let wire = serde_json::to_string(&e).unwrap();
+        assert!(wire.contains("\"event\":\"load\""));
+        assert!(wire.contains("\"seq\":3"));
+        assert!(wire.contains("\"window_id\":9"));
+        let back: Event = serde_json::from_str(&wire).unwrap();
+        assert_eq!(back.data["state"], "finished");
+
+        // Null payloads and absent window ids are omitted, not "null".
+        let bare = Event {
+            event: "subscribed".into(),
+            seq: 0,
+            window_id: None,
+            ts_ms: 0,
+            data: serde_json::Value::Null,
+        };
+        let wire = serde_json::to_string(&bare).unwrap();
+        assert!(!wire.contains("window_id"));
+        assert!(!wire.contains("data"));
     }
 }

@@ -80,6 +80,7 @@ hwatu localhost:3000       # open a window like you open a terminal
 - [x] Page state as JSON, tokens not pixels (`snapshot`)
 - [x] Real input events with structured errors (`click` / `type` / `scroll` / `upload`)
 - [x] JS errors, console output, failed requests (`console`)
+- [x] Push event subscriptions as JSON lines or MCP notifications (`watch`)
 - [x] One-call page assertions with polling (`expect`)
 - [x] Headless / background / focused as a *per-window* property, switchable live
 - [x] Human hand-off: `hwatu focus <id>` drops the live session into your tiling WM
@@ -150,7 +151,16 @@ one-call pass with the markup as input: no temp file, no
 ```sh
 echo '<h1>generated</h1>' | hwatu render --stdin --shot=/tmp/gen.png
 # {"rendered":true,"shot":"/tmp/gen.png","load_ms":5,"total_ms":28}
+
+# React to load, console, download, and window events without polling.
+hwatu watch --kinds load,console
+# {"event":"load","seq":1,"window_id":7,"data":{"state":"started",...}}
 ```
+
+MCP clients can call `subscribe_events` for the same stream as
+`notifications/hwatu/event`. Each connection gets a strictly monotonic
+sequence starting at zero; closing or stalling the connection drops its
+subscription without blocking the daemon.
 
 The same pass through Playwright's warm in-process CDP connection,
 its best case, is 82 ms and five API calls. Shaped like hwatu

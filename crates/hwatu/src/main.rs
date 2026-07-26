@@ -23,6 +23,9 @@ fn main() {
     if args.first().map(String::as_str) == Some("mcp") {
         std::process::exit(mcp::run());
     }
+    if args.first().map(String::as_str) == Some("watch") {
+        std::process::exit(watch(&args[1..]));
+    }
     if matches!(
         args.first().map(String::as_str),
         Some("doctor") | Some("setup") | Some("demo")
@@ -839,6 +842,7 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--foc
     | check <url> [--eval <js>] [--shot | --shot=<png>] [--full] [--baseline <png> [--tolerance <0-255>] [--heatmap <png>]] [--until <stage>] [--keep] \
     | render (--stdin | <file.html>) [--base <url>] [--eval <js>] [--shot | --shot=<png>] [--full] [--baseline <png> ...] [--until <stage>] [--keep] \
     | prefetch <url> \
+    | watch [--id <id>] [--kinds load,console,download,window] \
     | challenge [--id <id>] [--wait] \
     | upload [--id <id>] <selector> <path> \
 | scroll [--id <id>] [<selector> [nth]] [--contains <text>] [--to-y <px>] [--by <pages>] \
@@ -856,6 +860,89 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--foc
 | doctor | setup [--client claude|cursor|generic|jcode] [--scope project|user] [--dry-run] [--undo] \
 | demo [url] [--focus] \
 | mcp | update | ping | quit";
+
+/// `hwatu watch`: subscribe and stream events as JSON lines until the
+/// daemon goes away or we are killed. The shell-agent face of push
+/// IPC: `hwatu watch | while read -r event; do ...; done`.
+fn watch(args: &[String]) -> i32 {
+    const USAGE_WATCH: &str =
+        "usage: hwatu watch [--id <window-id>] [--kinds load,console,download,window]";
+    let mut window: Option<u64> = None;
+    let mut kinds: Option<Vec<String>> = None;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if arg == "--id" {
+            window = match it.next().and_then(|v| v.parse().ok()) {
+                Some(v) => Some(v),
+                None => {
+                    eprintln!("{USAGE_WATCH}");
+                    return 2;
+                }
+            };
+        } else if arg == "--kinds" {
+            let Some(list) = it.next() else {
+                eprintln!("{USAGE_WATCH}");
+                return 2;
+            };
+            let parsed: Vec<String> = list
+                .split(',')
+                .map(|k| k.trim().to_string())
+                .filter(|k| !k.is_empty())
+                .collect();
+            for k in &parsed {
+                if !hwatu_ipc::EVENT_KINDS.contains(&k.as_str()) {
+                    eprintln!(
+                        "hwatu: unknown event kind {k:?} (want one of {:?})",
+                        hwatu_ipc::EVENT_KINDS
+                    );
+                    return 2;
+                }
+            }
+            kinds = Some(parsed);
+        } else {
+            eprintln!("{USAGE_WATCH}");
+            return 2;
+        }
+    }
+
+    let mut stream = match connect_or_spawn() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("hwatu: cannot reach daemon: {e}");
+            return 1;
+        }
+    };
+    let request = Request::Subscribe { kinds, window };
+    let mut payload = serde_json::to_vec(&request).expect("serialize request");
+    payload.push(b'\n');
+    if let Err(e) = stream.write_all(&payload) {
+        eprintln!("hwatu: write failed: {e}");
+        return 1;
+    }
+    let reader = BufReader::new(stream);
+    for line in reader.lines() {
+        match line {
+            Ok(l) if !l.trim().is_empty() => {
+                // An old daemon answers with a one-shot error and EOF;
+                // surface it as an error, not as an "event".
+                if l.contains("\"status\":\"err\"") {
+                    eprintln!("hwatu: {l}");
+                    if l.contains("unknown variant") {
+                        eprintln!(
+                            "hwatu: the running daemon predates `watch`; restart it: \
+                             hwatu quit && hwatu ping"
+                        );
+                    }
+                    return 1;
+                }
+                println!("{l}");
+            }
+            Ok(_) => {}
+            Err(_) => break, // daemon went away
+        }
+    }
+    0
+}
 
 pub(crate) fn connect_or_spawn() -> std::io::Result<UnixStream> {
     let path = hwatu_ipc::socket_path();

@@ -487,6 +487,27 @@ impl BrowserWindow {
         this.attach_webview(webview);
         this.wire_bar();
 
+        // Push-IPC fan-out: console captures become `console` events
+        // with this window's id, and the window's own birth is a
+        // `window` event. Installed once; the Buffer outlives WebView
+        // swaps (discard/restore), so this survives them.
+        {
+            let daemon = daemon.clone();
+            let win_id = id;
+            this.console.set_hook(move |entry| {
+                daemon.events.emit(
+                    "console",
+                    Some(win_id),
+                    serde_json::to_value(entry).unwrap_or_default(),
+                );
+            });
+        }
+        daemon.events.emit(
+            "window",
+            Some(id),
+            serde_json::json!({ "state": "opened", "mode": mode }),
+        );
+
         // Ctrl+w (or ctrl+q) closes the window; the daemon (and engine) stay warm.
         {
             let ctrl = gtk::EventControllerKey::new();
@@ -563,6 +584,9 @@ impl BrowserWindow {
                 }
                 daemon.windows.borrow_mut().remove(&id);
                 daemon.schedule_session_save();
+                daemon
+                    .events
+                    .emit("window", Some(id), serde_json::json!({ "state": "closed" }));
                 glib::Propagation::Proceed
             });
         }
@@ -602,6 +626,7 @@ impl BrowserWindow {
                     this.note_load_engaged(wv);
                     this.load_committed.set(false);
                     this.clear_recovery_overlay();
+                    this.emit_load(wv, "started");
                     let this = this.clone();
                     let wv = wv.clone();
                     glib::timeout_add_local_once(std::time::Duration::from_secs(2), move || {
@@ -622,9 +647,11 @@ impl BrowserWindow {
                     this.note_load_engaged(wv);
                     this.load_committed.set(true);
                     this.clear_recovery_overlay();
+                    this.emit_load(wv, "committed");
                 }
                 webkit6::LoadEvent::Finished => {
                     this.clear_loading_recovery_overlay();
+                    this.emit_load(wv, "finished");
                 }
                 _ => {}
             });
@@ -675,6 +702,15 @@ impl BrowserWindow {
         {
             let this = self.clone();
             webview.connect_load_failed(move |_, _, failing_uri, error| {
+                this.daemon.events.emit(
+                    "load",
+                    Some(this.id),
+                    serde_json::json!({
+                        "state": "failed",
+                        "url": failing_uri,
+                        "error": error.to_string(),
+                    }),
+                );
                 this.show_recovery_overlay(
                     "Page failed to load",
                     &format!(
@@ -1172,6 +1208,18 @@ impl BrowserWindow {
         if collapsed {
             self.allocate_viewport();
         }
+    }
+
+    /// Fan a load-lifecycle event out to push-IPC subscribers.
+    fn emit_load(&self, wv: &webkit6::WebView, state: &str) {
+        self.daemon.events.emit(
+            "load",
+            Some(self.id),
+            serde_json::json!({
+                "state": state,
+                "url": wv.uri().map(|u| u.to_string()).unwrap_or_default(),
+            }),
+        );
     }
 
     /// Mark that a navigation to `uri` was just requested on this

@@ -244,19 +244,32 @@ Original test plan (kept for the record):
 
 ### G2. push IPC: subscriptions on a persistent connection
 
-The protocol note says "one request per connection for the MVP"; this
-item retires the MVP. A client may hold the socket open and
-`subscribe` to server-initiated events: load lifecycle, console
-entries, `expect --watch` assertion flips, downloads, hand-off
-resolutions. One-shot clients remain untouched (back-compat is a
-hard requirement).
+**Shipped 2026-07-26.** A `subscribe` socket request holds its connection
+open and streams load lifecycle, console, download, and window events as
+JSON lines. Every connection starts with a `subscribed` acknowledgement at
+sequence 0, then receives strictly monotonic sequence numbers, optional
+`window_id`, timestamps, and kind-specific data. Filters select event kinds
+and/or one window. Existing requests retain their one-request/one-reply/EOF
+behavior unchanged.
 
-Design constraints: events carry `window_id` + monotonic sequence
-numbers; a dropped connection drops its subscriptions (no daemon-side
-queues for dead clients); `hwatu watch` CLI streams events as JSON
-lines for shell agents; MCP maps subscriptions to notifications.
+`hwatu watch [--kinds load,console,download,window] [--window ID]` exposes
+the stream to shell agents. MCP's `subscribe_events` maps it to
+`notifications/hwatu/event`. The GTK thread only performs nonblocking sends
+into bounded subscriber channels; a full channel or failed socket removes
+that subscriber, so slow and dead clients cannot stall the daemon or retain
+an unbounded queue.
 
-Test plan:
+The executable plan landed as `scripts/test-watch.sh`: 12 live-daemon
+checks cover old one-shot behavior, two concurrent subscribers, event kinds
+and monotonic sequences, killed-client cleanup, slow-reader backpressure,
+daemon liveness, and filter validation. It passed three consecutive runs.
+`scripts/soak-watch.sh` warms through lazy WebKit/GLib initialization before
+measuring; a 30-second validation streamed 16,952 events over 1,991 checks,
+with RSS 606,576→607,952 KiB and descriptors 46→48. Use a 3,600-second run
+for the roadmap's full endurance gate. Spawn median remained 26 ms against
+the 60 ms budget; workspace tests, formatting, and clippy were green.
+
+Original test plan (kept for the record):
 - Protocol: old single-shot clients against new daemon (byte-for-byte
   same behavior), new client against old daemon (clean error).
 - Behavioral: two concurrent subscribers see the same events; a

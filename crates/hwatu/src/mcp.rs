@@ -15,6 +15,9 @@
 use hwatu_ipc::{ClockAction, LoadStage, OpenMode, Request, Response};
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+static EVENT_THREAD: AtomicBool = AtomicBool::new(false);
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
@@ -116,12 +119,58 @@ fn handle_tool_call(params: &Value) -> Result<String, String> {
         .and_then(Value::as_str)
         .ok_or("missing tool name")?;
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
+    if name == "subscribe_events" {
+        return subscribe_events(&args);
+    }
     let request = build_request(name, &args)?;
     let response = transact(&request)?;
     match response {
         Response::Err { message } => Err(message),
         ok => serde_json::to_string(&ok).map_err(|e| e.to_string()),
     }
+}
+
+/// Start (once) a background thread that holds a subscribed
+/// connection and forwards daemon events to the MCP client as
+/// JSON-RPC notifications (`notifications/hwatu/event`). Streaming has
+/// no place in MCP's request/response tools, so push IPC maps to the
+/// protocol's notification channel instead.
+fn subscribe_events(args: &Value) -> Result<String, String> {
+    if EVENT_THREAD.swap(true, Ordering::SeqCst) {
+        return Ok("{\"subscribed\":true,\"note\":\"already streaming\"}".to_string());
+    }
+    let kinds = args.get("kinds").and_then(Value::as_array).map(|a| {
+        a.iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+    });
+    let window = opt_u64(args, "window");
+    let mut stream =
+        crate::connect_or_spawn().map_err(|e| format!("cannot reach hwatu daemon: {e}"))?;
+    let request = Request::Subscribe { kinds, window };
+    let mut payload = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
+    payload.push(b'\n');
+    stream
+        .write_all(&payload)
+        .map_err(|e| format!("write failed: {e}"))?;
+    std::thread::spawn(move || {
+        let reader = std::io::BufReader::new(stream);
+        for line in reader.lines() {
+            let Ok(line) = line else { break };
+            let Ok(event) = serde_json::from_str::<Value>(&line) else {
+                continue;
+            };
+            let note = json!({
+                "jsonrpc": "2.0",
+                "method": "notifications/hwatu/event",
+                "params": event,
+            });
+            send(&std::io::stdout(), &note);
+        }
+        EVENT_THREAD.store(false, Ordering::SeqCst);
+    });
+    Ok("{\"subscribed\":true}".to_string())
 }
 
 /// One request per connection, like the CLI.
@@ -399,6 +448,20 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
                 heatmap: opt_str(args, "heatmap"),
                 full: opt_bool(args, "full").unwrap_or(false),
                 timeout_ms,
+            })
+        }
+        "subscribe_events" => {
+            // Streaming is intercepted in handle_tool_call; this arm
+            // exists so the tool-to-request mapping stays total (the
+            // minimal-args test walks it).
+            Ok(Request::Subscribe {
+                kinds: args.get("kinds").and_then(Value::as_array).map(|a| {
+                    a.iter()
+                        .filter_map(Value::as_str)
+                        .map(str::to_string)
+                        .collect()
+                }),
+                window: opt_u64(args, "window"),
             })
         }
         other => Err(format!("unknown tool: {other}")),
@@ -763,6 +826,20 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
             &["id"],
         ),
         tool(
+            "subscribe_events",
+            "Start streaming daemon events (load lifecycle, console captures, \
+             downloads, window open/close/focus) to this MCP session as \
+             notifications/hwatu/event notifications. Events carry window_id \
+             and a per-connection monotonic seq. Idempotent: a second call \
+             reports the stream already runs.",
+            json!({
+                "kinds": { "type": "array", "items": { "type": "string", "enum": ["load", "console", "download", "window"] },
+                    "description": "Only these event kinds (default: all)." },
+                "window": prop("integer", "Only events for this window id (default: all windows)."),
+            }),
+            &[],
+        ),
+        tool(
             "close",
             "Close a window. The daemon and engine stay warm.",
             json!({ "id": prop("integer", "Window id to close.") }),
@@ -930,6 +1007,7 @@ mod tests {
             "focus": { "id": 1 },
             "unfocus": { "id": 1 },
             "close": { "id": 1 },
+            "subscribe_events": {},
         });
         for def in tool_definitions() {
             let name = def["name"].as_str().unwrap();

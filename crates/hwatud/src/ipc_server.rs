@@ -43,13 +43,33 @@ fn accept_next(listener: gio::SocketListener, daemon: Rc<Daemon>) {
 
 fn handle_conn(conn: gio::SocketConnection, daemon: Rc<Daemon>) {
     let input = gio::DataInputStream::new(&conn.input_stream());
-    input.clone().read_line_async(
+    // read_line_utf8_async, not read_line_async: the byte-slice
+    // variant's gio-rs trampoline reads an *uninitialized* length when
+    // the stream ends with no line (client connected and closed), and
+    // its slice assertion then aborts the daemon from a C callback
+    // that cannot unwind. The utf8 variant passes a null length
+    // pointer and models EOF as Ok(None). Requests are JSON, so utf8
+    // is not a restriction.
+    input.clone().read_line_utf8_async(
         glib::Priority::DEFAULT,
         gio::Cancellable::NONE,
         move |res| {
             let line = match res {
-                Ok(l) => String::from_utf8_lossy(&l).into_owned(),
-                Err(_) => return,
+                Ok(Some(l)) => l.to_string(),
+                // EOF before any line (port scan, dead client) or read
+                // error: nothing to answer.
+                Ok(None) | Err(_) => return,
+            };
+            let request = serde_json::from_str::<Request>(line.trim());
+            // Subscriptions keep the connection: hand it to the event
+            // broker instead of the one-shot reply path. Everything
+            // else (including parse errors) keeps the exact one-shot
+            // behavior old clients were built against.
+            let request = match request {
+                Ok(Request::Subscribe { kinds, window }) => {
+                    return crate::events::subscribe(&daemon, conn, input, kinds, window);
+                }
+                other => other,
             };
             let reply: automation::Reply = Box::new(move |response: Response| {
                 let mut out = serde_json::to_vec(&response).unwrap_or_default();
@@ -65,7 +85,7 @@ fn handle_conn(conn: gio::SocketConnection, daemon: Rc<Daemon>) {
                     },
                 );
             });
-            match serde_json::from_str::<Request>(line.trim()) {
+            match request {
                 Ok(req) => dispatch(&daemon, req, reply),
                 Err(e) => reply(Response::err(format!("bad request: {e}"))),
             }
@@ -287,6 +307,11 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
                     // window means they want to see it now.
                     w.present();
                     daemon.last_target.replace(Some(id));
+                    daemon.events.emit(
+                        "window",
+                        Some(id),
+                        serde_json::json!({ "state": "focused" }),
+                    );
                     Response::ok()
                 }
                 None => Response::err(format!("no window {id}")),
@@ -341,6 +366,9 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
         | Request::Diff { .. }
         | Request::Resize { .. }
         | Request::Expect { .. } => Response::err("internal: async request in sync path"),
+        // Subscribe is intercepted in handle_conn (it keeps the
+        // connection); reaching dispatch means an internal misroute.
+        Request::Subscribe { .. } => Response::err("internal: subscribe in one-shot path"),
     };
     reply(response);
 }

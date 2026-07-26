@@ -14,6 +14,7 @@ mod bar;
 mod clock;
 mod console;
 mod downloads;
+mod events;
 mod ipc_server;
 mod keys;
 mod launcher;
@@ -73,6 +74,8 @@ pub struct Daemon {
     pub prefetch_pool: RefCell<Vec<(String, u64, u64)>>,
     /// Debounce timer for crash-resilience session snapshots.
     session_save_timer: RefCell<Option<glib::SourceId>>,
+    /// Push-IPC subscribers (`subscribe` on a held-open connection).
+    pub events: events::Broker,
 }
 
 impl Daemon {
@@ -89,6 +92,7 @@ impl Daemon {
             check_pool: RefCell::new(Vec::new()),
             prefetch_pool: RefCell::new(Vec::new()),
             session_save_timer: RefCell::new(None),
+            events: events::Broker::default(),
         })
     }
 
