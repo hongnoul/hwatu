@@ -113,7 +113,24 @@ pub enum Request {
     /// Collapses the open/wait/eval/shot/close agent loop (5 process
     /// spawns + 5 socket roundtrips) into one.
     Check {
-        url: String,
+        /// URL to load. Exactly one of `url` and `render` must be
+        /// given. Optional (with a default) so old clients that always
+        /// sent it keep working, and new render-only requests can omit
+        /// it; an old daemon rejects a render-only request with a
+        /// clean "missing field `url`" error.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        url: Option<String>,
+        /// Inline HTML to load directly (`webkit_web_view_load_html`)
+        /// instead of navigating to a URL. An agent with generated
+        /// markup in hand needs no temp file and no HTTP server.
+        /// Capped at [`RENDER_MAX_BYTES`].
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        render: Option<String>,
+        /// Base URL for resolving relative references (images, CSS,
+        /// scripts) in rendered markup; only with `render`. Without
+        /// it the document loads as `about:blank`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        base: Option<String>,
         /// JS to run once the load reaches `until` (expression or
         /// function body, same semantics as [`Request::Eval`]).
         #[serde(default)]
@@ -436,6 +453,15 @@ fn default_true() -> bool {
     true
 }
 
+/// Cap on inline `render` markup, shared by client and daemon. The
+/// protocol is one line-delimited JSON request per connection, so a
+/// pathological document would be buffered whole in the daemon's
+/// line reader; 8 MiB comfortably covers generated documents (a 1 MB
+/// page is already unusually large) while bounding that buffer. The
+/// client checks before sending for a fast, clear error; the daemon
+/// checks again because clients are not trusted.
+pub const RENDER_MAX_BYTES: usize = 8 * 1024 * 1024;
+
 /// How far a load must progress before a wait releases. Real pages
 /// keep loading subresources (fonts, third-party JS, images) long
 /// after the DOM is usable; most agent checks only need the DOM, so
@@ -645,4 +671,60 @@ pub struct WindowInfo {
 
 fn is_normal(mode: &OpenMode) -> bool {
     *mode == OpenMode::Normal
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An old client's check request (url as a bare string, no
+    /// render/base fields) must deserialize unchanged: the wire
+    /// invariant that lets sessions ship incrementally.
+    #[test]
+    fn old_client_check_still_parses() {
+        let old = r#"{"cmd":"check","url":"http://localhost:3000","shot":true}"#;
+        let Ok(Request::Check {
+            url, render, base, ..
+        }) = serde_json::from_str::<Request>(old)
+        else {
+            panic!("old check request failed to parse");
+        };
+        assert_eq!(url.as_deref(), Some("http://localhost:3000"));
+        assert_eq!(render, None);
+        assert_eq!(base, None);
+    }
+
+    /// A render-check roundtrips through the wire format, and the
+    /// absent url is omitted from the JSON entirely (so an old daemon
+    /// answers a new client's render attempt with a clean missing-
+    /// field error instead of misrouting it).
+    #[test]
+    fn render_check_roundtrips_and_omits_url() {
+        let req = Request::Check {
+            url: None,
+            render: Some("<h1>hi</h1>".into()),
+            base: Some("http://localhost:3000/".into()),
+            eval: None,
+            shot: false,
+            shot_path: None,
+            full: false,
+            baseline: None,
+            tolerance: None,
+            heatmap: None,
+            until: LoadStage::Dom,
+            keep: false,
+            timeout_ms: None,
+        };
+        let wire = serde_json::to_string(&req).unwrap();
+        assert!(
+            !wire.contains("\"url\""),
+            "absent url must be omitted: {wire}"
+        );
+        assert!(wire.contains("\"render\""));
+        let Ok(Request::Check { render, base, .. }) = serde_json::from_str::<Request>(&wire) else {
+            panic!("render check failed to roundtrip");
+        };
+        assert_eq!(render.as_deref(), Some("<h1>hi</h1>"));
+        assert_eq!(base.as_deref(), Some("http://localhost:3000/"));
+    }
 }

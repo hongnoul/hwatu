@@ -678,7 +678,9 @@ fn wire_load_stage(
 #[allow(clippy::too_many_arguments)]
 pub fn check(
     daemon: &Rc<Daemon>,
-    url: String,
+    url: Option<String>,
+    render: Option<String>,
+    base: Option<String>,
     eval_js: Option<String>,
     shot: bool,
     shot_path: Option<String>,
@@ -694,17 +696,47 @@ pub fn check(
     let reply = OnceReply::new(reply);
     let started = std::time::Instant::now();
 
-    let url = crate::ipc_server::normalize_url(url);
-    // A prefetched window for this URL is already loading (or loaded):
-    // adopt it and skip the navigation entirely.
-    let prefetched = claim_prefetch(daemon, &url);
-    let adopted = prefetched.is_some();
-    let (win, view) = match prefetched
-        .map(Ok)
-        .unwrap_or_else(|| acquire_check_window(daemon, &url))
-    {
-        Ok(pair) => pair,
-        Err(resp) => return reply.send(*resp),
+    // Exactly one input: a URL to navigate to, or markup to render.
+    if url.is_some() && render.is_some() {
+        return reply.send(Response::err("check takes `url` or `render`, not both"));
+    }
+    if base.is_some() && render.is_none() {
+        return reply.send(Response::err("`base` only applies to `render`"));
+    }
+    if let Some(html) = &render {
+        if html.len() > hwatu_ipc::RENDER_MAX_BYTES {
+            return reply.send(Response::err(format!(
+                "render document is {} bytes; the cap is {} (write it to a file \
+                 and serve it over http instead)",
+                html.len(),
+                hwatu_ipc::RENDER_MAX_BYTES
+            )));
+        }
+    }
+
+    let rendered = render.is_some();
+    let (win, view, adopted) = if let Some(html) = render {
+        let base = base.map(crate::ipc_server::normalize_url);
+        match acquire_render_window(daemon, &html, base.as_deref()) {
+            Ok((win, view)) => (win, view, false),
+            Err(resp) => return reply.send(*resp),
+        }
+    } else {
+        let Some(url) = url else {
+            return reply.send(Response::err("check needs `url` or `render`"));
+        };
+        let url = crate::ipc_server::normalize_url(url);
+        // A prefetched window for this URL is already loading (or
+        // loaded): adopt it and skip the navigation entirely.
+        let prefetched = claim_prefetch(daemon, &url);
+        let adopted = prefetched.is_some();
+        match prefetched
+            .map(Ok)
+            .unwrap_or_else(|| acquire_check_window(daemon, &url))
+        {
+            Ok((win, view)) => (win, view, adopted),
+            Err(resp) => return reply.send(*resp),
+        }
     };
     let win_id = win.id;
     daemon.last_target.replace(Some(win_id));
@@ -743,6 +775,9 @@ pub fn check(
             // The load was already warm from a `prefetch`; load_ms
             // measures adoption, not a navigation.
             result.borrow_mut()["prefetched"] = serde_json::json!(true);
+        }
+        if rendered {
+            result.borrow_mut()["rendered"] = serde_json::json!(true);
         }
 
         // Eval and screenshot are independent of each other; run both
@@ -909,10 +944,70 @@ fn acquire_check_window(
     daemon: &Rc<Daemon>,
     url: &str,
 ) -> Result<(Rc<BrowserWindow>, webkit6::WebView), Box<Response>> {
+    let (win, view) = acquire_pooled_window(daemon, url.starts_with("file:"))?;
+    win.mark_nav_pending(url);
+    view.load_uri(url);
+    Ok((win, view))
+}
+
+/// Like [`acquire_check_window`], but loads inline markup directly
+/// (`load_html`) instead of navigating. The document's URI becomes
+/// `base` (which also resolves the markup's relative references), or
+/// a unique `file:///hwatu-render/<n>/` when the caller gave none.
+///
+/// The fallback is deliberately NOT about:blank: the stale-load
+/// machinery (`note_load_engaged`, the committed-document check)
+/// distinguishes a requested load from a pool window's leftover
+/// blanking load by "stale loads are only ever about:blank", and a
+/// render targeting about:blank on a still-blanking recycled window
+/// would be indistinguishable from its own stale load and could
+/// release waits on the wrong document. And it is deliberately a
+/// `file:` URI: measured on this box, load_html against custom
+/// (`hwatu://`, unregistered) or unresolvable-http bases stalls the
+/// commit ~500-700 ms (scheme/DNS resolution in the network process),
+/// while `file:`/`about:` bases commit in single-digit ms. The path
+/// does not exist, so the markup's relative references resolve to
+/// nothing rather than to real files; reading local files via
+/// fetch/XHR stays blocked by WebKit's default file-URL policy.
+fn acquire_render_window(
+    daemon: &Rc<Daemon>,
+    html: &str,
+    base: Option<&str>,
+) -> Result<(Rc<BrowserWindow>, webkit6::WebView), Box<Response>> {
+    let base = match base {
+        Some(b) => b.to_string(),
+        None => format!("file:///hwatu-render/{}/", daemon.alloc_id()),
+    };
+    let (win, view) = acquire_pooled_window(daemon, base.starts_with("file:"))?;
+    win.mark_nav_pending(&base);
+    view.load_html(html, Some(&base));
+    Ok((win, view))
+}
+
+/// Pop a live parked check window whose last document's origin kind
+/// matches the incoming load (`want_file`), or open a fresh headless
+/// one. The caller starts its own load (URL or inline markup) on the
+/// returned view.
+///
+/// The taint match matters: WebKit swaps the web process when a
+/// navigation crosses the file:/network boundary, and the swap costs
+/// more than a fresh window (~650 ms vs ~240 ms measured here). A
+/// mismatched park is left parked (its TTL still applies) rather
+/// than adopted or evicted, so alternating render/check loops keep
+/// one warm window per origin kind.
+fn acquire_pooled_window(
+    daemon: &Rc<Daemon>,
+    want_file: bool,
+) -> Result<(Rc<BrowserWindow>, webkit6::WebView), Box<Response>> {
     loop {
-        let Some((id, _token)) = daemon.check_pool.borrow_mut().pop() else {
-            break;
+        let entry = {
+            let mut pool = daemon.check_pool.borrow_mut();
+            match pool.iter().rposition(|&(_, _, file)| file == want_file) {
+                Some(i) => pool.remove(i),
+                None => break,
+            }
         };
+        let (id, _token, _file) = entry;
         let Some(win) = daemon.windows.borrow().get(&id).cloned() else {
             continue; // closed behind our back (e.g. `hwatu close`)
         };
@@ -920,11 +1015,19 @@ fn acquire_check_window(
             close_check_window(daemon, id, false);
             continue;
         };
-        win.mark_nav_pending(url);
-        view.load_uri(url);
         return Ok((win, view));
     }
-    let info = BrowserWindow::open(daemon, Some(url.to_string()), None, OpenMode::Headless);
+    // Fresh windows open at about:blank, never the launcher: the
+    // caller's load replaces it immediately, and the stale-blank
+    // machinery (`note_load_engaged`, the stage wiring) already knows
+    // how to ignore a superseded about:blank load. A launcher load
+    // here would clear `nav_pending` and release waits early.
+    let info = BrowserWindow::open(
+        daemon,
+        Some("about:blank".to_string()),
+        None,
+        OpenMode::Headless,
+    );
     let win = daemon
         .windows
         .borrow()
@@ -953,8 +1056,17 @@ fn release_check_window(daemon: &Rc<Daemon>, id: u64, keep: bool) {
         return;
     }
     // Blank the page so the parked window drops the page's memory and
-    // can't keep running its scripts/timers between checks.
+    // can't keep running its scripts/timers between checks. The
+    // file-origin taint is judged BEFORE blanking: about:blank stays
+    // in the current web process, so a window that just held a file:
+    // document (a render) keeps its file-capable process across the
+    // blank, and only same-kind loads may adopt it cheaply.
     win.console.read(true, None); // drain
+    let was_file = win
+        .live_webview()
+        .and_then(|v| v.uri())
+        .map(|u| u.starts_with("file:"))
+        .unwrap_or(false);
     if let Some(view) = win.live_webview() {
         win.mark_nav_pending("about:blank");
         view.load_uri("about:blank");
@@ -966,13 +1078,13 @@ fn release_check_window(daemon: &Rc<Daemon>, id: u64, keep: bool) {
         *n += 1;
         t
     };
-    daemon.check_pool.borrow_mut().push((id, token));
+    daemon.check_pool.borrow_mut().push((id, token, was_file));
     let daemon = daemon.clone();
     glib::timeout_add_local_once(CHECK_POOL_TTL, move || {
         // Only close if still parked from THIS park (not reacquired).
         let parked = {
             let mut pool = daemon.check_pool.borrow_mut();
-            match pool.iter().position(|&p| p == (id, token)) {
+            match pool.iter().position(|&(i, t, _)| (i, t) == (id, token)) {
                 Some(i) => {
                     pool.remove(i);
                     true

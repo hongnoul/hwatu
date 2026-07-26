@@ -54,6 +54,7 @@ machine the human is working on.
 | `motion` | every animation as numbers: duration, delay, easing, keyframes |
 | `seek` | pin all animations at time t; two shots at the same t are byte-identical |
 | `expect` | assert page state in one call (polls, structured pass/fail) |
+| `render --stdin` | see generated HTML rendered, no temp file, no server |
 | `shot` / `shot --full` | what a user would see (real GPU-composited WebKit render) |
 | `click` / `type` / `scroll` / `upload` | real pointer/input events, structured errors on misses |
 | `console` | JS errors, console output, failed requests since last check |
@@ -115,7 +116,7 @@ hwatu close 3
 | `navigate` | `id?`, `url`, `wait?`, `timeout_ms?` | navigate, optionally wait for the load |
 | `screenshot` | `id?`, `path?`, `full?` | PNG of the viewport (`full: true` = whole document), returns the file path |
 | `wait_load` | `id?`, `timeout_ms?` | block until loading settles |
-| `check` | `url`, `eval?`, `shot?`, `shot_path?`, `full?`, `baseline?`, `tolerance?`, `heatmap?`, `until?`, `keep?`, `timeout_ms?` | one-roundtrip verify pass: open headless, load, eval/shot/diff-vs-baseline, close; replies with everything at once |
+| `check` | `url` or `render` (+`base?`), `eval?`, `shot?`, `shot_path?`, `full?`, `baseline?`, `tolerance?`, `heatmap?`, `until?`, `keep?`, `timeout_ms?` | one-roundtrip verify pass: open headless, load the url (or render inline HTML directly, CLI: `hwatu render`), eval/shot/diff-vs-baseline, close; replies with everything at once |
 | `prefetch` | `url` | start loading in a headless window and return immediately; the next `check` of the same url adopts the warm window (30 s TTL, max 3) |
 | `challenge` | `id?`, `wait?`, `timeout_ms?` | detect CAPTCHA/anti-bot UI; optionally wait for manual/user resolution |
 | `scroll` | `id?`, `selector?`, `nth?`, `contains?`, `to_y?`, `by_pages?` | scroll and report where it landed |

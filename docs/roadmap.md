@@ -205,13 +205,30 @@ than implementation.
 
 ### G1. `hwatu render`: documents without a server
 
-`hwatu render [--stdin | <file.html>] [--base <url>]` loads markup
-directly (`webkit_web_view_load_html`), composing with every existing
-flag (`--eval`, `--shot`, `--until`, `--keep`). Also as a `render`
-field on `check` and an MCP tool. An agent with generated HTML in
-hand should not need a temp file and `python3 -m http.server`.
+**Shipped 2026-07-26.** `hwatu render (--stdin | <file.html>)
+[--base <url>]` loads markup directly (`webkit_web_view_load_html`),
+composing with every existing check flag (`--eval`, `--shot`,
+`--baseline`, `--until`, `--keep`). On the wire it is a `render`
+field on `Check` (old clients unaffected; `url` became optional but
+serializes identically when present), and an MCP `render` tool.
+Inline documents are capped at 8 MiB (`RENDER_MAX_BYTES`), checked
+client-side with a clear error and re-checked by the daemon.
 
-Test plan:
+The test plan landed as `scripts/test-render.sh` (13 live-daemon
+assertions on an isolated socket: stdin/file input, `--base` asset
+resolution, `--until dom` on inline scripts, eval/shot/diff on
+URL-less windows, session-restore exclusion, pool recycling, 1 MB+
+documents, over-cap rejection) plus CLI parse, IPC roundtrip/
+back-compat, and MCP minimal-args unit tests. Measured medians in
+[benchmarks.md](benchmarks.md): render→shot 96 ms vs 139 ms for
+`check` of identical markup over loopback HTTP. Two measured
+implementation notes: baseless renders get a unique nonexistent
+`file:///hwatu-render/<n>/` base (custom-scheme/unresolvable bases
+stall commits 500-700 ms), and the check pool became origin-kind
+aware because adopting a file-origin window for an http load forces
+a WebKit process swap (~650 ms, worse than a fresh window).
+
+Original test plan (kept for the record):
 - Unit: CLI parse tests (stdin vs file vs conflict), MCP minimal-args
   test entry, IPC serde roundtrip.
 - Behavioral, live daemon: relative asset resolution against

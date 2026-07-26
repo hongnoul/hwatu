@@ -60,8 +60,12 @@ pub struct Daemon {
     /// back-to-back checks navigate a warm window instead of paying
     /// window construction + prewarm-refill per check. Entries carry
     /// a park token so a TTL timer from an earlier park of the same
-    /// window cannot close a later park.
-    pub check_pool: RefCell<Vec<(u64, u64)>>,
+    /// window cannot close a later park, plus a "was file-origin"
+    /// flag: WebKit swaps web processes when a navigation leaves a
+    /// `file:` document for a network one (measured ~650 ms on this
+    /// path, vs ~240 ms for a fresh window), so http-target checks
+    /// must not adopt a file-origin park.
+    pub check_pool: RefCell<Vec<(u64, u64, bool)>>,
     /// Speculative loads awaiting adoption: url -> (window id, park
     /// token). `hwatu prefetch <url>` starts the load; the next
     /// `check` of the same URL claims the window instead of paying

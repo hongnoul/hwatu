@@ -260,6 +260,8 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
     let mut observe_ms: Option<u64> = None;
     let mut other: Option<u64> = None;
     let mut baseline: Option<String> = None;
+    let mut base: Option<String> = None;
+    let mut use_stdin = false;
     let mut tolerance: Option<u8> = None;
     let mut heatmap: Option<String> = None;
     let mut expect_text: Option<String> = None;
@@ -376,6 +378,20 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                     .ok_or("usage: --baseline <png-path>")?
                     .clone(),
             );
+        } else if arg == "--base" {
+            base = Some(
+                it.next()
+                    .filter(|v| !v.is_empty())
+                    .ok_or("usage: --base <url>")?
+                    .clone(),
+            );
+        } else if let Some(v) = arg.strip_prefix("--base=") {
+            if v.trim().is_empty() {
+                return Err("usage: --base=<url>".into());
+            }
+            base = Some(v.to_string());
+        } else if arg == "--stdin" {
+            use_stdin = true;
         } else if arg == "--tolerance" {
             tolerance = Some(
                 it.next()
@@ -521,7 +537,55 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 )?
                 .to_string();
             Ok(Request::Check {
-                url,
+                url: Some(url),
+                render: None,
+                base: None,
+                eval: eval_js,
+                shot,
+                shot_path,
+                full,
+                baseline,
+                tolerance,
+                heatmap,
+                until: until.unwrap_or_default(),
+                keep,
+                timeout_ms,
+            })
+        }
+        Some("render") => {
+            const USAGE_RENDER: &str = "usage: hwatu render (--stdin | <file.html>) \
+                 [--base <url>] [--eval <js>] [--shot | --shot=<png>] [--full] \
+                 [--baseline <png> [--tolerance <0-255>] [--heatmap <png>]] \
+                 [--until (committed|dom|settled)] [--keep] [--timeout-ms <ms>]";
+            let html = match (use_stdin, rest.get(1)) {
+                (true, Some(_)) => {
+                    return Err(format!("render takes --stdin or a file, not both\n{USAGE_RENDER}"))
+                }
+                (true, None) => {
+                    let mut html = String::new();
+                    std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut html)
+                        .map_err(|e| format!("render: cannot read stdin: {e}"))?;
+                    html
+                }
+                (false, Some(path)) => std::fs::read_to_string(path)
+                    .map_err(|e| format!("render: cannot read {path}: {e}"))?,
+                (false, None) => return Err(USAGE_RENDER.into()),
+            };
+            if html.trim().is_empty() {
+                return Err("render: the document is empty".into());
+            }
+            if html.len() > hwatu_ipc::RENDER_MAX_BYTES {
+                return Err(format!(
+                    "render: document is {} bytes; the cap is {} (serve it over http \
+                     and use `hwatu check` instead)",
+                    html.len(),
+                    hwatu_ipc::RENDER_MAX_BYTES
+                ));
+            }
+            Ok(Request::Check {
+                url: None,
+                render: Some(html),
+                base,
                 eval: eval_js,
                 shot,
                 shot_path,
@@ -773,6 +837,7 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--foc
 | eval [--id <id>] [--timeout-ms <ms>] <js> | goto [--id <id>] [--no-wait] [--until <stage>] <url> \
     | shot [--id <id>] [--full] [path] | wait-load [--id <id>] [--until (committed|dom|settled)] \
     | check <url> [--eval <js>] [--shot | --shot=<png>] [--full] [--baseline <png> [--tolerance <0-255>] [--heatmap <png>]] [--until <stage>] [--keep] \
+    | render (--stdin | <file.html>) [--base <url>] [--eval <js>] [--shot | --shot=<png>] [--full] [--baseline <png> ...] [--until <stage>] [--keep] \
     | prefetch <url> \
     | challenge [--id <id>] [--wait] \
     | upload [--id <id>] <selector> <path> \
@@ -861,7 +926,7 @@ mod tests {
         else {
             panic!("expected Check");
         };
-        assert_eq!(url, "example.com");
+        assert_eq!(url.as_deref(), Some("example.com"));
         assert_eq!(eval.as_deref(), Some("return document.title"));
         assert!(shot);
         assert_eq!(shot_path.as_deref(), Some("/tmp/x.png"));
@@ -892,6 +957,72 @@ mod tests {
         assert_eq!(baseline.as_deref(), Some("/tmp/base.png"));
         assert_eq!(tolerance, Some(12));
         assert_eq!(heatmap.as_deref(), Some("/tmp/heat.png"));
+    }
+
+    /// `hwatu render <file>` reads the file into a render-check; the
+    /// composing flags (--base/--eval/--shot/--until/--keep) ride
+    /// along, and `url` stays empty. --stdin plus a file is a usage
+    /// error, as is neither, an empty document, and --base without a
+    /// value.
+    #[test]
+    fn render_parses_file_and_flags() {
+        let dir = std::env::temp_dir().join(format!("hwatu-render-parse-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("page.html");
+        std::fs::write(&file, "<h1>hello</h1>").unwrap();
+        let file = file.to_string_lossy().to_string();
+
+        let Ok(Request::Check {
+            url,
+            render,
+            base,
+            eval,
+            shot,
+            until,
+            keep,
+            ..
+        }) = parse(&args(&[
+            "render",
+            &file,
+            "--base",
+            "http://localhost:3000/",
+            "--eval",
+            "document.title",
+            "--shot",
+            "--until",
+            "dom",
+            "--keep",
+        ]))
+        else {
+            panic!("expected Check");
+        };
+        assert_eq!(url, None);
+        assert_eq!(render.as_deref(), Some("<h1>hello</h1>"));
+        assert_eq!(base.as_deref(), Some("http://localhost:3000/"));
+        assert_eq!(eval.as_deref(), Some("document.title"));
+        assert!(shot);
+        assert_eq!(until, hwatu_ipc::LoadStage::Dom);
+        assert!(keep);
+
+        // Conflicts and gaps are usage errors.
+        assert!(parse(&args(&["render"])).is_err());
+        assert!(parse(&args(&["render", "--stdin", &file])).is_err());
+        assert!(parse(&args(&["render", &file, "--base"])).is_err());
+        assert!(parse(&args(&["render", "/nonexistent/x.html"])).is_err());
+        std::fs::write(dir.join("empty.html"), "  \n").unwrap();
+        assert!(parse(&args(&[
+            "render",
+            &dir.join("empty.html").to_string_lossy()
+        ]))
+        .is_err());
+
+        // Oversized documents are rejected client-side with the cap named.
+        let big = dir.join("big.html");
+        std::fs::write(&big, "x".repeat(hwatu_ipc::RENDER_MAX_BYTES + 1)).unwrap();
+        let err = parse(&args(&["render", &big.to_string_lossy()])).unwrap_err();
+        assert!(err.contains("cap"), "got: {err}");
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

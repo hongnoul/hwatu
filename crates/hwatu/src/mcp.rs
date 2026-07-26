@@ -223,7 +223,9 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
             timeout_ms,
         }),
         "check" => Ok(Request::Check {
-            url: req_str(args, "url")?,
+            url: Some(req_str(args, "url")?),
+            render: None,
+            base: None,
             eval: opt_str(args, "eval"),
             shot: opt_bool(args, "shot").unwrap_or(false),
             shot_path: opt_str(args, "shot_path"),
@@ -235,6 +237,31 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
             keep: opt_bool(args, "keep").unwrap_or(false),
             timeout_ms,
         }),
+        "render" => {
+            let html = req_str(args, "html")?;
+            if html.len() > hwatu_ipc::RENDER_MAX_BYTES {
+                return Err(format!(
+                    "html is {} bytes; the cap is {}",
+                    html.len(),
+                    hwatu_ipc::RENDER_MAX_BYTES
+                ));
+            }
+            Ok(Request::Check {
+                url: None,
+                render: Some(html),
+                base: opt_str(args, "base"),
+                eval: opt_str(args, "eval"),
+                shot: opt_bool(args, "shot").unwrap_or(false),
+                shot_path: opt_str(args, "shot_path"),
+                full: opt_bool(args, "full").unwrap_or(false),
+                baseline: opt_str(args, "baseline"),
+                tolerance: opt_u64(args, "tolerance").map(|v| v.min(255) as u8),
+                heatmap: opt_str(args, "heatmap"),
+                until: parse_until(args)?,
+                keep: opt_bool(args, "keep").unwrap_or(false),
+                timeout_ms,
+            })
+        }
         "prefetch" => Ok(Request::Prefetch {
             url: req_str(args, "url")?,
         }),
@@ -466,6 +493,31 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
                 "timeout_ms": prop("integer", "Deadline for the whole pass in ms."),
             }),
             &["url"],
+        ),
+        tool(
+            "render",
+            "Render generated HTML directly, no server or temp file needed: load \
+             the markup in a headless window, wait for it, optionally eval JS, \
+             screenshot, and pixel-diff against a baseline, then close the \
+             window. Same one-call pass as check, but the input is markup in \
+             hand instead of a deployed URL. Use `base` so relative asset paths \
+             (img/css/js) resolve.",
+            json!({
+                "html": prop("string", "The HTML document to render."),
+                "base": prop("string", "Base URL for resolving relative references in the markup."),
+                "eval": prop("string", "JS to run once loaded (expression or function body)."),
+                "shot": prop("boolean", "Take a screenshot to a temp file."),
+                "shot_path": prop("string", "Screenshot destination (implies shot)."),
+                "full": prop("boolean", "Screenshot/diff the full document, not just the viewport."),
+                "baseline": prop("string", "Baseline PNG path: pixel-diff the rendered page against it."),
+                "tolerance": prop("integer", "Per-channel diff tolerance 0-255 (default 8; only with baseline)."),
+                "heatmap": prop("string", "Write a mismatch heatmap PNG here (only with baseline)."),
+                "until": { "type": "string", "enum": ["committed", "dom", "settled"],
+                    "description": "Load stage gating eval/shot (default settled)." },
+                "keep": prop("boolean", "Keep the window open and return its id."),
+                "timeout_ms": prop("integer", "Deadline for the whole pass in ms."),
+            }),
+            &["html"],
         ),
         tool(
             "prefetch",
@@ -858,6 +910,7 @@ mod tests {
             "list_windows": {},
             "goto": { "url": "example.com" },
             "check": { "url": "example.com" },
+            "render": { "html": "<h1>hi</h1>" },
             "prefetch": { "url": "example.com" },
             "snapshot": {},
             "expect": { "selector": "h1" },

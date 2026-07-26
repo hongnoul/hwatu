@@ -129,6 +129,40 @@ prefetches expire after 30 s into the ordinary check pool (max 3
 outstanding), so speculation never raises the daemon's memory floor,
 and a check with no matching prefetch just loads normally.
 
+### Documents without a server: `hwatu render`
+
+`hwatu render (--stdin | <file.html>)` loads markup directly
+(`webkit_web_view_load_html`) instead of navigating to a URL, with
+the same one-roundtrip pass as `check` (`--eval`, `--shot`,
+`--baseline`, `--until`, `--keep`). An agent holding generated HTML
+skips the temp-file-plus-`http.server` dance entirely. Measured
+2026-07-26 (`scripts/bench-render.sh`, 40 runs, identical markup for
+both paths, `--shot` included):
+
+| variant | median |
+|---|---|
+| `render` (inline markup, no HTTP) | 96 ms |
+| `check` (same markup over loopback HTTP) | 139 ms |
+
+Render wins by skipping the HTTP roundtrip and server, but the real
+value is operational: nothing to serve, nothing to clean up.
+
+Two measured cliffs shaped the implementation:
+
+- **The default base URI must be cheap.** `load_html` against an
+  unregistered custom scheme or an unresolvable http base stalled
+  the commit 500-700 ms in the network process; `file:`/`about:`
+  bases commit in single-digit ms. Baseless renders therefore get a
+  unique `file:///hwatu-render/<n>/` base (nonexistent path, so
+  relative references resolve to nothing rather than to real files).
+- **The check pool is origin-kind aware.** WebKit swaps web
+  processes when a navigation crosses the file:/network boundary,
+  and adopting a file-origin (rendered) pool window for an http
+  check cost ~650 ms vs ~240 ms for a fresh window. Parked windows
+  remember their origin kind, and a check only adopts a matching
+  park, so alternating render/check loops keep one warm window per
+  kind instead of thrashing process swaps.
+
 ## Memory
 
 Sum of proportional-set-size (PSS) across the daemon and all of its
