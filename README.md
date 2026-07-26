@@ -19,6 +19,7 @@
 
 ## Documents
 
+- [Vision](VISION.md): durable product principles, native platform strategy, swarm model
 - [Agent guide](docs/agents.md): protocol, primitives, verification loops
 - [Human guide](docs/human.md): the tiling-WM browser side
 - [Benchmarks](docs/benchmarks.md): every number, measured, with methodology
