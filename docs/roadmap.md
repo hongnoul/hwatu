@@ -3,6 +3,10 @@
 Status: current as of 2026-07. This file is the plan of record; docs
 and marketing should match it.
 
+Roadmap ordering is reviewed weekly using the evidence and scoring rules in
+[continuous-improvement.md](continuous-improvement.md). Repeated user pain and
+first-check activation outrank speculative feature breadth.
+
 ## The decision
 
 hwatu is **AI-first**. The product is visual verification for coding

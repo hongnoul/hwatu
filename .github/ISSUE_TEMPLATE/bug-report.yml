@@ -1,0 +1,68 @@
+name: Bug report
+description: Report a reproducible installation, daemon, automation, or rendering failure.
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for helping make Hwatu reliable. Remove secrets, cookies, private URLs, and proprietary page contents from all output.
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Where did it fail?
+      options:
+        - Install
+        - Start or doctor
+        - Connect an agent
+        - Verify a page
+        - Repeat an existing workflow
+        - Human hand-off
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: What result did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      placeholder: Include the exact error and a minimal public reproducer when possible.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction steps
+      placeholder: |
+        1. Run ...
+        2. Connect ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Hwatu version or commit
+      placeholder: hwatu --version
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include OS, compositor/session, WebKitGTK version, agent or harness, and the hwatud startup line when relevant.
+      placeholder: Arch Linux, Wayland/Sway, WebKitGTK 6.0 ..., Claude Code via MCP
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: I removed credentials, cookies, private URLs, and proprietary content.
+          required: true

@@ -1,0 +1,64 @@
+name: Use report
+description: Tell us where Hwatu succeeded, caused friction, or did not fit your agent workflow.
+title: "use: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: A two-minute report is enough. Successful workflows help us choose compatibility fixtures and priorities too.
+  - type: dropdown
+    id: outcome
+    attributes:
+      label: Outcome
+      options:
+        - First verification succeeded
+        - Verification succeeded after friction
+        - I could not complete the first verification
+        - I returned and used Hwatu again
+        - I switched to another tool
+    validations:
+      required: true
+  - type: input
+    id: harness
+    attributes:
+      label: Agent or harness
+      placeholder: Jcode, Claude Code, Cursor, custom agent, or CLI only
+    validations:
+      required: true
+  - type: dropdown
+    id: connection
+    attributes:
+      label: Connection
+      options:
+        - CLI
+        - MCP
+        - Native JSON socket
+        - I did not reach connection
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: job
+    attributes:
+      label: What were you trying to verify?
+      description: Describe the workflow without sharing private source, page contents, or credentials.
+      placeholder: Verify a generated React page at three viewport sizes before merging.
+    validations:
+      required: true
+  - type: textarea
+    id: friction
+    attributes:
+      label: Where did you hesitate, fail, or fall back?
+      placeholder: The setup output did not make it clear which MCP scope to choose.
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: OS, browser engine package, and relevant agent version
+  - type: textarea
+    id: delight
+    attributes:
+      label: What should Hwatu preserve?
+      placeholder: The one-call JSON result was easier for my agent to consume than screenshots.

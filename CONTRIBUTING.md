@@ -29,6 +29,15 @@ Run the daemon from a checkout with `target/debug/hwatud`, then drive it with
 
 Include the startup line `hwatud` logs (WebKitGTK version, session type,
 renderer) plus your compositor. For rendering jank, that line is essential.
+The [bug report form](https://github.com/hongnoul/hwatu/issues/new?template=bug-report.yml)
+prompts for the information needed to reproduce a failure.
+
+If hwatu worked but did not fit your agent workflow, submit a short
+[use report](https://github.com/hongnoul/hwatu/issues/new?template=use-report.yml).
+Successful workflows are as valuable as failures because they reveal which
+integration paths deserve compatibility fixtures. See the
+[continuous-improvement playbook](docs/continuous-improvement.md) for how
+reports become roadmap and regression work.
 
 ## Pull requests
 

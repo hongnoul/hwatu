@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Roadmap and product direction
+    url: https://github.com/hongnoul/hwatu/blob/main/docs/roadmap.md
+    about: Check current priorities and explicit non-goals before proposing a feature.

@@ -24,6 +24,7 @@
 - [Human guide](docs/human.md): the tiling-WM browser side
 - [Benchmarks](docs/benchmarks.md): every number, measured, with methodology
 - [Roadmap](docs/roadmap.md): plan of record, priorities, non-goals
+- [Continuous improvement](docs/continuous-improvement.md): activation metric, feedback loop, weekly cadence
 - [Launch kit](docs/launch-kit.md): reusable copy, channels, and measurement plan
 
 ## Quick Start
@@ -72,6 +73,10 @@ newline-delimited JSON line over a Unix socket.
 ```sh
 hwatu localhost:3000       # open a window like you open a terminal
 ```
+
+Tried hwatu? A successful check, a failed install, and a missing workflow are
+all useful signals. Share a two-minute [use report](https://github.com/hongnoul/hwatu/issues/new?template=use-report.yml)
+or [report a bug](https://github.com/hongnoul/hwatu/issues/new?template=bug-report.yml).
 
 ## Features
 
