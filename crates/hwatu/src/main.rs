@@ -471,6 +471,11 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             );
             if free_text_tail {
                 rest.push(arg);
+            } else if arg == "--help" {
+                // `--help` anywhere outside a free-text tail prints usage
+                // instead of "unknown flag"; the `-h`/`--help` subcommand
+                // arm below only catches it as a bare first word.
+                return Err(USAGE.to_string());
             } else {
                 return Err(format!("unknown flag {arg:?}\n{USAGE}"));
             }
