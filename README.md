@@ -24,6 +24,7 @@
 - [Human guide](docs/human.md): the tiling-WM browser side
 - [Benchmarks](docs/benchmarks.md): every number, measured, with methodology
 - [Roadmap](docs/roadmap.md): plan of record, priorities, non-goals
+- [Launch kit](docs/launch-kit.md): reusable copy, channels, and measurement plan
 
 ## Quick Start
 
