@@ -1756,7 +1756,10 @@ if (el instanceof HTMLSelectElement) {{
   el.value = opt.value;
   fire('input'); fire('change');
 }} else if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {{
-  const proto = el instanceof HTMLInputElement ? HTMLInputElement.prototype : HTMLTextAreaElement.prototype;
+  // Use the element's own realm. A target adopted from an iframe can pass the
+  // type check while rejecting a setter borrowed from the top-level realm.
+  const view = el.ownerDocument.defaultView;
+  const proto = el instanceof view.HTMLInputElement ? view.HTMLInputElement.prototype : view.HTMLTextAreaElement.prototype;
   const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
   setter.call(el, clear ? text : el.value + text);
   fire('input'); fire('change');
