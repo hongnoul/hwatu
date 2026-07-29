@@ -78,6 +78,34 @@ Tried hwatu? A successful check, a failed install, and a missing workflow are
 all useful signals. Share a two-minute [use report](https://github.com/hongnoul/hwatu/issues/new?template=use-report.yml)
 or [report a bug](https://github.com/hongnoul/hwatu/issues/new?template=bug-report.yml).
 
+## Tell your agent to use Hwatu
+
+Connecting Hwatu makes its tools available. A project instruction tells the
+agent when to use them and what evidence counts as success. Add this to
+`AGENTS.md`, `CLAUDE.md`, Cursor rules, or the equivalent for your harness:
+
+```markdown
+## Frontend verification
+
+Use Hwatu after frontend changes. Exercise the affected user journey and
+verify its intended visible, navigational, or persisted result with `expect`.
+A successful click or clean console is not proof of success. Check `console`
+for additional JavaScript and request failures after verifying the outcome.
+```
+
+Then make the task's proof concrete:
+
+```text
+Implement display-name editing on /settings. Use Hwatu to enter “Test User,”
+save it, verify the visible success state, reload, confirm persistence, and
+report any console errors.
+```
+
+The same instruction works with Hwatu's MCP tools, short CLI commands, or
+Jcode's native integration. Name the user journey and the observable result
+that proves it worked. See the full [agent guide](docs/agents.md), including a
+larger copy-paste policy and verification loops.
+
 ## Features
 
 - [x] Pixel-diff scoring: match percent + diff regions + heatmap (`diff`)

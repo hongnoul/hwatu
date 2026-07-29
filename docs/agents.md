@@ -422,13 +422,18 @@ hwatu shot --id "$id" /tmp/baseline.png            # seed only after checks pass
 hwatu close "$id"
 ```
 
-`expect --visible` scrolls a fully off-screen match into view, then hit-tests
-its center and four inset corners. Requiring every sample to resolve to the
-element or its subtree catches partial overlaps such as a sticky header over
-the top edge, while avoiding the false occlusion that an off-viewport center
-would produce. On failure, the message identifies the sampled point and the
-covering element. Once the first render is approved, use that screenshot as
-the baseline for subsequent `check --baseline` or `diff --baseline` passes.
+`expect --visible` records the current scroll position, temporarily scrolls a
+fully off-screen match into view, hit-tests its center and four inset corners,
+and restores the original position. After a scroll inspection completes, it
+reports inspection-induced document or target-geometry changes instead of
+trusting a layout created by the check itself. Effective opacity is calculated
+through the ancestor chain, and two matching samples are required so a
+transitional frame cannot false-pass.
+Requiring every hit-test sample to resolve to the element or its subtree also
+catches partial overlaps such as a sticky header over the top edge. On failure,
+the message identifies the instability, sampled point, or covering element.
+Once the first render is approved, use that screenshot as the baseline for
+subsequent `check --baseline` or `diff --baseline` passes.
 
 Recommended agent policy: **snapshot for structure, expect for invariants,
 console for runtime health, screenshot for human evidence, diff for
@@ -463,10 +468,18 @@ id=$(hwatu --headless --json localhost:5173 | jq .id)   # ~14 ms
 hwatu wait-load
 hwatu snapshot                  # what's on the page, what can be clicked
 hwatu click --ref 2             # act on it
-hwatu console                   # did the page complain?
+hwatu expect '#status' --text Saved --visible  # did the intended effect happen?
+hwatu console                   # supplementary runtime/request diagnostics
 hwatu shot /tmp/after.png
 hwatu close $id
 ```
+
+Every state-changing action needs a post-action assertion. A dispatched click
+does not prove that its handler existed or that the application responded, and
+a clean console cannot reveal a handler that was never attached. Verify the
+specific effect: a DOM or class change, navigation, request-driven result,
+element disappearance, or a value that survives reload. `console` is
+supplementary diagnostic evidence, never the success condition by itself.
 
 Measured cost of that whole loop against a local dev page, medians
 over 10 runs ([full data](benchmarks.md)):
@@ -607,8 +620,12 @@ Daemon-based WebKitGTK browser: ~15ms window spawn, full rendering.
   and indexed interactables; `hwatu click --ref <n>` / `hwatu type
   --ref <n> <text>` act on them. Selectors work too:
   `hwatu click button --contains "Save"`.
-- Check for errors: `hwatu console` returns console output, uncaught
-  exceptions, and failed/4xx+ network requests as JSON.
+- After every state-changing action, assert the intended effect with
+  `hwatu expect`: DOM/class change, navigation, request-driven result,
+  disappearance, or persistence after reload. A successful click is not proof.
+- Check for additional errors: `hwatu console` returns console output,
+  uncaught exceptions, and failed/4xx+ requests as JSON. A clean console is
+  supplementary evidence, not proof that an interaction worked.
 - Run JS in the page: `hwatu eval '<js expression or function body>'`
   (returns JSON), e.g. `hwatu eval 'document.title'`.
 - Scroll with feedback: `hwatu scroll <selector> [--contains <text>]`

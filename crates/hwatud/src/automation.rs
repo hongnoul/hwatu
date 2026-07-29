@@ -1454,6 +1454,149 @@ fn json_or_null(s: Option<&str>) -> String {
     s.map_or("null".into(), js_string)
 }
 
+// Shared by one-shot and resident assertions. Keep this as plain page-side
+// JavaScript so both call sites apply exactly the same rendered-state rules.
+// The caller owns stability sampling because one-shot expect polls inside one
+// eval while expect --watch is sampled by the native GLib scheduler.
+const VISIBILITY_INSPECTOR_JS: &str = r#"
+function hwatuRoundedRect(r) {
+  return {
+    left: Math.round(r.left * 100) / 100,
+    top: Math.round(r.top * 100) / 100,
+    width: Math.round(r.width * 100) / 100,
+    height: Math.round(r.height * 100) / 100,
+  };
+}
+
+function hwatuRectChanged(a, b) {
+  return ['left', 'top', 'width', 'height'].some(k => Math.abs(a[k] - b[k]) > 0.5);
+}
+
+// Inspect an element as a user would see it while leaving the caller's scroll
+// position intact. Scrolling can still cause irreversible page work (lazy
+// loading), so geometry/document mutations are returned as instability rather
+// than silently becoming the basis of a passing assertion.
+function hwatuInspectVisibility(el) {
+  let effectiveOpacity = 1;
+  const opacityChain = [];
+  for (let n = el; n instanceof Element; n = n.parentElement) {
+    const st = getComputedStyle(n);
+    if (st.display === 'none') return { why: n === el ? 'display:none' : 'display:none on ancestor <' + n.tagName.toLowerCase() + '>' };
+    if (st.visibility === 'hidden' || st.visibility === 'collapse')
+      return { why: 'visibility:' + st.visibility + (n === el ? '' : ' on ancestor <' + n.tagName.toLowerCase() + '>') };
+    const opacity = Number.parseFloat(st.opacity);
+    if (Number.isFinite(opacity)) {
+      effectiveOpacity *= opacity;
+      if (opacity < 1) opacityChain.push({ tag: n.tagName.toLowerCase(), id: n.id || null, opacity });
+    }
+  }
+  effectiveOpacity = Math.round(effectiveOpacity * 1000000) / 1000000;
+  if (effectiveOpacity <= 0)
+    return { why: 'effective opacity is 0', effective_opacity: effectiveOpacity, opacity_chain: opacityChain };
+
+  const root = document.documentElement;
+  const ancestorScroll = [];
+  for (let n = el.parentElement; n instanceof Element; n = n.parentElement) {
+    ancestorScroll.push({ node: n, left: n.scrollLeft, top: n.scrollTop });
+  }
+  const original = {
+    x: scrollX,
+    y: scrollY,
+    width: root.scrollWidth,
+    height: root.scrollHeight,
+    rect: hwatuRoundedRect(el.getBoundingClientRect()),
+  };
+  if (original.rect.width === 0 || original.rect.height === 0)
+    return { why: `zero-size box (${original.rect.width}x${original.rect.height})`, effective_opacity: effectiveOpacity, opacity_chain: opacityChain };
+
+  let r = el.getBoundingClientRect();
+  let scrolled = false;
+  let why = null;
+  let points = [];
+  try {
+    if (r.bottom <= 0 || r.top >= innerHeight || r.right <= 0 || r.left >= innerWidth) {
+      scrolled = true;
+      el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+      r = el.getBoundingClientRect();
+    }
+    const left = Math.max(r.left, 0), right = Math.min(r.right, innerWidth);
+    const top = Math.max(r.top, 0), bottom = Math.min(r.bottom, innerHeight);
+    if (right <= left || bottom <= top) {
+      why = `outside viewport after scroll (rect ${Math.round(r.left)},${Math.round(r.top)} ${Math.round(r.width)}x${Math.round(r.height)})`;
+    } else {
+      const ix = Math.min(1, (right - left) / 2), iy = Math.min(1, (bottom - top) / 2);
+      const samples = [
+        ['center', (left + right) / 2, (top + bottom) / 2],
+        ['top-left', left + ix, top + iy], ['top-right', right - ix, top + iy],
+        ['bottom-left', left + ix, bottom - iy], ['bottom-right', right - ix, bottom - iy],
+      ];
+      for (const [name, x, y] of samples) {
+        const hit = document.elementFromPoint(x, y);
+        const hitName = hit ? `${hit.tagName.toLowerCase()}${hit.id ? '#' + hit.id : ''}` : null;
+        points.push({ name, x: Math.round(x * 100) / 100, y: Math.round(y * 100) / 100, hit: hitName });
+        if (hit && (hit === el || el.contains(hit) || hit.contains(el)
+            || (hit.shadowRoot && hit.shadowRoot.contains(el))
+            || (hit instanceof HTMLLabelElement && hit.control === el))) continue;
+        if (!hit) {
+          why = `${name} point hits nothing (elementFromPoint returned null)`;
+        } else {
+          const t = (hit.textContent || '').trim().slice(0, 60);
+          why = `${name} point covered by <${hitName}> ${JSON.stringify(t)}`;
+        }
+        break;
+      }
+    }
+  } finally {
+    if (scrolled) window.scrollTo(original.x, original.y);
+    for (const saved of ancestorScroll) {
+      saved.node.scrollLeft = saved.left;
+      saved.node.scrollTop = saved.top;
+    }
+  }
+
+  const restored = {
+    x: scrollX,
+    y: scrollY,
+    width: root.scrollWidth,
+    height: root.scrollHeight,
+    rect: hwatuRoundedRect(el.getBoundingClientRect()),
+  };
+  const layoutChanged = original.width !== restored.width
+    || original.height !== restored.height
+    || Math.abs(original.x - restored.x) > 0.5
+    || Math.abs(original.y - restored.y) > 0.5
+    || hwatuRectChanged(original.rect, restored.rect);
+  const ancestorScrollRestored = ancestorScroll.every(saved =>
+    Math.abs(saved.node.scrollLeft - saved.left) <= 0.5
+      && Math.abs(saved.node.scrollTop - saved.top) <= 0.5);
+  const diagnostics = {
+    scrolled,
+    scroll_restored: Math.abs(original.x - restored.x) <= 0.5
+      && Math.abs(original.y - restored.y) <= 0.5 && ancestorScrollRestored,
+    ancestor_scroll_restored: ancestorScrollRestored,
+    layout_changed: layoutChanged,
+    effective_opacity: effectiveOpacity,
+    opacity_chain: opacityChain,
+    original_rect: original.rect,
+    restored_rect: restored.rect,
+    document_before: { width: original.width, height: original.height },
+    document_after: { width: restored.width, height: restored.height },
+    points,
+  };
+  if (layoutChanged && !why) why = 'visibility inspection changed page layout or target geometry';
+  diagnostics.why = why;
+  const signature = JSON.stringify({
+    effective_opacity: effectiveOpacity,
+    rect: original.rect,
+    document: diagnostics.document_after,
+    points,
+    why,
+  });
+  Object.defineProperty(diagnostics, 'signature', { value: signature, enumerable: false });
+  return diagnostics;
+}
+"#;
+
 /// Assert page state, polling inside the page until it holds or the
 /// deadline passes. Success replies `{ok: true, matches, tag, text,
 /// elapsed_ms}`; failure is a structured error naming what WAS found
@@ -1474,7 +1617,8 @@ pub fn expect(
 ) {
     let deadline = timeout_ms.unwrap_or(5000);
     let js = format!(
-        r#"{native}const selector = {selector};
+        r#"{native}{visibility_inspector}
+const selector = {selector};
 const nth = {nth};
 const contains = {contains};
 const wantText = {want_text};
@@ -1482,48 +1626,8 @@ const absent = {absent};
 const wantVisible = {visible};
 const deadline = {deadline};
 const started = hwatuNow();
-
-// Visibility that a bare existence check misses: zero-sized boxes,
-// display/visibility/opacity hiding (on the element or an ancestor,
-// getComputedStyle inherits the first two, opacity needs the walk),
-// and occlusion, where the element renders but another element is on
-// top (wrong z-index, forgotten overlay). Bring fully off-screen
-// elements into view, then sample the visible box at its center and
-// four inset corners so partial overlaps cannot false-pass.
-function whyInvisible(el) {{
-  for (let n = el; n instanceof Element; n = n.parentElement) {{
-    const st = getComputedStyle(n);
-    if (st.display === 'none') return n === el ? 'display:none' : 'display:none on ancestor <' + n.tagName.toLowerCase() + '>';
-    if (st.visibility === 'hidden' || st.visibility === 'collapse') return 'visibility:' + st.visibility + (n === el ? '' : ' on ancestor <' + n.tagName.toLowerCase() + '>');
-    if (st.opacity === '0') return n === el ? 'opacity:0' : 'opacity:0 on ancestor <' + n.tagName.toLowerCase() + '>';
-  }}
-  let r = el.getBoundingClientRect();
-  if (r.width === 0 || r.height === 0) return `zero-size box (${{r.width}}x${{r.height}})`;
-  if (r.bottom <= 0 || r.top >= innerHeight || r.right <= 0 || r.left >= innerWidth) {{
-    el.scrollIntoView({{ block: 'center', inline: 'center', behavior: 'instant' }});
-    r = el.getBoundingClientRect();
-  }}
-  const left = Math.max(r.left, 0), right = Math.min(r.right, innerWidth);
-  const top = Math.max(r.top, 0), bottom = Math.min(r.bottom, innerHeight);
-  if (right <= left || bottom <= top)
-    return `outside viewport after scroll (rect ${{Math.round(r.left)}},${{Math.round(r.top)}} ${{Math.round(r.width)}}x${{Math.round(r.height)}})`;
-  const ix = Math.min(1, (right - left) / 2), iy = Math.min(1, (bottom - top) / 2);
-  const points = [
-    ['center', (left + right) / 2, (top + bottom) / 2],
-    ['top-left', left + ix, top + iy], ['top-right', right - ix, top + iy],
-    ['bottom-left', left + ix, bottom - iy], ['bottom-right', right - ix, bottom - iy],
-  ];
-  for (const [name, x, y] of points) {{
-    const hit = document.elementFromPoint(x, y);
-    if (hit && (hit === el || el.contains(hit) || hit.contains(el)
-        || (hit.shadowRoot && hit.shadowRoot.contains(el))
-        || (hit instanceof HTMLLabelElement && hit.control === el))) continue;
-    if (!hit) return `${{name}} point hits nothing (elementFromPoint returned null)`;
-    const t = (hit.textContent || '').trim().slice(0, 60);
-    return `${{name}} point covered by <${{hit.tagName.toLowerCase()}}${{hit.id ? '#' + hit.id : ''}}> ${{JSON.stringify(t)}}`;
-  }}
-  return null;
-}}
+let previousVisibilitySignature = null;
+let stableVisibility = null;
 
 function check() {{
   let els = [...document.querySelectorAll(selector)];
@@ -1545,14 +1649,23 @@ function check() {{
     return {{ ok: false, why: `text mismatch: expected to contain ${{JSON.stringify(wantText)}}, got ${{JSON.stringify(actual.slice(0, 200))}}` }};
   }}
   if (wantVisible) {{
-    const why = whyInvisible(el);
-    if (why) return {{ ok: false, why: `element matched but is not visible: ${{why}}` }};
+    const visibility = hwatuInspectVisibility(el);
+    if (visibility.why) {{
+      previousVisibilitySignature = null;
+      return {{ ok: false, why: `element matched but is not visible: ${{visibility.why}}`, visibility }};
+    }}
+    if (previousVisibilitySignature !== visibility.signature) {{
+      previousVisibilitySignature = visibility.signature;
+      return {{ ok: false, stabilizing: true, why: 'visibility has not remained stable across samples', visibility }};
+    }}
+    stableVisibility = visibility;
   }}
   return {{
     ok: true,
     matches: els.length,
     tag: el.tagName.toLowerCase(),
     text: actual.slice(0, 120),
+    ...(wantVisible ? {{ visibility: stableVisibility }} : {{}}),
   }};
 }}
 
@@ -1565,6 +1678,7 @@ result.elapsed_ms = hwatuNow() - started;
 if (!result.ok) throw new Error(`expect failed after ${{result.elapsed_ms}} ms: ${{result.why}}`);
 return result;"#,
         native = NATIVE_TIME_JS,
+        visibility_inspector = VISIBILITY_INSPECTOR_JS,
         selector = js_string(&selector),
         nth = nth.unwrap_or(0),
         contains = json_or_null(contains.as_deref()),
@@ -1754,11 +1868,16 @@ fn tick_expect_watch(state: &Rc<ExpectWatchState>, force: bool) {
             if value.get("skipped").and_then(|v| v.as_bool()) == Some(true) {
                 return;
             }
+            // A visibility watch needs two matching native-scheduler samples.
+            // Do not emit a false initial state while that evidence accumulates.
+            if value.get("stabilizing").and_then(|v| v.as_bool()) == Some(true) {
+                return;
+            }
             let ok = value.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
             let last = state.last_ok.get();
             if force || last != Some(ok) {
                 state.last_ok.set(Some(ok));
-                let phase = if force { "initial" } else { "flip" };
+                let phase = if last.is_none() { "initial" } else { "flip" };
                 emit_expect(&state, phase, Some(ok), value);
             }
         },
@@ -1791,46 +1910,13 @@ fn expect_watch_js(spec: &ExpectSpec, force: bool) -> String {
         r#"(() => {{
 const force = {force};
 window.__hwatuExpectDirty = false;
+{visibility_inspector}
 const selector = {selector};
 const nth = {nth};
 const contains = {contains};
 const wantText = {want_text};
 const absent = {absent};
 const wantVisible = {visible};
-function whyInvisible(el) {{
-  for (let n = el; n instanceof Element; n = n.parentElement) {{
-    const st = getComputedStyle(n);
-    if (st.display === 'none') return n === el ? 'display:none' : 'display:none on ancestor <' + n.tagName.toLowerCase() + '>';
-    if (st.visibility === 'hidden' || st.visibility === 'collapse') return 'visibility:' + st.visibility + (n === el ? '' : ' on ancestor <' + n.tagName.toLowerCase() + '>');
-    if (st.opacity === '0') return n === el ? 'opacity:0' : 'opacity:0 on ancestor <' + n.tagName.toLowerCase() + '>';
-  }}
-  let r = el.getBoundingClientRect();
-  if (r.width === 0 || r.height === 0) return `zero-size box (${{r.width}}x${{r.height}})`;
-  if (r.bottom <= 0 || r.top >= innerHeight || r.right <= 0 || r.left >= innerWidth) {{
-    el.scrollIntoView({{ block: 'center', inline: 'center', behavior: 'instant' }});
-    r = el.getBoundingClientRect();
-  }}
-  const left = Math.max(r.left, 0), right = Math.min(r.right, innerWidth);
-  const top = Math.max(r.top, 0), bottom = Math.min(r.bottom, innerHeight);
-  if (right <= left || bottom <= top)
-    return `outside viewport after scroll (rect ${{Math.round(r.left)}},${{Math.round(r.top)}} ${{Math.round(r.width)}}x${{Math.round(r.height)}})`;
-  const ix = Math.min(1, (right - left) / 2), iy = Math.min(1, (bottom - top) / 2);
-  const points = [
-    ['center', (left + right) / 2, (top + bottom) / 2],
-    ['top-left', left + ix, top + iy], ['top-right', right - ix, top + iy],
-    ['bottom-left', left + ix, bottom - iy], ['bottom-right', right - ix, bottom - iy],
-  ];
-  for (const [name, x, y] of points) {{
-    const hit = document.elementFromPoint(x, y);
-    if (hit && (hit === el || el.contains(hit) || hit.contains(el)
-        || (hit.shadowRoot && hit.shadowRoot.contains(el))
-        || (hit instanceof HTMLLabelElement && hit.control === el))) continue;
-    if (!hit) return `${{name}} point hits nothing (elementFromPoint returned null)`;
-    const t = (hit.textContent || '').trim().slice(0, 60);
-    return `${{name}} point covered by <${{hit.tagName.toLowerCase()}}${{hit.id ? '#' + hit.id : ''}}> ${{JSON.stringify(t)}}`;
-  }}
-  return null;
-}}
 let els = [...document.querySelectorAll(selector)];
 const total = els.length;
 if (contains !== null) els = els.filter(e => ((e.textContent || '') + ' ' + (e.value || '')).includes(contains));
@@ -1847,13 +1933,27 @@ if (!el) {{
 const actual = (el.textContent || '').trim();
 if (wantText !== null && !actual.includes(wantText))
   return {{ ok: false, matches: els.length, tag: el.tagName.toLowerCase(), text: actual.slice(0, 120), why: `text mismatch: expected to contain ${{JSON.stringify(wantText)}}, got ${{JSON.stringify(actual.slice(0, 200))}}`, version: window.__hwatuExpectVersion || 0 }};
+let visibility = null;
 if (wantVisible) {{
-  const why = whyInvisible(el);
-  if (why) return {{ ok: false, matches: els.length, tag: el.tagName.toLowerCase(), text: actual.slice(0, 120), why: `element matched but is not visible: ${{why}}`, version: window.__hwatuExpectVersion || 0 }};
+  const sampleKey = JSON.stringify([selector, nth, contains]);
+  window.__hwatuVisibilitySamples ||= {{}};
+  visibility = hwatuInspectVisibility(el);
+  if (visibility.why) {{
+    delete window.__hwatuVisibilitySamples[sampleKey];
+    return {{ ok: false, matches: els.length, tag: el.tagName.toLowerCase(), text: actual.slice(0, 120), why: `element matched but is not visible: ${{visibility.why}}`, visibility, version: window.__hwatuExpectVersion || 0 }};
+  }}
+  const sampleVersion = window.__hwatuExpectVersion || 0;
+  const previousSample = window.__hwatuVisibilitySamples[sampleKey];
+  if (!previousSample || previousSample.signature !== visibility.signature
+      || previousSample.version !== sampleVersion) {{
+    window.__hwatuVisibilitySamples[sampleKey] = {{ signature: visibility.signature, version: sampleVersion }};
+    return {{ ok: false, stabilizing: true, matches: els.length, visibility, version: window.__hwatuExpectVersion || 0 }};
+  }}
 }}
-return {{ ok: true, matches: els.length, tag: el.tagName.toLowerCase(), text: actual.slice(0, 120), version: window.__hwatuExpectVersion || 0 }};
+return {{ ok: true, matches: els.length, tag: el.tagName.toLowerCase(), text: actual.slice(0, 120), ...(wantVisible ? {{ visibility }} : {{}}), version: window.__hwatuExpectVersion || 0 }};
 }})()"#,
         force = force,
+        visibility_inspector = VISIBILITY_INSPECTOR_JS,
         selector = js_string(&spec.selector),
         nth = spec.nth,
         contains = json_or_null(spec.contains.as_deref()),
@@ -2166,7 +2266,10 @@ fn mime_from_extension(path: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{base64, challenge_detect_js, challenge_wait_js, expect_watch_js, ExpectSpec};
+    use super::{
+        base64, challenge_detect_js, challenge_wait_js, expect_watch_js, ExpectSpec,
+        VISIBILITY_INSPECTOR_JS,
+    };
 
     #[test]
     fn base64_matches_rfc_vectors() {
@@ -2239,7 +2342,33 @@ mod tests {
     }
 
     #[test]
-    fn expect_watch_visibility_scrolls_and_checks_partial_occlusion() {
+    fn visibility_inspector_scrolls_restores_and_detects_layout_mutation() {
+        let js = VISIBILITY_INSPECTOR_JS;
+        assert!(js.contains("const original ="));
+        assert!(js.contains("scrollIntoView"));
+        assert!(js.contains("finally"));
+        assert!(js.contains("window.scrollTo(original.x, original.y)"));
+        assert!(js.contains("ancestorScroll"));
+        assert!(js.contains("ancestor_scroll_restored"));
+        assert!(js.contains("scroll_restored"));
+        assert!(js.contains("layout_changed"));
+        assert!(js.contains("hwatuRectChanged(original.rect, restored.rect)"));
+        assert!(js.contains("document_before"));
+        assert!(js.contains("document_after"));
+        assert!(js.contains("enumerable: false"));
+    }
+
+    #[test]
+    fn visibility_inspector_accumulates_ancestor_opacity() {
+        let js = VISIBILITY_INSPECTOR_JS;
+        assert!(js.contains("for (let n = el; n instanceof Element; n = n.parentElement)"));
+        assert!(js.contains("effectiveOpacity *= opacity"));
+        assert!(js.contains("effective_opacity"));
+        assert!(js.contains("opacity_chain"));
+    }
+
+    #[test]
+    fn expect_watch_visibility_requires_stable_samples_and_checks_occlusion() {
         let spec = ExpectSpec::new("#target".into(), None, None, None, false, true, 1);
         let js = expect_watch_js(&spec, true);
         assert!(js.contains("scrollIntoView"));
@@ -2249,6 +2378,10 @@ mod tests {
         }
         assert!(js.contains("outside viewport after scroll"));
         assert!(js.contains("point covered by"));
+        assert!(js.contains("__hwatuVisibilitySamples"));
+        assert!(js.contains("visibility.signature"));
+        assert!(js.contains("previousSample.version !== sampleVersion"));
+        assert!(js.contains("stabilizing: true"));
     }
 
     #[test]
