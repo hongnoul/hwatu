@@ -380,12 +380,12 @@ pub enum Request {
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
-    /// Assert page state, polling until it holds or `timeout_ms`
-    /// expires: `selector` matches an element (disambiguated by `nth`/
-    /// `contains`), optionally with text containing `text`; `absent`
-    /// inverts (assert no match). One command instead of an eval-poll
-    /// script; failure reports what WAS found (match count, actual
-    /// text), so a failed assertion is directly actionable.
+    /// Assert page state. Without `watch`, polls until it holds or
+    /// `timeout_ms` expires: `selector` matches an element
+    /// (disambiguated by `nth`/`contains`), optionally with text
+    /// containing `text`; `absent` inverts (assert no match). With
+    /// `watch`, installs a resident monitor that emits `expect` events on
+    /// initial state, every truth-value flip, and terminal navigation.
     Expect {
         #[serde(default)]
         id: Option<u64>,
@@ -414,6 +414,10 @@ pub enum Request {
         /// Poll deadline (default 5000 ms; 0 = a single check).
         #[serde(default)]
         timeout_ms: Option<u64>,
+        /// Install a resident assertion watcher instead of replying only
+        /// when the assertion first holds/fails.
+        #[serde(default)]
+        watch: bool,
     },
     /// Control a page's *virtual clock*. Where [`Request::Seek`] pins
     /// declarative animations (CSS/WAAPI), Clock also freezes the
@@ -655,7 +659,7 @@ impl Response {
 /// Event kinds the daemon emits (see [`Event::event`]; `subscribed`
 /// is the ack, not a filterable kind). Shared so client-side filter
 /// validation cannot drift from the daemon.
-pub const EVENT_KINDS: &[&str] = &["load", "console", "download", "window"];
+pub const EVENT_KINDS: &[&str] = &["load", "console", "download", "window", "expect"];
 
 /// One pushed event on a subscribed connection (see
 /// [`Request::Subscribe`]). Serialized as a JSON line, tagged

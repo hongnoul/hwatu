@@ -287,13 +287,22 @@ Original test plan (kept for the record):
 
 ### G3. resident assertions: `expect --watch`
 
-`expect` gains `--watch`: instead of polling inside one eval, install
-a MutationObserver-backed monitor that reports over G2 whenever the
-assertion's truth value flips. The agent stops paying tokens for the
-49 redundant re-checks between the edit and the fix. Compose with the
-existing `--visible`/`--text`/`--absent` matchers unchanged.
+**Shipped 2026-07-29.** `expect --watch` subscribes before installing a
+MutationObserver-backed monitor, reports the initial assertion state and each
+truth-value flip as structured `expect` events, then exits after one terminal
+navigation event. Existing `--visible`/`--text`/`--absent`/`--contains`/`--nth`
+matchers compose unchanged. Native GLib scheduling keeps watches live while the
+page's virtual clock is paused, and per-watch sequence numbers make duplicate
+or reordered delivery detectable.
 
-Test plan:
+The executable plan landed as `scripts/test-expect-watch.sh`: four isolated
+live-daemon checks cover initial and flipped state under a paused virtual
+clock, framework-style DOM replacement, navigation termination without later
+flips, and navigation/reinstall sequence uniqueness. Protocol/CLI/MCP parsing
+and monitor-script behavior also have unit coverage; workspace tests, strict
+clippy, formatting, and the behavioral suite were green.
+
+Original test plan (kept for the record):
 - Behavioral: flip detection under DOM replacement (framework
   re-render replacing the observed node; the observer must re-arm),
   under navigation (watch dies with a structured event, not

@@ -324,6 +324,7 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
             absent: opt_bool(args, "absent").unwrap_or(false),
             visible: opt_bool(args, "visible").unwrap_or(false),
             timeout_ms,
+            watch: false,
         }),
         "click" => {
             let selector = opt_str(args, "selector");

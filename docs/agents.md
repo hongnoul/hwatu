@@ -88,6 +88,7 @@ hwatu wait-load                     # block until the load settles
 hwatu wait-load --until dom         # release at DOMContentLoaded (faster)
 hwatu snapshot                      # text + interactables, cheaper than a shot
 hwatu expect '#status' --text ready # assert page state (polls up to 5s)
+hwatu expect '#status' --text ready --watch # stream initial state + truth flips until navigation
 hwatu eval 'document.title'         # id-less: follows the window you opened
 hwatu click a --contains "Sign in"  # real pointer-event click
 hwatu click --ref 4                 # click interactable #4 from the snapshot

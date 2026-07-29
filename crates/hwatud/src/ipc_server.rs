@@ -184,10 +184,17 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
             absent,
             visible,
             timeout_ms,
+            watch,
         } => {
-            return automation::expect(
-                daemon, id, selector, nth, contains, text, absent, visible, timeout_ms, reply,
-            );
+            return if watch {
+                automation::expect_watch(
+                    daemon, id, selector, nth, contains, text, absent, visible, reply,
+                )
+            } else {
+                automation::expect(
+                    daemon, id, selector, nth, contains, text, absent, visible, timeout_ms, reply,
+                )
+            };
         }
         Request::Click {
             id,

@@ -46,6 +46,9 @@ fn main() {
             std::process::exit(2);
         }
     };
+    if matches!(request, Request::Expect { watch: true, .. }) {
+        std::process::exit(expect_watch(request));
+    }
 
     let started = Instant::now();
     let mut stream = match connect_or_spawn() {
@@ -275,6 +278,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
     let mut shot = false;
     let mut shot_path: Option<String> = None;
     let mut keep = false;
+    let mut expect_watch = false;
     let mut mode = default_mode;
     let mut rest: Vec<&String> = Vec::new();
     let mut it = args.iter();
@@ -419,6 +423,8 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             absent = true;
         } else if arg == "--visible" {
             visible = true;
+        } else if arg == "--watch" {
+            expect_watch = true;
         } else if arg == "--until" {
             let v = it.next().ok_or("usage: --until (committed|dom|settled)")?;
             until = Some(LoadStage::parse(v).ok_or("usage: --until (committed|dom|settled)")?);
@@ -665,6 +671,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 absent,
                 visible,
                 timeout_ms,
+                watch: expect_watch,
             })
         }
         Some("motion") => Ok(Request::Motion {
@@ -847,12 +854,12 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--foc
     | check <url> [--eval <js>] [--shot | --shot=<png>] [--full] [--baseline <png> [--tolerance <0-255>] [--heatmap <png>]] [--until <stage>] [--keep] \
     | render (--stdin | <file.html>) [--base <url>] [--eval <js>] [--shot | --shot=<png>] [--full] [--baseline <png> ...] [--until <stage>] [--keep] \
     | prefetch <url> \
-    | watch [--id <id>] [--kinds load,console,download,window] \
+    | watch [--id <id>] [--kinds load,console,download,window,expect] \
     | challenge [--id <id>] [--wait] \
     | upload [--id <id>] <selector> <path> \
 | scroll [--id <id>] [<selector> [nth]] [--contains <text>] [--to-y <px>] [--by <pages>] \
 | snapshot [--id <id>] \
-| expect [--id <id>] <selector> [--contains <filter>] [--text <substring>] [--absent] [--visible] [--nth <n>] [--timeout-ms <ms>] \
+| expect [--id <id>] <selector> [--contains <filter>] [--text <substring>] [--absent] [--visible] [--nth <n>] [--timeout-ms <ms>] [--watch] \
 | click [--id <id>] (<selector> [nth] [--contains <text>] | --ref <n>) \
 | type [--id <id>] (<selector> | --ref <n>) <text> [--enter] [--no-clear] \
 | console [--id <id>] [--clear] [--limit <n>] \
@@ -871,7 +878,7 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--foc
 /// IPC: `hwatu watch | while read -r event; do ...; done`.
 fn watch(args: &[String]) -> i32 {
     const USAGE_WATCH: &str =
-        "usage: hwatu watch [--id <window-id>] [--kinds load,console,download,window]";
+        "usage: hwatu watch [--id <window-id>] [--kinds load,console,download,window,expect]";
     let mut window: Option<u64> = None;
     let mut kinds: Option<Vec<String>> = None;
     let mut it = args.iter();
@@ -947,6 +954,96 @@ fn watch(args: &[String]) -> i32 {
         }
     }
     0
+}
+
+/// `hwatu expect ... --watch`: subscribe first so the daemon's initial
+/// expect event cannot race past the client, then install the resident
+/// monitor on a one-shot connection and stream only `expect` events.
+fn expect_watch(request: Request) -> i32 {
+    let window = match &request {
+        Request::Expect { id, .. } => *id,
+        _ => None,
+    };
+    let mut stream = match connect_or_spawn() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("hwatu: cannot reach daemon: {e}");
+            return 1;
+        }
+    };
+    let sub = Request::Subscribe {
+        kinds: Some(vec!["expect".to_string()]),
+        window,
+    };
+    let mut payload = serde_json::to_vec(&sub).expect("serialize request");
+    payload.push(b'\n');
+    if let Err(e) = stream.write_all(&payload) {
+        eprintln!("hwatu: write failed: {e}");
+        return 1;
+    }
+
+    let mut reader = BufReader::new(stream);
+    let mut first = String::new();
+    if let Err(e) = reader.read_line(&mut first) {
+        eprintln!("hwatu: read failed: {e}");
+        return 1;
+    }
+    if first.contains("\"status\":\"err\"") {
+        eprintln!("hwatu: {first}");
+        return 1;
+    }
+    print!("{first}");
+    let _ = std::io::stdout().flush();
+
+    let mut install = match connect_or_spawn() {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("hwatu: cannot reach daemon: {e}");
+            return 1;
+        }
+    };
+    let mut payload = serde_json::to_vec(&request).expect("serialize request");
+    payload.push(b'\n');
+    if let Err(e) = install.write_all(&payload) {
+        eprintln!("hwatu: write failed: {e}");
+        return 1;
+    }
+    let mut install_line = String::new();
+    let mut install_reader = BufReader::new(install);
+    if let Err(e) = install_reader.read_line(&mut install_line) {
+        eprintln!("hwatu: read failed: {e}");
+        return 1;
+    }
+    if install_line.contains("\"status\":\"err\"") {
+        eprintln!("hwatu: {install_line}");
+        return 1;
+    }
+
+    for line in reader.lines() {
+        match line {
+            Ok(l) if !l.trim().is_empty() => {
+                println!("{l}");
+                if expect_event_is_terminal_navigation(&l) {
+                    break;
+                }
+            }
+            Ok(_) => {}
+            Err(_) => break,
+        }
+    }
+    0
+}
+
+fn expect_event_is_terminal_navigation(line: &str) -> bool {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+        return false;
+    };
+    value.get("event").and_then(|v| v.as_str()) == Some("expect")
+        && value.pointer("/data/phase").and_then(|v| v.as_str()) == Some("navigation")
+        && value
+            .pointer("/data/result/terminal")
+            .and_then(|v| v.as_bool())
+            == Some(true)
 }
 
 pub(crate) fn connect_or_spawn() -> std::io::Result<UnixStream> {
@@ -1124,6 +1221,59 @@ mod tests {
         };
         assert_eq!(url, "localhost:3000");
         assert!(parse(&args(&["prefetch"])).is_err());
+    }
+
+    #[test]
+    fn expect_parses_watch_assertion() {
+        let Ok(Request::Expect {
+            id,
+            selector,
+            nth,
+            contains,
+            text,
+            absent,
+            visible,
+            timeout_ms,
+            watch,
+        }) = parse(&args(&[
+            "expect",
+            "--id",
+            "3",
+            "#status",
+            "--contains",
+            "phase",
+            "--text",
+            "ready",
+            "--visible",
+            "--nth",
+            "2",
+            "--timeout-ms",
+            "1234",
+            "--watch",
+        ]))
+        else {
+            panic!("expected Expect");
+        };
+        assert_eq!(id, Some(3));
+        assert_eq!(selector, "#status");
+        assert_eq!(nth, Some(2));
+        assert_eq!(contains.as_deref(), Some("phase"));
+        assert_eq!(text.as_deref(), Some("ready"));
+        assert!(!absent);
+        assert!(visible);
+        assert_eq!(timeout_ms, Some(1234));
+        assert!(watch);
+    }
+
+    #[test]
+    fn expect_watch_terminal_navigation_detection_is_specific() {
+        let terminal =
+            r#"{"event":"expect","data":{"phase":"navigation","result":{"terminal":true}}}"#;
+        assert!(super::expect_event_is_terminal_navigation(terminal));
+        let flip = r#"{"event":"expect","data":{"phase":"flip","result":{"terminal":false}}}"#;
+        assert!(!super::expect_event_is_terminal_navigation(flip));
+        let load = r#"{"event":"load","data":{"phase":"navigation","result":{"terminal":true}}}"#;
+        assert!(!super::expect_event_is_terminal_navigation(load));
     }
 
     #[test]

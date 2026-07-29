@@ -1567,6 +1567,278 @@ return result;"#,
     eval(daemon, id, js, Some(deadline + 2000), reply);
 }
 
+/// Install a resident assertion monitor. The page gets a MutationObserver
+/// so DOM replacement marks the document dirty immediately, while native
+/// GLib/WebKit callbacks do the actual scheduling and navigation
+/// termination. Because the scheduler lives outside the page's virtual
+/// clock, `hwatu clock pause` cannot stall the monitor.
+#[allow(clippy::too_many_arguments)]
+pub fn expect_watch(
+    daemon: &Rc<Daemon>,
+    id: Option<u64>,
+    selector: String,
+    nth: Option<u32>,
+    contains: Option<String>,
+    text: Option<String>,
+    absent: bool,
+    visible: bool,
+    reply: Reply,
+) {
+    let reply = OnceReply::new(reply);
+    let win = match resolve(daemon, id) {
+        Ok(w) => w,
+        Err(resp) => return reply.send(*resp),
+    };
+    let view = match live_view(&win) {
+        Ok(v) => v,
+        Err(resp) => return reply.send(*resp),
+    };
+    let window_id = win.id;
+    let spec = Rc::new(ExpectSpec::new(
+        selector, nth, contains, text, absent, visible, window_id,
+    ));
+    let state = Rc::new(ExpectWatchState {
+        daemon: daemon.clone(),
+        view: view.clone(),
+        spec,
+        last_ok: Cell::new(None),
+        seq: Cell::new(0),
+        in_flight: Cell::new(false),
+        done: Cell::new(false),
+        source: RefCell::new(None),
+        nav_handler: RefCell::new(None),
+    });
+
+    install_expect_observer(&view);
+    arm_expect_navigation(&state);
+    let source_state = state.clone();
+    let source = glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+        if source_state.done.get() {
+            glib::ControlFlow::Break
+        } else {
+            tick_expect_watch(&source_state, false);
+            glib::ControlFlow::Continue
+        }
+    });
+    state.source.replace(Some(source));
+    tick_expect_watch(&state, true);
+    reply.send(Response::value(serde_json::json!({
+        "watch": true,
+        "window_id": window_id,
+        "event": "expect"
+    })));
+}
+
+struct ExpectSpec {
+    selector: String,
+    nth: u32,
+    contains: Option<String>,
+    text: Option<String>,
+    absent: bool,
+    visible: bool,
+    window_id: u64,
+}
+
+impl ExpectSpec {
+    fn new(
+        selector: String,
+        nth: Option<u32>,
+        contains: Option<String>,
+        text: Option<String>,
+        absent: bool,
+        visible: bool,
+        window_id: u64,
+    ) -> Self {
+        Self {
+            selector,
+            nth: nth.unwrap_or(0),
+            contains,
+            text,
+            absent,
+            visible,
+            window_id,
+        }
+    }
+}
+
+struct ExpectWatchState {
+    daemon: Rc<Daemon>,
+    view: webkit6::WebView,
+    spec: Rc<ExpectSpec>,
+    last_ok: Cell<Option<bool>>,
+    seq: Cell<u64>,
+    in_flight: Cell<bool>,
+    done: Cell<bool>,
+    source: RefCell<Option<glib::SourceId>>,
+    nav_handler: RefCell<Option<glib::SignalHandlerId>>,
+}
+
+fn install_expect_observer(view: &webkit6::WebView) {
+    view.evaluate_javascript(
+        r#"(() => {
+  if (window.__hwatuExpectObserver) return true;
+  window.__hwatuExpectDirty = true;
+  window.__hwatuExpectVersion = 0;
+  const mark = () => { window.__hwatuExpectDirty = true; window.__hwatuExpectVersion++; };
+  const obs = new MutationObserver(mark);
+  obs.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+  window.addEventListener('DOMContentLoaded', mark, { capture: true });
+  window.addEventListener('load', mark, { capture: true });
+  window.__hwatuExpectObserver = obs;
+  return true;
+        })()"#,
+        None,
+        None,
+        gio::Cancellable::NONE,
+        |_| {},
+    );
+}
+
+fn arm_expect_navigation(state: &Rc<ExpectWatchState>) {
+    let weak = Rc::downgrade(state);
+    let handler = state.view.connect_load_changed(move |view, event| {
+        if event != webkit6::LoadEvent::Committed {
+            return;
+        }
+        let Some(state) = weak.upgrade() else { return };
+        if state.done.replace(true) {
+            return;
+        }
+        if let Some(source) = state.source.borrow_mut().take() {
+            source.remove();
+        }
+        let uri = view.uri().map(|s| s.to_string());
+        emit_expect(
+            &state,
+            "navigation",
+            None,
+            serde_json::json!({ "terminal": true, "url": uri }),
+        );
+    });
+    state.nav_handler.replace(Some(handler));
+}
+
+fn tick_expect_watch(state: &Rc<ExpectWatchState>, force: bool) {
+    if state.done.get() || state.in_flight.replace(true) {
+        return;
+    }
+    let js = expect_watch_js(&state.spec, force);
+    let weak = Rc::downgrade(state);
+    state.view.evaluate_javascript(
+        &js,
+        None,
+        None,
+        gio::Cancellable::NONE,
+        move |res: Result<webkit6::javascriptcore::Value, glib::Error>| {
+            let Some(state) = weak.upgrade() else { return };
+            state.in_flight.set(false);
+            if state.done.get() {
+                return;
+            }
+            let value = match res {
+                Ok(v) => jsc_to_json(&v),
+                Err(e) => serde_json::json!({ "ok": false, "why": e.to_string() }),
+            };
+            if value.get("skipped").and_then(|v| v.as_bool()) == Some(true) {
+                return;
+            }
+            let ok = value.get("ok").and_then(|v| v.as_bool()).unwrap_or(false);
+            let last = state.last_ok.get();
+            if force || last != Some(ok) {
+                state.last_ok.set(Some(ok));
+                let phase = if force { "initial" } else { "flip" };
+                emit_expect(&state, phase, Some(ok), value);
+            }
+        },
+    );
+}
+
+fn emit_expect(state: &ExpectWatchState, phase: &str, ok: Option<bool>, result: serde_json::Value) {
+    let seq = state.seq.get() + 1;
+    state.seq.set(seq);
+    state.daemon.events.emit(
+        "expect",
+        Some(state.spec.window_id),
+        serde_json::json!({
+            "phase": phase,
+            "ok": ok,
+            "expect_seq": seq,
+            "selector": &state.spec.selector,
+            "nth": state.spec.nth,
+            "contains": &state.spec.contains,
+            "text": &state.spec.text,
+            "absent": state.spec.absent,
+            "visible": state.spec.visible,
+            "result": result,
+        }),
+    );
+}
+
+fn expect_watch_js(spec: &ExpectSpec, force: bool) -> String {
+    format!(
+        r#"(() => {{
+const force = {force};
+window.__hwatuExpectDirty = false;
+const selector = {selector};
+const nth = {nth};
+const contains = {contains};
+const wantText = {want_text};
+const absent = {absent};
+const wantVisible = {visible};
+function whyInvisible(el) {{
+  for (let n = el; n instanceof Element; n = n.parentElement) {{
+    const st = getComputedStyle(n);
+    if (st.display === 'none') return n === el ? 'display:none' : 'display:none on ancestor <' + n.tagName.toLowerCase() + '>';
+    if (st.visibility === 'hidden' || st.visibility === 'collapse') return 'visibility:' + st.visibility + (n === el ? '' : ' on ancestor <' + n.tagName.toLowerCase() + '>');
+    if (st.opacity === '0') return n === el ? 'opacity:0' : 'opacity:0 on ancestor <' + n.tagName.toLowerCase() + '>';
+  }}
+  const r = el.getBoundingClientRect();
+  if (r.width === 0 || r.height === 0) return `zero-size box (${{r.width}}x${{r.height}})`;
+  if (r.bottom < 0 || r.top > innerHeight || r.right < 0 || r.left > innerWidth)
+    return `outside viewport (rect ${{Math.round(r.left)}},${{Math.round(r.top)}} ${{Math.round(r.width)}}x${{Math.round(r.height)}})`;
+  const cx = Math.min(Math.max(r.left + r.width / 2, 0), innerWidth - 1);
+  const cy = Math.min(Math.max(r.top + r.height / 2, 0), innerHeight - 1);
+  const hit = document.elementFromPoint(cx, cy);
+  if (hit && (hit === el || el.contains(hit) || hit.contains(el)
+      || (hit.shadowRoot && hit.shadowRoot.contains(el))
+      || (hit instanceof HTMLLabelElement && hit.control === el)))
+    return null;
+  if (!hit) return 'center point hits nothing (elementFromPoint returned null)';
+  const t = (hit.textContent || '').trim().slice(0, 60);
+  return `covered by <${{hit.tagName.toLowerCase()}}${{hit.id ? '#' + hit.id : ''}}> ${{JSON.stringify(t)}}`;
+}}
+let els = [...document.querySelectorAll(selector)];
+const total = els.length;
+if (contains !== null) els = els.filter(e => ((e.textContent || '') + ' ' + (e.value || '')).includes(contains));
+const el = els[nth];
+if (absent) {{
+  if (els.length === 0) return {{ ok: true, matches: 0, version: window.__hwatuExpectVersion || 0 }};
+  const t = (els[0].textContent || '').trim().slice(0, 120);
+  return {{ ok: false, matches: els.length, why: `expected no match, found ${{els.length}} (first: <${{els[0].tagName.toLowerCase()}}> ${{JSON.stringify(t)}})`, version: window.__hwatuExpectVersion || 0 }};
+}}
+if (!el) {{
+  const filt = contains === null ? '' : ` (${{els.length}} after contains filter)`;
+  return {{ ok: false, matches: els.length, why: `no match: ${{total}} element(s) for selector${{filt}}, nth=${{nth}}`, version: window.__hwatuExpectVersion || 0 }};
+}}
+const actual = (el.textContent || '').trim();
+if (wantText !== null && !actual.includes(wantText))
+  return {{ ok: false, matches: els.length, tag: el.tagName.toLowerCase(), text: actual.slice(0, 120), why: `text mismatch: expected to contain ${{JSON.stringify(wantText)}}, got ${{JSON.stringify(actual.slice(0, 200))}}`, version: window.__hwatuExpectVersion || 0 }};
+if (wantVisible) {{
+  const why = whyInvisible(el);
+  if (why) return {{ ok: false, matches: els.length, tag: el.tagName.toLowerCase(), text: actual.slice(0, 120), why: `element matched but is not visible: ${{why}}`, version: window.__hwatuExpectVersion || 0 }};
+}}
+return {{ ok: true, matches: els.length, tag: el.tagName.toLowerCase(), text: actual.slice(0, 120), version: window.__hwatuExpectVersion || 0 }};
+}})()"#,
+        force = force,
+        selector = js_string(&spec.selector),
+        nth = spec.nth,
+        contains = json_or_null(spec.contains.as_deref()),
+        want_text = json_or_null(spec.text.as_deref()),
+        absent = spec.absent,
+        visible = spec.visible,
+    )
+}
+
 /// Token-cheap page state: url, title, bounded visible text, and an
 /// indexed list of interactable elements (links, buttons, inputs...).
 /// The elements are remembered on `window.__hwatu_refs`, so a
@@ -1870,7 +2142,7 @@ fn mime_from_extension(path: &str) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{base64, challenge_detect_js, challenge_wait_js};
+    use super::{base64, challenge_detect_js, challenge_wait_js, expect_watch_js, ExpectSpec};
 
     #[test]
     fn base64_matches_rfc_vectors() {
@@ -1916,5 +2188,34 @@ mod tests {
         assert!(!js.contains("2captcha"));
         assert!(!js.contains("anti-captcha"));
         assert!(!js.contains("capsolver"));
+    }
+
+    #[test]
+    fn expect_watch_js_uses_native_tick_after_initial_state() {
+        let spec = ExpectSpec::new(
+            "#status".into(),
+            None,
+            None,
+            Some("ready".into()),
+            false,
+            true,
+            7,
+        );
+        let initial = expect_watch_js(&spec, true);
+        assert!(initial.contains("const force = true"));
+        assert!(initial.contains("#status"));
+        assert!(initial.contains("ready"));
+        assert!(initial.contains("wantVisible = true"));
+
+        let follow_up = expect_watch_js(&spec, false);
+        assert!(follow_up.contains("const force = false"));
+        assert!(follow_up.contains("window.__hwatuExpectDirty = false"));
+        assert!(!follow_up.contains("skipped: true"));
+        assert!(follow_up.contains("__hwatuExpectVersion"));
+    }
+
+    #[test]
+    fn expect_event_kind_is_advertised_for_subscriptions() {
+        assert!(hwatu_ipc::EVENT_KINDS.contains(&"expect"));
     }
 }
