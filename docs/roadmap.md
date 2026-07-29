@@ -315,6 +315,22 @@ Original test plan (kept for the record):
   reload → watch event) measuring end-to-end latency from file write
   to event delivery; target < 200 ms.
 
+### G3.1. scroll-aware multi-point visibility assertions
+
+**Shipped 2026-07-29.** `expect --visible` now scrolls a fully off-screen
+match into view before hit testing and samples its center plus four inset
+corners. Every sample must resolve to the target or its subtree, so a sticky
+header or overlay covering only one edge no longer false-passes. Structured
+failures name both the covered sample point and covering element.
+
+`scripts/test-expect-visible.sh` exercises the user-reported cases against a
+live isolated daemon: an off-screen target scrolls and passes, a 16 px overlay
+covering only its top edge fails with a top-corner diagnostic, and removing
+the overlay restores success. Generated resident-watch JavaScript has unit
+coverage for all five samples and the scroll path. The first-render workflow
+in `docs/agents.md` now teaches agents to establish DOM, rendered, and runtime
+invariants before seeding a screenshot baseline.
+
 ### G4. display-free operation (promoted from P2 item 7)
 
 Under the substrate thesis this is load-bearing: rendering generated

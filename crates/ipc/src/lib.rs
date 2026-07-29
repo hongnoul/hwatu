@@ -405,10 +405,10 @@ pub enum Request {
         #[serde(default)]
         absent: bool,
         /// Require the matched element to be actually visible: nonzero
-        /// box, not display:none/visibility:hidden/opacity:0, and not
-        /// covered by another element (elementFromPoint at its center
-        /// resolves inside it). Catches rendered-but-invisible UI that
-        /// a bare existence check false-passes.
+        /// box, not display:none/visibility:hidden/opacity:0, scrolled
+        /// into view when fully off-screen, and not covered at its center
+        /// or four corners (elementFromPoint resolves inside it). Catches
+        /// rendered-but-invisible UI that a bare existence check false-passes.
         #[serde(default)]
         visible: bool,
         /// Poll deadline (default 5000 ms; 0 = a single check).

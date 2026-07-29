@@ -1487,9 +1487,9 @@ const started = hwatuNow();
 // display/visibility/opacity hiding (on the element or an ancestor,
 // getComputedStyle inherits the first two, opacity needs the walk),
 // and occlusion, where the element renders but another element is on
-// top (wrong z-index, forgotten overlay). elementFromPoint at the
-// center answers occlusion directly; a hit inside the subtree (or a
-// label/shadow host relationship) counts as visible.
+// top (wrong z-index, forgotten overlay). Bring fully off-screen
+// elements into view, then sample the visible box at its center and
+// four inset corners so partial overlaps cannot false-pass.
 function whyInvisible(el) {{
   for (let n = el; n instanceof Element; n = n.parentElement) {{
     const st = getComputedStyle(n);
@@ -1497,20 +1497,32 @@ function whyInvisible(el) {{
     if (st.visibility === 'hidden' || st.visibility === 'collapse') return 'visibility:' + st.visibility + (n === el ? '' : ' on ancestor <' + n.tagName.toLowerCase() + '>');
     if (st.opacity === '0') return n === el ? 'opacity:0' : 'opacity:0 on ancestor <' + n.tagName.toLowerCase() + '>';
   }}
-  const r = el.getBoundingClientRect();
+  let r = el.getBoundingClientRect();
   if (r.width === 0 || r.height === 0) return `zero-size box (${{r.width}}x${{r.height}})`;
-  const cx = Math.min(Math.max(r.left + r.width / 2, 0), innerWidth - 1);
-  const cy = Math.min(Math.max(r.top + r.height / 2, 0), innerHeight - 1);
-  if (r.bottom < 0 || r.top > innerHeight || r.right < 0 || r.left > innerWidth)
-    return `outside viewport (rect ${{Math.round(r.left)}},${{Math.round(r.top)}} ${{Math.round(r.width)}}x${{Math.round(r.height)}})`;
-  const hit = document.elementFromPoint(cx, cy);
-  if (hit && (hit === el || el.contains(hit) || hit.contains(el)
-      || (hit.shadowRoot && hit.shadowRoot.contains(el))
-      || (hit instanceof HTMLLabelElement && hit.control === el)))
-    return null;
-  if (!hit) return 'center point hits nothing (elementFromPoint returned null)';
-  const t = (hit.textContent || '').trim().slice(0, 60);
-  return `covered by <${{hit.tagName.toLowerCase()}}${{hit.id ? '#' + hit.id : ''}}> ${{JSON.stringify(t)}}`;
+  if (r.bottom <= 0 || r.top >= innerHeight || r.right <= 0 || r.left >= innerWidth) {{
+    el.scrollIntoView({{ block: 'center', inline: 'center', behavior: 'instant' }});
+    r = el.getBoundingClientRect();
+  }}
+  const left = Math.max(r.left, 0), right = Math.min(r.right, innerWidth);
+  const top = Math.max(r.top, 0), bottom = Math.min(r.bottom, innerHeight);
+  if (right <= left || bottom <= top)
+    return `outside viewport after scroll (rect ${{Math.round(r.left)}},${{Math.round(r.top)}} ${{Math.round(r.width)}}x${{Math.round(r.height)}})`;
+  const ix = Math.min(1, (right - left) / 2), iy = Math.min(1, (bottom - top) / 2);
+  const points = [
+    ['center', (left + right) / 2, (top + bottom) / 2],
+    ['top-left', left + ix, top + iy], ['top-right', right - ix, top + iy],
+    ['bottom-left', left + ix, bottom - iy], ['bottom-right', right - ix, bottom - iy],
+  ];
+  for (const [name, x, y] of points) {{
+    const hit = document.elementFromPoint(x, y);
+    if (hit && (hit === el || el.contains(hit) || hit.contains(el)
+        || (hit.shadowRoot && hit.shadowRoot.contains(el))
+        || (hit instanceof HTMLLabelElement && hit.control === el))) continue;
+    if (!hit) return `${{name}} point hits nothing (elementFromPoint returned null)`;
+    const t = (hit.textContent || '').trim().slice(0, 60);
+    return `${{name}} point covered by <${{hit.tagName.toLowerCase()}}${{hit.id ? '#' + hit.id : ''}}> ${{JSON.stringify(t)}}`;
+  }}
+  return null;
 }}
 
 function check() {{
@@ -1792,20 +1804,32 @@ function whyInvisible(el) {{
     if (st.visibility === 'hidden' || st.visibility === 'collapse') return 'visibility:' + st.visibility + (n === el ? '' : ' on ancestor <' + n.tagName.toLowerCase() + '>');
     if (st.opacity === '0') return n === el ? 'opacity:0' : 'opacity:0 on ancestor <' + n.tagName.toLowerCase() + '>';
   }}
-  const r = el.getBoundingClientRect();
+  let r = el.getBoundingClientRect();
   if (r.width === 0 || r.height === 0) return `zero-size box (${{r.width}}x${{r.height}})`;
-  if (r.bottom < 0 || r.top > innerHeight || r.right < 0 || r.left > innerWidth)
-    return `outside viewport (rect ${{Math.round(r.left)}},${{Math.round(r.top)}} ${{Math.round(r.width)}}x${{Math.round(r.height)}})`;
-  const cx = Math.min(Math.max(r.left + r.width / 2, 0), innerWidth - 1);
-  const cy = Math.min(Math.max(r.top + r.height / 2, 0), innerHeight - 1);
-  const hit = document.elementFromPoint(cx, cy);
-  if (hit && (hit === el || el.contains(hit) || hit.contains(el)
-      || (hit.shadowRoot && hit.shadowRoot.contains(el))
-      || (hit instanceof HTMLLabelElement && hit.control === el)))
-    return null;
-  if (!hit) return 'center point hits nothing (elementFromPoint returned null)';
-  const t = (hit.textContent || '').trim().slice(0, 60);
-  return `covered by <${{hit.tagName.toLowerCase()}}${{hit.id ? '#' + hit.id : ''}}> ${{JSON.stringify(t)}}`;
+  if (r.bottom <= 0 || r.top >= innerHeight || r.right <= 0 || r.left >= innerWidth) {{
+    el.scrollIntoView({{ block: 'center', inline: 'center', behavior: 'instant' }});
+    r = el.getBoundingClientRect();
+  }}
+  const left = Math.max(r.left, 0), right = Math.min(r.right, innerWidth);
+  const top = Math.max(r.top, 0), bottom = Math.min(r.bottom, innerHeight);
+  if (right <= left || bottom <= top)
+    return `outside viewport after scroll (rect ${{Math.round(r.left)}},${{Math.round(r.top)}} ${{Math.round(r.width)}}x${{Math.round(r.height)}})`;
+  const ix = Math.min(1, (right - left) / 2), iy = Math.min(1, (bottom - top) / 2);
+  const points = [
+    ['center', (left + right) / 2, (top + bottom) / 2],
+    ['top-left', left + ix, top + iy], ['top-right', right - ix, top + iy],
+    ['bottom-left', left + ix, bottom - iy], ['bottom-right', right - ix, bottom - iy],
+  ];
+  for (const [name, x, y] of points) {{
+    const hit = document.elementFromPoint(x, y);
+    if (hit && (hit === el || el.contains(hit) || hit.contains(el)
+        || (hit.shadowRoot && hit.shadowRoot.contains(el))
+        || (hit instanceof HTMLLabelElement && hit.control === el))) continue;
+    if (!hit) return `${{name}} point hits nothing (elementFromPoint returned null)`;
+    const t = (hit.textContent || '').trim().slice(0, 60);
+    return `${{name}} point covered by <${{hit.tagName.toLowerCase()}}${{hit.id ? '#' + hit.id : ''}}> ${{JSON.stringify(t)}}`;
+  }}
+  return null;
 }}
 let els = [...document.querySelectorAll(selector)];
 const total = els.length;
@@ -2212,6 +2236,19 @@ mod tests {
         assert!(follow_up.contains("window.__hwatuExpectDirty = false"));
         assert!(!follow_up.contains("skipped: true"));
         assert!(follow_up.contains("__hwatuExpectVersion"));
+    }
+
+    #[test]
+    fn expect_watch_visibility_scrolls_and_checks_partial_occlusion() {
+        let spec = ExpectSpec::new("#target".into(), None, None, None, false, true, 1);
+        let js = expect_watch_js(&spec, true);
+        assert!(js.contains("scrollIntoView"));
+        assert!(js.contains("['center'"));
+        for corner in ["top-left", "top-right", "bottom-left", "bottom-right"] {
+            assert!(js.contains(corner), "missing visibility sample {corner}");
+        }
+        assert!(js.contains("outside viewport after scroll"));
+        assert!(js.contains("point covered by"));
     }
 
     #[test]

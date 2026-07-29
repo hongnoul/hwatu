@@ -405,6 +405,35 @@ mismatch regions, and the envelope (engine/viewport/caveats), same
 output as `hwatu diff`. One command answers both "is the DOM right"
 (`--eval`) and "does it look right" (`--baseline`).
 
+### First render: verify before a baseline exists
+
+A new page has nothing trustworthy to pixel-diff against. Do not seed a
+baseline merely because the page loaded, and do not infer visibility from
+DOM existence. Establish semantic and rendered invariants first:
+
+```sh
+id=$(hwatu --headless --json localhost:5173 | jq .id)
+hwatu wait-load --id "$id"
+hwatu snapshot --id "$id"                         # expected controls/text exist
+hwatu expect --id "$id" 'main' --visible          # rendered and unobscured
+hwatu expect --id "$id" 'button' --contains Save --visible
+hwatu console --id "$id"                          # no runtime/load failures
+hwatu shot --id "$id" /tmp/baseline.png            # seed only after checks pass
+hwatu close "$id"
+```
+
+`expect --visible` scrolls a fully off-screen match into view, then hit-tests
+its center and four inset corners. Requiring every sample to resolve to the
+element or its subtree catches partial overlaps such as a sticky header over
+the top edge, while avoiding the false occlusion that an off-viewport center
+would produce. On failure, the message identifies the sampled point and the
+covering element. Once the first render is approved, use that screenshot as
+the baseline for subsequent `check --baseline` or `diff --baseline` passes.
+
+Recommended agent policy: **snapshot for structure, expect for invariants,
+console for runtime health, screenshot for human evidence, diff for
+regressions**. These layers complement each other; no single layer is proof.
+
 ### Speculative pre-render: pay the load while you think
 
 `hwatu prefetch <url>` starts loading the page in a headless window

@@ -737,7 +737,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
                 "contains": prop("string", "Keep only matches whose text contains this (a filter)."),
                 "text": prop("string", "Require the matched element's text to contain this (an assertion)."),
                 "absent": prop("boolean", "Assert the selector matches nothing."),
-                "visible": prop("boolean", "Require the element to be actually visible: nonzero box, not display:none/visibility:hidden/opacity:0 (self or ancestor), inside the viewport, and not covered by another element (elementFromPoint occlusion check). Failure names the exact reason, e.g. what covers it."),
+                "visible": prop("boolean", "Require the element to be actually visible: nonzero box, not display:none/visibility:hidden/opacity:0 (self or ancestor), scrolled into view when off-screen, and not covered at its center or four corners (multi-point elementFromPoint occlusion check). Failure names the exact point and what covers it."),
                 "timeout_ms": prop("integer", "Poll deadline in ms (default 5000; 0 = single check)."),
             }),
             &["selector"],
