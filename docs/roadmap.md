@@ -144,7 +144,18 @@ worth native features; the rest stay non-goals.
    windows; may require the offscreen-compositor path from item 7.
    Explicitly NOT an anti-bot evasion feature: it makes real forms
    accept real input, same as every driver-level automation tool.
-9. **Network observation (and small-bore stubbing).** An agent
+9. **Network observation (and small-bore stubbing).** **Shipped
+   2026-07-30:** `hwatu net [--id <id>] [--clear] [--limit <n>]`
+   returns a structured per-window request log (method, final url,
+   HTTP status, resource type inferred from response MIME, start_ms
+   offset from navigation start, duration_ms) captured from WebKit's
+   resource-load signals into a bounded 500-entry ring buffer that
+   survives window discards; MCP exposes a matching `net` tool, and
+   `scripts/test-net.sh` covers method/status/type capture, 404s,
+   POST bodies via fetch, `--clear`, `--limit`, and the cap. Noted
+   limitation: WebKitGTK exposes no request destination, so type is
+   MIME-inferred, and there is no route interception. Original
+   rationale: an agent
    verifying a form submit should assert "the POST to /api/charge
    returned 200", not squint at a success toast. `console` already
    captures failures (HTTP >= 400); generalize to `hwatu net [--clear]`:
