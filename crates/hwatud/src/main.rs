@@ -12,6 +12,7 @@ mod adblock;
 mod automation;
 mod bar;
 mod clock;
+mod compositor;
 mod console;
 mod downloads;
 mod events;
@@ -209,6 +210,19 @@ fn persist_cookies() {
 fn main() -> glib::ExitCode {
     // Keep RAM predictable: cap glibc arena explosion under GTK threads.
     std::env::set_var("MALLOC_ARENA_MAX", "2");
+    // Display-free operation (roadmap G4): with no usable
+    // WAYLAND_DISPLAY/DISPLAY, spawn a managed headless child
+    // compositor and point GTK at it. Must run before any GTK/GDK
+    // call (GTK resolves its display connection at init). The guard
+    // supervises the child; dropping it (daemon exit) kills the
+    // compositor, and PDEATHSIG covers unclean exits.
+    let _compositor = match compositor::ensure_display() {
+        Ok(guard) => guard,
+        Err(e) => {
+            eprintln!("hwatud: {e}");
+            return glib::ExitCode::FAILURE;
+        }
+    };
     // Exact-DPR verification mode: `HWATU_DPR=<n>` pins window
     // devicePixelRatio to an integer n instead of whatever the session
     // compositor imposes. Root cause of the "headless dpr leak": GTK
