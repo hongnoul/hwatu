@@ -1351,6 +1351,99 @@ mod tests {
         assert!(!keep);
     }
 
+    /// `--viewports` parses a size list into the sweep field; bad
+    /// sizes, empty lists, and flag conflicts are usage errors; a
+    /// plain check keeps an empty sweep (old behavior).
+    #[test]
+    fn check_parses_viewports() {
+        let Ok(Request::Check {
+            viewports,
+            baseline_dir,
+            ..
+        }) = parse(&args(&[
+            "check",
+            "localhost:3000",
+            "--viewports",
+            "360x640,768x1024,1920x1080",
+            "--baseline-dir",
+            "/tmp/base",
+        ]))
+        else {
+            panic!("expected Check");
+        };
+        assert_eq!(
+            viewports,
+            vec![
+                hwatu_ipc::Viewport { w: 360, h: 640 },
+                hwatu_ipc::Viewport { w: 768, h: 1024 },
+                hwatu_ipc::Viewport { w: 1920, h: 1080 },
+            ]
+        );
+        assert_eq!(baseline_dir.as_deref(), Some("/tmp/base"));
+
+        // `--viewports=` form works too.
+        let Ok(Request::Check { viewports, .. }) =
+            parse(&args(&["check", "x.test", "--viewports=800x600"]))
+        else {
+            panic!("expected Check");
+        };
+        assert_eq!(viewports, vec![hwatu_ipc::Viewport { w: 800, h: 600 }]);
+
+        // Invalid sizes are rejected at parse time, naming the entry.
+        for bad in ["banana", "360", "360x", "0x640", "-1x640", "99999x2", ""] {
+            assert!(
+                parse(&args(&["check", "x.test", "--viewports", bad])).is_err(),
+                "size {bad:?} should be rejected"
+            );
+        }
+        // Flag coherence: baseline-dir needs viewports; --baseline
+        // conflicts with a sweep's per-size baselines.
+        assert!(parse(&args(&["check", "x.test", "--baseline-dir", "/tmp/b"])).is_err());
+        assert!(parse(&args(&[
+            "check",
+            "x.test",
+            "--viewports",
+            "360x640",
+            "--baseline",
+            "/tmp/b.png",
+            "--baseline-dir",
+            "/tmp/b",
+        ]))
+        .is_err());
+
+        // No sweep flags: the request carries an empty sweep.
+        let Ok(Request::Check {
+            viewports,
+            baseline_dir,
+            ..
+        }) = parse(&args(&["check", "x.test"]))
+        else {
+            panic!("expected Check");
+        };
+        assert!(viewports.is_empty());
+        assert_eq!(baseline_dir, None);
+    }
+
+    /// `hwatu render --viewports ...` sweeps rendered markup too.
+    #[test]
+    fn render_parses_viewports() {
+        let dir = std::env::temp_dir().join(format!("hwatu-vp-parse-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("page.html");
+        std::fs::write(&file, "<h1>vp</h1>").unwrap();
+        let file = file.to_string_lossy().to_string();
+
+        let Ok(Request::Check {
+            render, viewports, ..
+        }) = parse(&args(&["render", &file, "--viewports", "360x640,1024x768"]))
+        else {
+            panic!("expected Check");
+        };
+        assert_eq!(render.as_deref(), Some("<h1>vp</h1>"));
+        assert_eq!(viewports.len(), 2);
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn until_applies_to_goto_and_wait_load() {
         let Ok(Request::Navigate { until, .. }) =
