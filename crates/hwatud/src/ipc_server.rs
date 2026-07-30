@@ -381,7 +381,8 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
 }
 
 /// Turn bar/CLI input into a loadable URL: explicit schemes and
-/// `about:` pass through, bare hosts get `https://` (`http://` for
+/// `about:` pass through, existing local paths become `file://` URLs,
+/// bare hosts get `https://` (`http://` for
 /// loopback: `localhost`, `*.localhost`, `127.*`, `[::1]`, since local
 /// dev servers rarely speak TLS), and anything that doesn't look like
 /// a URL becomes a web search with the configured engine (see
@@ -391,6 +392,10 @@ pub fn normalize_url(input: String) -> String {
     let input = input.trim().to_string();
     if input.contains("://") || input.starts_with("about:") {
         input
+    } else if let Ok(path) = std::fs::canonicalize(&input) {
+        glib::filename_to_uri(path, None)
+            .map(String::from)
+            .unwrap_or_else(|_| crate::search::url_for(&input))
     } else if is_loopback_host(&input) {
         format!("http://{input}")
     } else if looks_like_host(&input) {
@@ -486,5 +491,24 @@ mod tests {
             normalize_url("what.".into()),
             crate::search::url_for("what.")
         );
+    }
+
+    #[test]
+    fn existing_local_paths_become_file_urls() {
+        let path = std::env::temp_dir().join(format!(
+            "hwatu local path {}.html",
+            std::process::id()
+        ));
+        std::fs::write(&path, "<title>local</title>").unwrap();
+
+        let normalized = normalize_url(path.to_string_lossy().into_owned());
+        let expected = glib::filename_to_uri(std::fs::canonicalize(&path).unwrap(), None)
+            .unwrap()
+            .to_string();
+        assert_eq!(normalized, expected);
+        assert!(normalized.starts_with("file://"));
+        assert!(normalized.contains("%20"));
+
+        std::fs::remove_file(path).unwrap();
     }
 }
