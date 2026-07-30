@@ -531,10 +531,19 @@ hwatu focus $id    # window appears in their WM, session intact
   session snapshots (they belong to the agent's loop, not the user's
   browsing).
 
-Note on displays: `hwatud` is a GTK app and currently needs a
-Wayland/X session to start, even for headless windows. Headless mode
-removes focus/WM noise on a desktop; running with no display at all
-(CI) is future work (nested headless compositor).
+Note on displays: `hwatud` is a GTK app and needs a display
+connection, even for headless windows. Headless mode removes
+focus/WM noise on a desktop; with no display at all (CI, a bare ssh
+login) the daemon enters display-free mode and hosts its own child
+Wayland compositor (cage/labwc/sway on the wlroots headless
+backend). Viewport sizing is exact there too: `resize` measures what
+the page actually sees and corrects the allocation, so a child
+compositor that eats chrome rows cannot leak extra pixel rows into a
+shot.
+
+On a bare ssh login there is usually no D-Bus session bus, and
+WebKit's portal lookups can then stall the first load. Start the
+daemon (or a test script) under one: `dbus-run-session -- hwatud`.
 
 Note on DPR: GTK derives surface scale from the monitors even for
 unmapped headless windows, so a fractional-scale Wayland output can
