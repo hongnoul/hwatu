@@ -799,6 +799,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             })
         }
         Some("console") => Ok(Request::Console { id, clear, limit }),
+        Some("net") => Ok(Request::Net { id, clear, limit }),
         Some("focus") => {
             let id = rest
                 .get(1)
@@ -863,6 +864,7 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--foc
 | click [--id <id>] (<selector> [nth] [--contains <text>] | --ref <n>) \
 | type [--id <id>] (<selector> | --ref <n>) <text> [--enter] [--no-clear] \
 | console [--id <id>] [--clear] [--limit <n>] \
+| net [--id <id>] [--clear] [--limit <n>] \
 | motion [--id <id>] [--observe [--ms <ms>]] \
 | resize [--id <id>] <width>x<height> \
 | seek [--id <id>] (--time-ms <ms> | --progress <0..1> | --resume) \
@@ -1677,6 +1679,26 @@ mod tests {
                 clear: true,
                 limit: Some(20),
                 ..
+            })
+        ));
+    }
+
+    #[test]
+    fn net_flags() {
+        assert!(matches!(
+            parse(&args(&["net"])),
+            Ok(Request::Net {
+                id: None,
+                clear: false,
+                limit: None,
+            })
+        ));
+        assert!(matches!(
+            parse(&args(&["net", "--id", "3", "--clear", "--limit", "20"])),
+            Ok(Request::Net {
+                id: Some(3),
+                clear: true,
+                limit: Some(20),
             })
         ));
     }

@@ -308,6 +308,23 @@ pub enum Request {
         #[serde(default)]
         limit: Option<usize>,
     },
+    /// Read the window's structured network request log: every
+    /// resource load (method, final url, HTTP status, inferred type,
+    /// start offset / duration in ms), success and failure alike,
+    /// captured from WebKit's resource-load signals into a bounded
+    /// per-window ring buffer. `clear` drains what was read, so a
+    /// verify loop can diff runs ("did the POST to /api/charge return
+    /// 200"). Observation only: WebKitGTK exposes no route
+    /// interception.
+    Net {
+        #[serde(default)]
+        id: Option<u64>,
+        #[serde(default)]
+        clear: bool,
+        /// Return at most the last N entries.
+        #[serde(default)]
+        limit: Option<usize>,
+    },
     /// Extract the page's motion spec: every CSS animation, transition
     /// and Web-Animations-API animation as structured JSON (keyframes,
     /// duration, delay, easing, iteration count), plus `@keyframes`
@@ -780,6 +797,38 @@ mod tests {
         };
         assert_eq!(render.as_deref(), Some("<h1>hi</h1>"));
         assert_eq!(base.as_deref(), Some("http://localhost:3000/"));
+    }
+
+    /// A bare `{"cmd":"net"}` (all defaults) is valid, and a full Net
+    /// request roundtrips through the wire format. Absent fields keep
+    /// the line-delimited JSON back-compat contract: an old daemon
+    /// answers a new client's `net` with a clean "unknown variant"
+    /// error (which the CLI turns into a restart hint), and an old
+    /// client never sends `net` at all.
+    #[test]
+    fn net_roundtrips_with_defaults() {
+        let Ok(Request::Net { id, clear, limit }) =
+            serde_json::from_str::<Request>(r#"{"cmd":"net"}"#)
+        else {
+            panic!("bare net failed to parse");
+        };
+        assert_eq!(id, None);
+        assert!(!clear);
+        assert_eq!(limit, None);
+
+        let req = Request::Net {
+            id: Some(4),
+            clear: true,
+            limit: Some(50),
+        };
+        let wire = serde_json::to_string(&req).unwrap();
+        assert!(wire.contains("\"cmd\":\"net\""));
+        let Ok(Request::Net { id, clear, limit }) = serde_json::from_str::<Request>(&wire) else {
+            panic!("net failed to roundtrip");
+        };
+        assert_eq!(id, Some(4));
+        assert!(clear);
+        assert_eq!(limit, Some(50));
     }
 
     /// Subscribe roundtrips with and without filters; a bare

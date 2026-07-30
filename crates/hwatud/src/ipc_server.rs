@@ -281,6 +281,7 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
             "version": env!("CARGO_PKG_VERSION"),
         })),
         Request::Console { id, clear, limit } => automation::console(daemon, id, clear, limit),
+        Request::Net { id, clear, limit } => automation::net(daemon, id, clear, limit),
         Request::Open { url, app_id, mode } => {
             let url = url.map(normalize_url);
             let info = BrowserWindow::open(daemon, url, app_id, mode);
