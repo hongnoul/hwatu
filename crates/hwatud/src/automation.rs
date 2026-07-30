@@ -1968,7 +1968,13 @@ return {{ ok: true, matches: els.length, tag: el.tagName.toLowerCase(), text: ac
 /// The elements are remembered on `window.__hwatu_refs`, so a
 /// follow-up click/type can target `ref: n` without a selector. The
 /// designed alternative to screenshot-and-squint for agents.
-pub fn snapshot(daemon: &Rc<Daemon>, id: Option<u64>, timeout_ms: Option<u64>, reply: Reply) {
+pub fn snapshot(
+    daemon: &Rc<Daemon>,
+    id: Option<u64>,
+    diff: bool,
+    timeout_ms: Option<u64>,
+    reply: Reply,
+) {
     const JS: &str = r#"
 const MAX_TEXT = 4000;
 const MAX_ELS = 120;
@@ -2011,17 +2017,82 @@ const interactables = els.map((el, i) => {
   return out;
 });
 const doc = document.documentElement;
+// Per-line text (spaces collapsed within a line, newlines kept):
+// agents read it the same, and `snapshot --diff` can report the one
+// line that changed instead of the whole blob.
+const rawText = document.body ? document.body.innerText : '';
+let text = rawText.split('\n')
+  .map(l => l.replace(/\s+/g, ' ').trim())
+  .filter(Boolean)
+  .join('\n');
+if (text.length > MAX_TEXT) text = text.slice(0, MAX_TEXT - 1) + '…';
 return {
   url: location.href,
   title: document.title,
-  text: clip(document.body ? document.body.innerText : '', MAX_TEXT),
+  text,
   interactables,
   scroll: {
     y: window.scrollY,
     max_y: Math.max(0, doc.scrollHeight - window.innerHeight),
   },
 };"#;
-    eval(daemon, id, JS.to_string(), timeout_ms, reply);
+    if !diff {
+        return eval(daemon, id, JS.to_string(), timeout_ms, reply);
+    }
+    // Diff mode: pin the target window now so the baseline read and
+    // the post-eval write hit the same window even if focus moves
+    // while the script runs. The full snapshot script still executes
+    // (so `window.__hwatu_refs` is refreshed and every `ref` in the
+    // diff is a live handle); only the reply is reduced.
+    let win = match resolve(daemon, id) {
+        Ok(w) => w,
+        Err(resp) => return reply(*resp),
+    };
+    let window_id = win.id;
+    let daemon2 = daemon.clone();
+    eval(
+        daemon,
+        Some(window_id),
+        JS.to_string(),
+        timeout_ms,
+        Box::new(move |resp| {
+            let Response::Ok {
+                value: Some(full), ..
+            } = &resp
+            else {
+                return reply(resp); // errors pass through untouched
+            };
+            // Re-fetch the window: it may have closed mid-eval.
+            let Some(win) = daemon2.windows.borrow().get(&window_id).cloned() else {
+                return reply(Response::err(format!(
+                    "window {window_id} closed while the snapshot ran"
+                )));
+            };
+            let new = crate::snapdiff::normalize(full);
+            let previous = win.snapshot_baseline.replace(Some(new));
+            match previous {
+                Some(old) => {
+                    let baseline = win.snapshot_baseline.borrow();
+                    let new = baseline.as_deref().expect("baseline just stored");
+                    let mut out = crate::snapdiff::diff(&old, new);
+                    if let Some(map) = out.as_object_mut() {
+                        map.insert("url".into(), full["url"].clone());
+                    }
+                    reply(Response::value(out));
+                }
+                // First diff of this window (or first since a
+                // navigation reset the baseline): nothing to diff
+                // against, return the full snapshot and say so.
+                None => {
+                    let mut full = full.clone();
+                    if let Some(map) = full.as_object_mut() {
+                        map.insert("baseline_established".into(), serde_json::json!(true));
+                    }
+                    reply(Response::value(full));
+                }
+            }
+        }),
+    );
 }
 
 /// JS prelude that resolves a click/type target: by snapshot `ref` or

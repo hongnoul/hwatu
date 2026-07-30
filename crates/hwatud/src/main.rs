@@ -23,6 +23,7 @@ mod observe;
 mod prompts;
 mod search;
 mod session;
+mod snapdiff;
 mod verify;
 mod window;
 

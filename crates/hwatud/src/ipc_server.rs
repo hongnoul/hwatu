@@ -172,8 +172,12 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
                 daemon, id, selector, nth, contains, to_y, by_pages, timeout_ms, reply,
             );
         }
-        Request::Snapshot { id, timeout_ms } => {
-            return automation::snapshot(daemon, id, timeout_ms, reply);
+        Request::Snapshot {
+            id,
+            diff,
+            timeout_ms,
+        } => {
+            return automation::snapshot(daemon, id, diff, timeout_ms, reply);
         }
         Request::Expect {
             id,
