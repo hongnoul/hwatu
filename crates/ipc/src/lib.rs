@@ -262,6 +262,16 @@ pub enum Request {
     Snapshot {
         #[serde(default)]
         id: Option<u64>,
+        /// Return only what changed since the last `--diff` snapshot
+        /// of this window (`{added, removed, changed, unchanged_count}`)
+        /// instead of the full page state. The first diff snapshot of
+        /// a window (and the first after a navigation) returns the
+        /// full snapshot with `"baseline_established": true`. Absent
+        /// on the wire means `false`, so old clients keep the full
+        /// snapshot they were built for; an old daemon ignores the
+        /// field and answers a new client with a full snapshot.
+        #[serde(default, skip_serializing_if = "is_false")]
+        diff: bool,
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
@@ -806,6 +816,10 @@ fn is_normal(mode: &OpenMode) -> bool {
     *mode == OpenMode::Normal
 }
 
+fn is_false(v: &bool) -> bool {
+    !*v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1022,6 +1036,44 @@ mod tests {
             Some(&["load".to_string(), "console".to_string()][..])
         );
         assert_eq!(window, Some(7));
+    }
+
+    /// Snapshot keeps the wire back-compat contract around `diff`: a
+    /// bare `{"cmd":"snapshot"}` from an old client parses with
+    /// `diff: false`, and a new client's default (non-diff) snapshot
+    /// omits the field entirely so an old daemon still parses it.
+    #[test]
+    fn snapshot_diff_wire_compat() {
+        let Ok(Request::Snapshot { id, diff, .. }) =
+            serde_json::from_str::<Request>(r#"{"cmd":"snapshot"}"#)
+        else {
+            panic!("bare snapshot failed to parse");
+        };
+        assert_eq!(id, None);
+        assert!(!diff, "absent diff must default to false");
+
+        let plain = Request::Snapshot {
+            id: Some(2),
+            diff: false,
+            timeout_ms: None,
+        };
+        let wire = serde_json::to_string(&plain).unwrap();
+        assert!(
+            !wire.contains("diff"),
+            "non-diff snapshot must omit the field for old daemons: {wire}"
+        );
+
+        let diffing = Request::Snapshot {
+            id: Some(2),
+            diff: true,
+            timeout_ms: None,
+        };
+        let wire = serde_json::to_string(&diffing).unwrap();
+        assert!(wire.contains("\"diff\":true"));
+        let Ok(Request::Snapshot { diff, .. }) = serde_json::from_str::<Request>(&wire) else {
+            panic!("diff snapshot failed to roundtrip");
+        };
+        assert!(diff);
     }
 
     /// Events serialize with seq + window_id and omit empty payloads;
