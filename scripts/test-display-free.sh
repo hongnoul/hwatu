@@ -29,6 +29,22 @@ fi
 # Keep the workdir path SHORT: it becomes XDG_RUNTIME_DIR, and Unix
 # socket paths (compositor + daemon) cap at ~108 bytes.
 work="$(mktemp -d /tmp/hwatu-df.XXXXXX)"
+
+# GPU-less boxes (CI runners): WebKit's DMA-BUF renderer SIGTRAPs and
+# GLES-on-llvmpipe has aborted cage without a DRM render node. The
+# daemon applies this fallback itself in display-free mode; the
+# REFERENCE half of this suite runs in session mode (script-spawned
+# compositor + WAYLAND_DISPLAY), which by design changes nothing, so
+# the script must set the same env there. Exported globally so both
+# halves render identically for the pixel-parity assertion.
+gpu=no
+for node in /dev/dri/renderD*; do
+    [[ -r "$node" && -w "$node" ]] && gpu=yes && break
+done
+if [[ "$gpu" == no ]]; then
+    echo "test-display-free: no DRM render node; using software rendering" >&2
+    export WEBKIT_DISABLE_DMABUF_RENDERER=1 LIBGL_ALWAYS_SOFTWARE=1 WLR_RENDERER=pixman
+fi
 comp_pid=""
 cleanup() {
     [[ -n "$comp_pid" ]] && kill "$comp_pid" 2>/dev/null || true
