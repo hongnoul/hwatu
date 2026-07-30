@@ -132,12 +132,28 @@ mark submitted
 # cannot make the recorder stop before verification finishes. Other scenarios
 # retain the state-preserving handoff boundary.
 handed_off=0
+preview_visible=0
 for _ in $(seq 1 600); do
+  windows=$("$STAGE_HWATU" list --json 2>/dev/null || printf '[]')
+  if (( ! preview_visible )) && python3 - "$APP" "$windows" <<'PY' >/dev/null 2>&1
+import json, sys
+app, raw = sys.argv[1:]
+windows = json.loads(raw)
+raise SystemExit(0 if any(w.get('url') == app and w.get('mode') not in ('headless', 'background') for w in windows) else 1)
+PY
+  then
+    preview_visible=1
+    if [ "${HWATU_DEMO_SCENARIO:-stripe}" = aiuc ]; then
+      # The daemon reports visible mode before the compositor has painted the
+      # WebKit surface. Mark the edit point only after that first frame settles.
+      sleep "${AIUC_PREVIEW_SETTLE_SECONDS:-10}"
+      mark preview
+    fi
+  fi
   if [ "${HWATU_DEMO_SCENARIO:-stripe}" = aiuc ] && [ -f "$COMPLETE_FILE" ]; then
     handed_off=1
     break
   fi
-  windows=$("$STAGE_HWATU" list --json 2>/dev/null || printf '[]')
   if [ "${HWATU_DEMO_SCENARIO:-stripe}" != aiuc ] && python3 - "$APP" "$windows" <<'PY' >/dev/null 2>&1
 import json, sys
 app, raw = sys.argv[1:]
@@ -151,6 +167,7 @@ PY
   sleep 0.1
 done
 (( handed_off )) || fail "Jcode did not hand off the live app within 60 seconds"
+(( preview_visible )) || fail "Jcode completed without revealing the live app"
 mark handoff
 # The browser becomes visible as soon as the focus tool completes. Keep rolling
 # until Jcode has also streamed the score and returned to its idle prompt.

@@ -11,9 +11,16 @@ MARKS="${RAW%.mp4}.marks"
 # stage.sh deliberately gives wf-recorder 500 ms to initialize before the
 # filmed clock begins. Remove that quiet lead-in, but otherwise keep this as a
 # single continuous take with no cuts, overlays, captions, or speed changes.
-START=0.52
 END=$(awk '$2 == "end" { print $1 }' "$MARKS")
-DURATION=$(awk -v end="$END" -v start=0.02 'BEGIN { printf "%.3f", end + start }')
+PREVIEW=$(awk '$2 == "preview" { print $1; exit }' "$MARKS")
+if [ -n "$PREVIEW" ]; then
+  # AIUC reveal-first takes begin on the first browser frame. The focused agent
+  # prompt still drives the real run, but viewers see the product immediately.
+  START=$PREVIEW
+else
+  START=0.52
+fi
+DURATION=$(awk -v end="$END" -v start="$START" 'BEGIN { printf "%.3f", end - start + 0.02 }')
 
 ffmpeg -y -v error -ss "$START" -t "$DURATION" -i "$RAW" \
   -vf 'scale=1600:900:flags=lanczos' -c:v libx264 -crf 18 -preset slow \

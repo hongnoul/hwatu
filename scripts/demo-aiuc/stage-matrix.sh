@@ -7,7 +7,9 @@ REF=${2:?usage: stage-matrix.sh APP_URL REF_URL}
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 HWATU="$HERE/../demo/record/stage-hwatu.sh"
 SETTLE_SECONDS=${AIUC_SETTLE_SECONDS:-2}
+MIN_MATCH=${AIUC_MIN_MATCH:-99.0}
 COMPLETE_FILE=${AIUC_DEMO_COMPLETE_FILE:-}
+[ -z "$COMPLETE_FILE" ] || trap ': >"$COMPLETE_FILE"' EXIT
 
 open_id() {
   local url=$1 raw
@@ -43,17 +45,16 @@ for size in 390x844 768x1024 1440x900 1920x1080; do
     [ "$attempt" = 3 ] && exit 1
     sleep "$SETTLE_SECONDS"
   done
-  python3 - "$size" "$result" <<'PY'
+  python3 - "$size" "$MIN_MATCH" "$result" <<'PY'
 import json, sys
-size, raw = sys.argv[1:]
+size, minimum, raw = sys.argv[1:]
 data = json.loads(raw)
 print(f'{size}: {data["match_percent"]:.2f}% '
       f'({data["mismatched_pixels"]} mismatched pixels)')
-if data["match_percent"] < 99:
-    raise SystemExit(f'FAIL: {size} fell below the 99% recording gate')
+if data["match_percent"] < float(minimum):
+    raise SystemExit(f'FAIL: {size} fell below the {minimum}% recording gate')
 PY
 done
 printf 'Caveat: each score covers this WebKitGTK engine, viewport, and frame only.\n'
 "$HWATU" focus "$APP_ID" >/dev/null
 printf 'PASS: focused the same live app session for human review.\n'
-[ -z "$COMPLETE_FILE" ] || : >"$COMPLETE_FILE"
