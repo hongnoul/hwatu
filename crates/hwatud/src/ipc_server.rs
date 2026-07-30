@@ -311,6 +311,18 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
             }
         }
         Request::Focus { id } => {
+            // Display-free mode has no session display to show a
+            // window on: the managed headless compositor renders to
+            // nothing a human can see. A structured error beats
+            // silently "focusing" into the void.
+            if crate::compositor::display_free() {
+                reply(Response::err(format!(
+                    "no display: hwatud is running display-free (headless child \
+                     compositor); window {id} cannot be shown. Start hwatud in a \
+                     graphical session to focus windows."
+                )));
+                return;
+            }
             let win = daemon.windows.borrow().get(&id).cloned();
             match win {
                 Some(w) => {
