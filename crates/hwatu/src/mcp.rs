@@ -609,8 +609,16 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
             "Token-cheap page state as JSON: url, title, visible text (bounded), \
              scroll position, and indexed interactable elements (links, buttons, \
              inputs). Use the returned `ref` indices with click/type_text. \
-             Prefer this over screenshot for 'what is on this page'.",
-            json!({ "id": prop("integer", ID_DESC) }),
+             Prefer this over screenshot for 'what is on this page'. With \
+             diff=true, returns only what changed since the last diff snapshot \
+             of the window ({added, removed, changed, unchanged_count}); the \
+             first diff (and the first after a navigation) returns the full \
+             snapshot with baseline_established=true.",
+            json!({
+                "id": prop("integer", ID_DESC),
+                "diff": prop("boolean", "Return only changes since the last diff \
+                     snapshot of this window instead of the full page state."),
+            }),
             &[],
         ),
         tool(
