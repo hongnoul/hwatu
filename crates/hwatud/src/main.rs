@@ -21,6 +21,7 @@ mod keys;
 mod launcher;
 mod net;
 mod observe;
+mod palette;
 mod prompts;
 mod search;
 mod session;
@@ -39,6 +40,13 @@ use webkit6::prelude::*;
 use window::BrowserWindow;
 
 pub const APP_ID: &str = "dev.hwatu.hwatud";
+
+/// Signal numbers (Linux). Matching compositor.rs, no libc dependency.
+mod libc_signals {
+    pub const SIGHUP: i32 = 1;
+    pub const SIGINT: i32 = 2;
+    pub const SIGTERM: i32 = 15;
+}
 
 /// Shared daemon state, single-threaded (GTK main thread only).
 pub struct Daemon {
@@ -286,6 +294,24 @@ fn main() -> glib::ExitCode {
                 // focused Normal window after a crash.
                 BrowserWindow::open(&daemon, Some(entry.url), entry.app_id, entry.mode);
             }
+        }
+        // SIGTERM/SIGINT/SIGHUP (logout, `kill` during an update,
+        // Ctrl+C in a terminal): the default action kills the process
+        // between debounced saves, losing any window opened or
+        // navigated in the last 2 s. Flush the snapshot synchronously
+        // and exit; the file is left behind on purpose so the next
+        // start restores the windows (only `hwatu quit` clears it).
+        for signum in [
+            libc_signals::SIGTERM,
+            libc_signals::SIGINT,
+            libc_signals::SIGHUP,
+        ] {
+            let daemon = daemon.clone();
+            glib::unix_signal_add_local(signum, move || {
+                daemon.save_session_now();
+                daemon.app.quit();
+                glib::ControlFlow::Break
+            });
         }
         println!(
             "hwatud: listening on {}",

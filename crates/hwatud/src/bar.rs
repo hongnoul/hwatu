@@ -21,6 +21,9 @@ pub enum BarMode {
     },
     /// URL entry: Enter navigates the window, Esc cancels.
     Url,
+    /// Command palette: fuzzy action search. Enter runs the selected
+    /// action, Up/Down move, Esc cancels.
+    Palette,
     /// A yes/no question, e.g. permission or TLS prompts. `tag`
     /// identifies the pending request to the owner.
     Confirm {
@@ -33,6 +36,9 @@ pub enum BarMode {
 #[derive(Clone)]
 pub struct Bar {
     pub root: gtk::Box,
+    /// Palette results, stacked above the input row; hidden outside
+    /// [`BarMode::Palette`].
+    list: gtk::Box,
     prefix: gtk::Label,
     pub entry: gtk::Entry,
     status: gtk::Label,
@@ -43,24 +49,37 @@ pub struct Bar {
 impl Bar {
     pub fn new() -> Self {
         let root = gtk::Box::builder()
-            .orientation(gtk::Orientation::Horizontal)
-            .spacing(4)
+            .orientation(gtk::Orientation::Vertical)
             .halign(gtk::Align::Fill)
             .valign(gtk::Align::End)
             .visible(false)
             .css_classes(["hwatu-bar"])
             .build();
 
+        let list = gtk::Box::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .visible(false)
+            .css_classes(["palette-list"])
+            .build();
+
+        let row = gtk::Box::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .spacing(4)
+            .build();
+
         let prefix = gtk::Label::builder().css_classes(["prefix"]).build();
         let entry = gtk::Entry::builder().has_frame(false).hexpand(true).build();
         let status = gtk::Label::builder().css_classes(["status"]).build();
 
-        root.append(&prefix);
-        root.append(&entry);
-        root.append(&status);
+        row.append(&prefix);
+        row.append(&entry);
+        row.append(&status);
+        root.append(&list);
+        root.append(&row);
 
         Bar {
             root,
+            list,
             prefix,
             entry,
             status,
@@ -80,6 +99,7 @@ impl Bar {
     /// Open interactive find. Focuses the entry.
     pub fn open_find(&self, backwards: bool) {
         self.cancel_hide_timer();
+        self.hide_list();
         self.mode.replace(BarMode::Find { backwards });
         self.prefix.set_label(if backwards { "?" } else { "/" });
         self.entry.set_text("");
@@ -93,6 +113,7 @@ impl Bar {
     /// typing replaces it and editing is one keystroke away.
     pub fn open_url(&self, current: &str) {
         self.cancel_hide_timer();
+        self.hide_list();
         self.mode.replace(BarMode::Url);
         self.prefix.set_label("open");
         self.entry.set_text(current);
@@ -103,9 +124,73 @@ impl Bar {
         self.entry.select_region(0, -1);
     }
 
+    /// Open the command palette. The owner populates results via
+    /// [`Self::set_palette_rows`] on every entry change.
+    pub fn open_palette(&self) {
+        self.cancel_hide_timer();
+        self.mode.replace(BarMode::Palette);
+        self.prefix.set_label(">");
+        self.entry.set_text("");
+        self.entry.set_visible(true);
+        self.status.set_label("");
+        self.list.set_visible(true);
+        self.root.set_visible(true);
+        self.entry.grab_focus();
+    }
+
+    /// Replace the palette rows. Each row is (title, chord hint);
+    /// `selected` gets the highlight. Rows render top-to-bottom in
+    /// rank order; the caller caps the list length.
+    pub fn set_palette_rows(&self, rows: &[(String, String)], selected: usize) {
+        while let Some(child) = self.list.first_child() {
+            self.list.remove(&child);
+        }
+        for (i, (title, detail)) in rows.iter().enumerate() {
+            let row = gtk::Box::builder()
+                .orientation(gtk::Orientation::Horizontal)
+                .spacing(8)
+                .css_classes(["palette-row"])
+                .build();
+            if i == selected {
+                row.add_css_class("selected");
+            }
+            let title = gtk::Label::builder()
+                .label(title)
+                .halign(gtk::Align::Start)
+                .hexpand(true)
+                .build();
+            let detail = gtk::Label::builder()
+                .label(detail)
+                .halign(gtk::Align::End)
+                .css_classes(["status"])
+                .build();
+            row.append(&title);
+            row.append(&detail);
+            self.list.append(&row);
+        }
+        self.status
+            .set_label(if rows.is_empty() { "no match" } else { "" });
+    }
+
+    /// Move the highlight without rebuilding rows.
+    pub fn set_palette_selected(&self, selected: usize) {
+        let mut child = self.list.first_child();
+        let mut i = 0usize;
+        while let Some(row) = child {
+            if i == selected {
+                row.add_css_class("selected");
+            } else {
+                row.remove_css_class("selected");
+            }
+            child = row.next_sibling();
+            i += 1;
+        }
+    }
+
     /// Open a yes/no prompt. No entry; the owner answers on y/n keys.
     pub fn open_confirm(&self, tag: &str, question: &str) {
         self.cancel_hide_timer();
+        self.hide_list();
         self.mode.replace(BarMode::Confirm { tag: tag.into() });
         self.prefix.set_label(question);
         self.entry.set_visible(false);
@@ -118,11 +203,12 @@ impl Bar {
         // Never clobber an interactive mode with a passive message.
         if matches!(
             *self.mode.borrow(),
-            BarMode::Find { .. } | BarMode::Url | BarMode::Confirm { .. }
+            BarMode::Find { .. } | BarMode::Url | BarMode::Palette | BarMode::Confirm { .. }
         ) {
             return;
         }
         self.cancel_hide_timer();
+        self.hide_list();
         self.mode.replace(BarMode::Status);
         self.prefix.set_label(message);
         self.entry.set_visible(false);
@@ -147,8 +233,16 @@ impl Bar {
 
     pub fn close(&self) {
         self.cancel_hide_timer();
+        self.hide_list();
         self.mode.replace(BarMode::Hidden);
         self.root.set_visible(false);
+    }
+
+    fn hide_list(&self) {
+        self.list.set_visible(false);
+        while let Some(child) = self.list.first_child() {
+            self.list.remove(&child);
+        }
     }
 
     fn cancel_hide_timer(&self) {
@@ -181,6 +275,17 @@ pub fn install_css() {
         }
         .hwatu-bar label.prefix, .hwatu-bar label.status {
             color: #9a9a9a;
+        }
+        .hwatu-bar .palette-list {
+            padding: 2px 0 4px;
+        }
+        .hwatu-bar .palette-row {
+            padding: 2px 6px;
+            border-radius: 3px;
+        }
+        .hwatu-bar .palette-row.selected {
+            background-color: rgba(255, 255, 255, 0.12);
+            color: #ffffff;
         }
         .hwatu-recovery {
             background-color: rgba(18, 18, 18, 0.88);

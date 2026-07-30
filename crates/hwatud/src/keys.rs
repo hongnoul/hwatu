@@ -51,10 +51,12 @@ pub enum Action {
     ZoomOut,
     ZoomReset,
     Fullscreen,
+    /// Open the command palette (fuzzy action search in the bar).
+    CommandPalette,
 }
 
 impl Action {
-    const ALL: &'static [Action] = &[
+    pub(crate) const ALL: &'static [Action] = &[
         Action::Close,
         Action::NewWindow,
         Action::UrlOpen,
@@ -73,6 +75,7 @@ impl Action {
         Action::ZoomOut,
         Action::ZoomReset,
         Action::Fullscreen,
+        Action::CommandPalette,
     ];
 
     pub fn name(self) -> &'static str {
@@ -95,6 +98,7 @@ impl Action {
             Action::ZoomOut => "zoom_out",
             Action::ZoomReset => "zoom_reset",
             Action::Fullscreen => "fullscreen",
+            Action::CommandPalette => "command_palette",
         }
     }
 
@@ -119,6 +123,7 @@ impl Action {
             Action::ZoomOut => "zoom out",
             Action::ZoomReset => "reset zoom",
             Action::Fullscreen => "toggle fullscreen",
+            Action::CommandPalette => "command palette",
         }
     }
 
@@ -147,6 +152,9 @@ impl Action {
             Action::ZoomOut => "ctrl+minus",
             Action::ZoomReset => "ctrl+0",
             Action::Fullscreen => "F11",
+            // ctrl+shift+p mirrors VS Code; ctrl+k is unclaimed in
+            // browsers and one chord shorter for daily use.
+            Action::CommandPalette => "ctrl+k, ctrl+shift+p",
         }
     }
 }

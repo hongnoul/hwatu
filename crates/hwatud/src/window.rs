@@ -188,6 +188,16 @@ pub struct BrowserWindow {
     /// (method, url, status, type, timing), not just failures.
     /// Outlives discards for the same reason the console buffer does.
     pub net: crate::net::Buffer,
+    /// Command-palette state while the bar is in Palette mode: the
+    /// current ranked matches and which one is highlighted. Cleared on
+    /// close so a reopened palette starts fresh.
+    palette: RefCell<Option<PaletteState>>,
+}
+
+/// See [`BrowserWindow::palette`].
+struct PaletteState {
+    matches: Vec<keys::Action>,
+    selected: usize,
 }
 
 /// `HWATU_WEBKIT_FEATURES=Ident:on,Other:off`: escape hatch for odd
@@ -505,6 +515,7 @@ impl BrowserWindow {
             snapshot_baseline: RefCell::new(None),
             console: crate::console::Buffer::default(),
             net: crate::net::Buffer::default(),
+            palette: RefCell::new(None),
         });
 
         this.attach_webview(webview);
@@ -548,10 +559,13 @@ impl BrowserWindow {
             ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
             let this2 = this.clone();
             ctrl.connect_key_pressed(move |_, key, _, state| {
-                // While the bar's entry owns focus (find/URL typing),
-                // global chords stay out of the way: Ctrl+o in a URL
-                // prompt must not navigate history under the bar.
-                let entry_open = matches!(this2.bar.mode(), BarMode::Find { .. } | BarMode::Url);
+                // While the bar's entry owns focus (find/URL/palette
+                // typing), global chords stay out of the way: Ctrl+o in
+                // a URL prompt must not navigate history under the bar.
+                let entry_open = matches!(
+                    this2.bar.mode(),
+                    BarMode::Find { .. } | BarMode::Url | BarMode::Palette
+                );
                 if !entry_open {
                     if let Some(action) =
                         this2.daemon.keymap.lookup(keys::Phase::Capture, key, state)
@@ -1342,6 +1356,7 @@ impl BrowserWindow {
                     self.window.fullscreen();
                 }
             }
+            Action::CommandPalette => self.open_palette(),
         }
         glib::Propagation::Stop
     }
@@ -1425,7 +1440,7 @@ impl BrowserWindow {
             // only see what bubbles past it (Escape/Enter handled in
             // wire_bar on the entry itself). Swallow the rest so keys
             // don't leak into the page under the bar.
-            BarMode::Find { .. } | BarMode::Url => glib::Propagation::Proceed,
+            BarMode::Find { .. } | BarMode::Url | BarMode::Palette => glib::Propagation::Proceed,
             BarMode::Confirm { tag } => {
                 match key {
                     gtk::gdk::Key::y | gtk::gdk::Key::Y => self.answer_confirm(&tag, true),
@@ -1442,14 +1457,17 @@ impl BrowserWindow {
     /// Hook the bar's entry: incremental find while typing, Enter
     /// commits (focus returns to page, n/N work), Escape cancels.
     fn wire_bar(self: &Rc<Self>) {
-        // Incremental search on every keystroke.
+        // Incremental search on every keystroke; palette re-ranks on
+        // every keystroke the same way.
         {
             let this = self.clone();
-            self.bar.entry.connect_changed(move |entry| {
-                if let BarMode::Find { backwards } = this.bar.mode() {
-                    this.run_find(&entry.text(), backwards);
-                }
-            });
+            self.bar
+                .entry
+                .connect_changed(move |entry| match this.bar.mode() {
+                    BarMode::Find { backwards } => this.run_find(&entry.text(), backwards),
+                    BarMode::Palette => this.refresh_palette(&entry.text()),
+                    _ => {}
+                });
         }
         // Enter: find keeps highlights and returns focus to the page;
         // URL mode navigates.
@@ -1470,12 +1488,14 @@ impl BrowserWindow {
                         }
                         this.focus_webview();
                     }
+                    BarMode::Palette => this.run_palette_selected(),
                     _ => {}
                 });
         }
         // Escape inside the entry: cancel find/URL entry entirely.
         // On a bare launcher window, cancelling means the window
-        // itself was a mis-fire: close it.
+        // itself was a mis-fire: close it. Up/Down while the palette
+        // is open move its highlight instead of the entry cursor.
         {
             let this = self.clone();
             let ctrl = gtk::EventControllerKey::new();
@@ -1484,14 +1504,90 @@ impl BrowserWindow {
                     if this.close_if_bare_launcher() {
                         return glib::Propagation::Stop;
                     }
+                    this.palette.replace(None);
                     this.stop_find();
                     this.bar.close();
                     this.focus_webview();
                     return glib::Propagation::Stop;
                 }
+                if this.bar.mode() == BarMode::Palette {
+                    match key {
+                        gtk::gdk::Key::Down => {
+                            this.palette_move(1);
+                            return glib::Propagation::Stop;
+                        }
+                        gtk::gdk::Key::Up => {
+                            this.palette_move(-1);
+                            return glib::Propagation::Stop;
+                        }
+                        _ => {}
+                    }
+                }
                 glib::Propagation::Proceed
             });
             self.bar.entry.add_controller(ctrl);
+        }
+    }
+
+    // ---- command palette -------------------------------------------
+
+    /// How many ranked matches the palette shows at once.
+    const PALETTE_ROWS: usize = 8;
+
+    /// Open the palette over every keymap action.
+    fn open_palette(self: &Rc<Self>) {
+        self.bar.open_palette();
+        self.refresh_palette("");
+    }
+
+    /// Re-rank against `query`, reset the highlight, redraw.
+    fn refresh_palette(self: &Rc<Self>, query: &str) {
+        let items = crate::palette::items(&self.daemon.keymap);
+        let ranked = crate::palette::filter(&items, query);
+        let rows: Vec<(String, String)> = ranked
+            .iter()
+            .take(Self::PALETTE_ROWS)
+            .map(|i| (i.title.to_string(), i.detail.clone()))
+            .collect();
+        self.palette.replace(Some(PaletteState {
+            matches: ranked
+                .iter()
+                .take(Self::PALETTE_ROWS)
+                .map(|i| i.action)
+                .collect(),
+            selected: 0,
+        }));
+        self.bar.set_palette_rows(&rows, 0);
+    }
+
+    /// Move the highlight by `delta`, wrapping at the ends.
+    fn palette_move(self: &Rc<Self>, delta: isize) {
+        let mut state = self.palette.borrow_mut();
+        let Some(state) = state.as_mut() else {
+            return;
+        };
+        let n = state.matches.len();
+        if n == 0 {
+            return;
+        }
+        state.selected = (state.selected as isize + delta).rem_euclid(n as isize) as usize;
+        self.bar.set_palette_selected(state.selected);
+    }
+
+    /// Run the highlighted action. The bar closes first so actions
+    /// that open the bar themselves (find, URL) start clean.
+    fn run_palette_selected(self: &Rc<Self>) {
+        let action = {
+            let state = self.palette.borrow();
+            state
+                .as_ref()
+                .and_then(|s| s.matches.get(s.selected).copied())
+        };
+        self.palette.replace(None);
+        self.bar.close();
+        self.focus_webview();
+        if let Some(action) = action {
+            self.run_action(action);
         }
     }
 
