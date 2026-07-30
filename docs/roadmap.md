@@ -358,7 +358,24 @@ invariants before seeding a screenshot baseline.
 
 ### G4. display-free operation (promoted from P2 item 7)
 
-Under the substrate thesis this is load-bearing: rendering generated
+**Shipped 2026-07-30.** hwatud detects an unusable/absent
+WAYLAND_DISPLAY+DISPLAY at startup and enters display-free mode: it
+spawns a managed child headless compositor (probes cage -> labwc ->
+sway with WLR_BACKENDS=headless; structured install-hint error if
+none), supervises it orphan-free via a PDEATHSIG-holding wrapper
+(Linux clears PDEATHSIG on exec of file-caps binaries like distro
+sway), and probes /dev/dri/renderD* to fall back to software
+rendering (WEBKIT_DISABLE_DMABUF_RENDERER=1, LIBGL_ALWAYS_SOFTWARE=1,
+WLR_RENDERER=pixman) on GPU-less boxes. `focus` returns a structured
+"no display" error. The CI job "Display-free behavioral (G4)" runs
+`scripts/test-display-free.sh` (13 checks incl. 100% pixel parity vs
+a compositor-hosted run and orphan checks under quit/SIGKILL) on
+ubuntu-latest, green on run 30540003841; Ubuntu 24.04 needs
+kernel.apparmor_restrict_unprivileged_userns=0 for WebKit's bwrap
+sandbox, set in the job. `scripts/dev/no-gpu.sh` reproduces GPU-less
+runners locally.
+
+Original scope (kept for the record). Under the substrate thesis this is load-bearing: rendering generated
 UI server-side (CI, headless boxes) must not require a logged-in
 Wayland session. Evaluate: wlroots headless backend as a managed
 child compositor vs WPE WebKit as an alternative backend for
