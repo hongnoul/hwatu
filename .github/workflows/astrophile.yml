@@ -20,6 +20,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Install astrophile
         run: cargo install --git https://github.com/hongnoul/astrophile --locked
+      - name: Install Agent Reach screening tools
+        env:
+          AGENT_REACH_REV: b4d52c46c9113cb0f653d6df4cf71ebadf4930ac
+          EXA_API_KEY: ${{ secrets.EXA_API_KEY }}
+        run: |
+          python3 -m pip install --user \
+            "https://github.com/Panniantong/Agent-Reach/archive/${AGENT_REACH_REV}.zip"
+          npm install -g mcporter@0.9.0
+          exa_url='https://mcp.exa.ai/mcp'
+          if [ -n "$EXA_API_KEY" ]; then
+            exa_url="${exa_url}?exaApiKey=${EXA_API_KEY}"
+          fi
+          mcporter config add exa "$exa_url" --scope home
+          "$HOME/.local/bin/agent-reach" doctor --json \
+            > .astrophile/agent-reach-health.json
       - name: Snapshot + geo
         env:
           GH_TOKEN: ${{ github.token }}
@@ -27,6 +42,19 @@ jobs:
           astrophile snapshot
           astrophile geo || true
           astrophile audit
+      - name: Screen public signals
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/screen-public-signals.sh
+      - name: Upload screening report
+        uses: actions/upload-artifact@v7
+        with:
+          name: public-signal-screen
+          path: |
+            .astrophile/agent-reach-health.json
+            .astrophile/public-signal-screen.jsonl
+          if-no-files-found: error
+          retention-days: 30
       - name: Commit trend log
         run: |
           git config user.name 'astrophile-bot'

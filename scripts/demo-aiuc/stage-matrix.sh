@@ -7,6 +7,7 @@ REF=${2:?usage: stage-matrix.sh APP_URL REF_URL}
 HERE=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 HWATU="$HERE/../demo/record/stage-hwatu.sh"
 SETTLE_SECONDS=${AIUC_SETTLE_SECONDS:-2}
+COMPLETE_FILE=${AIUC_DEMO_COMPLETE_FILE:-}
 
 open_id() {
   local url=$1 raw
@@ -21,8 +22,13 @@ open_id() {
 }
 
 APP_ID=$(open_id "$APP")
-REF_ID=$(open_id "$REF")
 "$HWATU" wait-load --id "$APP_ID" --timeout-ms 30000 >/dev/null
+# Put the actual product on screen before doing any background measurement.
+# The recording should answer "what is Hwatu showing me?" immediately rather
+# than making the viewer watch a verification matrix before the reveal.
+"$HWATU" focus "$APP_ID" >/dev/null
+
+REF_ID=$(open_id "$REF")
 "$HWATU" wait-load --id "$REF_ID" --timeout-ms 30000 >/dev/null
 
 printf 'AIUC responsive verification\n'
@@ -50,3 +56,4 @@ done
 printf 'Caveat: each score covers this WebKitGTK engine, viewport, and frame only.\n'
 "$HWATU" focus "$APP_ID" >/dev/null
 printf 'PASS: focused the same live app session for human review.\n'
+[ -z "$COMPLETE_FILE" ] || : >"$COMPLETE_FILE"

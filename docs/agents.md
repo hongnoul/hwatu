@@ -174,7 +174,8 @@ controls.
 ### Eval semantics
 
 `js` can be an **expression** or a **function body**; the daemon
-picks the right form with a compile-only probe, so both just work:
+picks the right form with a daemon-side parse (nothing but the code
+that actually runs ever reaches the page), so both just work:
 
 ```sh
 hwatu eval 'document.title'                # expression
