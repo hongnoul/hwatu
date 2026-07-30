@@ -440,16 +440,10 @@ extern "C" {
 mod tests {
     use super::{detect_mode_with, DisplayMode};
 
-    fn detect(
-        wayland: Option<&str>,
-        display: Option<&str>,
-        usable: bool,
-    ) -> DisplayMode {
-        detect_mode_with(
-            wayland.map(String::from),
-            display.map(String::from),
-            |_| usable,
-        )
+    fn detect(wayland: Option<&str>, display: Option<&str>, usable: bool) -> DisplayMode {
+        detect_mode_with(wayland.map(String::from), display.map(String::from), |_| {
+            usable
+        })
     }
 
     /// The mode gate: display-free only when neither env var offers a
@@ -464,10 +458,7 @@ mod tests {
         assert_eq!(detect(Some(""), Some(""), true), DisplayMode::DisplayFree);
         assert_eq!(detect(Some("  "), None, true), DisplayMode::DisplayFree);
         // Usable Wayland socket: session.
-        assert_eq!(
-            detect(Some("wayland-1"), None, true),
-            DisplayMode::Session
-        );
+        assert_eq!(detect(Some("wayland-1"), None, true), DisplayMode::Session);
         // Set but unusable Wayland, nothing else: display-free.
         assert_eq!(
             detect(Some("wayland-1"), None, false),
