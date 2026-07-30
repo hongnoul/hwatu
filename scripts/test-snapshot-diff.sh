@@ -67,7 +67,7 @@ cat > "$fixdir/page-b.html" <<'HTML'
 HTML
 
 "$bin/hwatu" ping >/dev/null # spawn the isolated daemon
-"$bin/hwatu" open "$fixdir/page-a.html" --headless >/dev/null
+"$bin/hwatu" "$fixdir/page-a.html" --headless >/dev/null
 "$bin/hwatu" wait-load >/dev/null
 
 # ---- 1. first --diff establishes the baseline ------------------------
@@ -108,7 +108,7 @@ check "button relabel: reported as changed (key button#go)" \
 ref="$(jget "$out" '[c for c in d["changed"] if c["key"] == "button#go"][0]["new"]["ref"]')"
 check "changed node carries a live ref (got $ref)" test "$ref" -ge 0
 # The ref must be a live handle: clicking it runs the button's handler.
-"$bin/hwatu" eval "document.getElementById('go').onclick = () => { document.title = 'clicked' }" >/dev/null
+"$bin/hwatu" eval "document.getElementById('go').onclick = () => { document.title = 'clicked' }; 'wired'" >/dev/null
 "$bin/hwatu" snapshot --diff >/dev/null # refresh refs after the eval
 "$bin/hwatu" click --ref "$ref" >/dev/null
 out="$("$bin/hwatu" eval "document.title")"

@@ -2017,10 +2017,19 @@ const interactables = els.map((el, i) => {
   return out;
 });
 const doc = document.documentElement;
+// Per-line text (spaces collapsed within a line, newlines kept):
+// agents read it the same, and `snapshot --diff` can report the one
+// line that changed instead of the whole blob.
+const rawText = document.body ? document.body.innerText : '';
+let text = rawText.split('\n')
+  .map(l => l.replace(/\s+/g, ' ').trim())
+  .filter(Boolean)
+  .join('\n');
+if (text.length > MAX_TEXT) text = text.slice(0, MAX_TEXT - 1) + '…';
 return {
   url: location.href,
   title: document.title,
-  text: clip(document.body ? document.body.innerText : '', MAX_TEXT),
+  text,
   interactables,
   scroll: {
     y: window.scrollY,
