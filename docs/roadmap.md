@@ -70,9 +70,17 @@ human for a minute.
 For an agent, the JSON snapshot *is* the interface. Polish it the way
 a human browser polishes rendering:
 
-3. **Snapshot diffing.** `hwatu snapshot --diff` returns only what
-   changed since the last snapshot of that window. Saves tokens in
-   iterate loops.
+3. **Snapshot diffing.** **Shipped 2026-07-30:** `hwatu snapshot
+   --diff [--id <id>]` returns only what changed since the last
+   snapshot of that window ({added, removed, changed,
+   unchanged_count}), diffed via LCS + identity-key pairing so ref
+   renumbering is not misreported; per-line text so one edited line
+   diffs as one line. First call establishes a baseline (full
+   snapshot, `baseline_established: true`); navigation resets it;
+   refs stay live handles. MCP snapshot tool gained a `diff` arg.
+   `scripts/test-snapshot-diff.sh` (20 checks) covers baseline,
+   empty-diff, single-line mutation, live-ref clickability, and
+   navigation reset.
 4. **Stable refs.** Interactable refs that survive re-snapshots of an
    unchanged page, with clear staleness errors on navigation.
    **Documented:** [agents.md](agents.md) now states the guarantee
@@ -97,11 +105,18 @@ a human browser polishes rendering:
    floor. Measured medians on the local fixture: unprefetched check
    84 ms, prefetched check 1 ms ([benchmarks](benchmarks.md)).
 5c. **Multi-viewport sweep.** `hwatu check --viewports
+   **Shipped 2026-07-30:**
    360x640,768x1024,1920x1080` runs the same pass at N sizes
-   (sequentially on pooled windows) and reports per-viewport results,
+   sequentially on ONE pooled window (resize-reuse measured ~4x
+   faster than N separate checks: 15-18 ms vs 66-72 ms for 3 sizes)
+   and reports per-viewport results ({size, eval, shot, pass_ms}),
    directly answering the diff envelope's "other widths unverified"
    caveat in one call. Composes with `--baseline-dir` for per-size
-   baselines.
+   baselines. `scripts/test-viewports.sh` (15 checks) and
+   `scripts/bench-viewports.sh` cover it. A pre-existing quirk the
+   sweep surfaced (each resize emitted one masked "Script error."
+   console entry) was filed as issue #6 and fixed the same day (PR
+   #8, daemon-side expression-vs-body syntax check).
 6. **Virtual time.** **Shipped 2026-07-23** (merged from
    proto/toolsmith): `hwatu clock
    pause|resume|step <ms>|set <ms>` puts rAF, `performance.now`,
@@ -152,7 +167,18 @@ worth native features; the rest stay non-goals.
    windows; may require the offscreen-compositor path from item 7.
    Explicitly NOT an anti-bot evasion feature: it makes real forms
    accept real input, same as every driver-level automation tool.
-9. **Network observation (and small-bore stubbing).** An agent
+9. **Network observation (and small-bore stubbing).** **Shipped
+   2026-07-30:** `hwatu net [--id <id>] [--clear] [--limit <n>]`
+   returns a structured per-window request log (method, final url,
+   HTTP status, resource type inferred from response MIME, start_ms
+   offset from navigation start, duration_ms) captured from WebKit's
+   resource-load signals into a bounded 500-entry ring buffer that
+   survives window discards; MCP exposes a matching `net` tool, and
+   `scripts/test-net.sh` covers method/status/type capture, 404s,
+   POST bodies via fetch, `--clear`, `--limit`, and the cap. Noted
+   limitation: WebKitGTK exposes no request destination, so type is
+   MIME-inferred, and there is no route interception. Original
+   rationale: an agent
    verifying a form submit should assert "the POST to /api/charge
    returned 200", not squint at a success toast. `console` already
    captures failures (HTTP >= 400); generalize to `hwatu net [--clear]`:
@@ -341,7 +367,24 @@ invariants before seeding a screenshot baseline.
 
 ### G4. display-free operation (promoted from P2 item 7)
 
-Under the substrate thesis this is load-bearing: rendering generated
+**Shipped 2026-07-30.** hwatud detects an unusable/absent
+WAYLAND_DISPLAY+DISPLAY at startup and enters display-free mode: it
+spawns a managed child headless compositor (probes cage -> labwc ->
+sway with WLR_BACKENDS=headless; structured install-hint error if
+none), supervises it orphan-free via a PDEATHSIG-holding wrapper
+(Linux clears PDEATHSIG on exec of file-caps binaries like distro
+sway), and probes /dev/dri/renderD* to fall back to software
+rendering (WEBKIT_DISABLE_DMABUF_RENDERER=1, LIBGL_ALWAYS_SOFTWARE=1,
+WLR_RENDERER=pixman) on GPU-less boxes. `focus` returns a structured
+"no display" error. The CI job "Display-free behavioral (G4)" runs
+`scripts/test-display-free.sh` (13 checks incl. 100% pixel parity vs
+a compositor-hosted run and orphan checks under quit/SIGKILL) on
+ubuntu-latest, green on run 30540003841; Ubuntu 24.04 needs
+kernel.apparmor_restrict_unprivileged_userns=0 for WebKit's bwrap
+sandbox, set in the job. `scripts/dev/no-gpu.sh` reproduces GPU-less
+runners locally.
+
+Original scope (kept for the record). Under the substrate thesis this is load-bearing: rendering generated
 UI server-side (CI, headless boxes) must not require a logged-in
 Wayland session. Evaluate: wlroots headless backend as a managed
 child compositor vs WPE WebKit as an alternative backend for
