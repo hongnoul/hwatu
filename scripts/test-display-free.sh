@@ -29,13 +29,39 @@ fi
 # Keep the workdir path SHORT: it becomes XDG_RUNTIME_DIR, and Unix
 # socket paths (compositor + daemon) cap at ~108 bytes.
 work="$(mktemp -d /tmp/hwatu-df.XXXXXX)"
+
+# GPU-less boxes (CI runners): WebKit's DMA-BUF renderer SIGTRAPs and
+# GLES-on-llvmpipe has aborted cage without a DRM render node. The
+# daemon applies this fallback itself in display-free mode; the
+# REFERENCE half of this suite runs in session mode (script-spawned
+# compositor + WAYLAND_DISPLAY), which by design changes nothing, so
+# the script must set the same env there. Exported globally so both
+# halves render identically for the pixel-parity assertion.
+gpu=no
+for node in /dev/dri/renderD*; do
+    [[ -r "$node" && -w "$node" ]] && gpu=yes && break
+done
+if [[ "$gpu" == no ]]; then
+    echo "test-display-free: no DRM render node; using software rendering" >&2
+    export WEBKIT_DISABLE_DMABUF_RENDERER=1 LIBGL_ALWAYS_SOFTWARE=1 WLR_RENDERER=pixman
+fi
 comp_pid=""
 cleanup() {
+    local rc=$?
     [[ -n "$comp_pid" ]] && kill "$comp_pid" 2>/dev/null || true
     # Any daemon still running on either isolated socket.
     XDG_RUNTIME_DIR="$work/hosted" "$bin/hwatu" quit >/dev/null 2>&1 || true
     XDG_RUNTIME_DIR="$work/free" "$bin/hwatu" quit >/dev/null 2>&1 || true
     sleep 0.5
+    # On failure, the logs are the only evidence (especially on CI);
+    # dump them before removing the workdir.
+    if [[ "$rc" -ne 0 || "${fail:-0}" -ne 0 ]]; then
+        for log in "$work"/*.log; do
+            [[ -s "$log" ]] || continue
+            echo "===== $log =====" >&2
+            cat "$log" >&2
+        done
+    fi
     rm -rf "$work"
 }
 trap cleanup EXIT

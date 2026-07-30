@@ -135,6 +135,7 @@ pub fn ensure_display() -> Result<Option<Compositor>, String> {
     match detect_mode() {
         DisplayMode::Session => Ok(None),
         DisplayMode::DisplayFree => {
+            export_software_rendering_fallback();
             let comp = Compositor::spawn()?;
             std::env::set_var("WAYLAND_DISPLAY", &comp.socket);
             std::env::set_var("GDK_BACKEND", "wayland");
@@ -148,6 +149,52 @@ pub fn ensure_display() -> Result<Option<Compositor>, String> {
             Ok(Some(comp))
         }
     }
+}
+
+/// GPU-less boxes (CI runners, minimal VMs) are the main audience of
+/// display-free mode, and WebKitGTK's default DMA-BUF renderer aborts
+/// there (`g_error` -> SIGTRAP) because buffer sharing needs a DRM
+/// render node. When no usable node exists, fall back to software
+/// rendering before GTK/WebKit initialize (web processes inherit the
+/// env). Explicit user env always wins; boxes WITH a GPU are
+/// untouched.
+fn export_software_rendering_fallback() {
+    if has_drm_render_node() {
+        return;
+    }
+    for (key, value) in [
+        // WebKit: render in shared memory instead of DMA-BUF.
+        ("WEBKIT_DISABLE_DMABUF_RENDERER", "1"),
+        // Mesa: llvmpipe instead of probing for hardware.
+        ("LIBGL_ALWAYS_SOFTWARE", "1"),
+        // wlroots: pure-CPU pixman compositing. GLES-on-llvmpipe is
+        // the alternative and has aborted cage on GPU-less CI; pixman
+        // (wlroots >= 0.15, everything packaged today) is the honest
+        // renderer for a display nothing is shown on. Inherited by
+        // the child compositor via spawn_candidate.
+        ("WLR_RENDERER", "pixman"),
+    ] {
+        if std::env::var_os(key).is_none() {
+            std::env::set_var(key, value);
+        }
+    }
+    println!("hwatud: no DRM render node; falling back to software rendering");
+}
+
+/// Is there an openable DRM render node? Openable matters: the node
+/// can exist while the daemon's user lacks the `render` group.
+fn has_drm_render_node() -> bool {
+    let Ok(entries) = std::fs::read_dir("/dev/dri") else {
+        return false;
+    };
+    entries.flatten().any(|e| {
+        e.file_name().to_string_lossy().starts_with("renderD")
+            && std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(e.path())
+                .is_ok()
+    })
 }
 
 /// A supervised child compositor. Dropping it terminates the child
