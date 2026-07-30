@@ -495,10 +495,8 @@ mod tests {
 
     #[test]
     fn existing_local_paths_become_file_urls() {
-        let path = std::env::temp_dir().join(format!(
-            "hwatu local path {}.html",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("hwatu local path {}.html", std::process::id()));
         std::fs::write(&path, "<title>local</title>").unwrap();
 
         let normalized = normalize_url(path.to_string_lossy().into_owned());
