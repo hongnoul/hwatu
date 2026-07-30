@@ -706,6 +706,20 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
             &[],
         ),
         tool(
+            "net",
+            "Structured per-window network request log: method, final url, HTTP \
+             status, resource type (inferred from response MIME), start_ms offset \
+             from navigation start, and duration_ms. Bounded 500-entry ring \
+             buffer. Assert 'the POST to /api returned 200' instead of reading a \
+             success toast.",
+            json!({
+                "id": prop("integer", ID_DESC),
+                "clear": prop("boolean", "Empty the buffer after reading."),
+                "limit": prop("integer", "Return at most the last N entries."),
+            }),
+            &[],
+        ),
+        tool(
             "screenshot",
             "Capture the page as a PNG file and return its path. Use `full` for \
              the whole document instead of the viewport. For text/DOM checks, \
