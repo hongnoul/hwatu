@@ -373,6 +373,11 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
             clear: opt_bool(args, "clear").unwrap_or(false),
             limit: opt_u64(args, "limit").map(|v| v as usize),
         }),
+        "net" => Ok(Request::Net {
+            id,
+            clear: opt_bool(args, "clear").unwrap_or(false),
+            limit: opt_u64(args, "limit").map(|v| v as usize),
+        }),
         "upload" => Ok(Request::Upload {
             id,
             selector: req_str(args, "selector")?,
@@ -996,6 +1001,7 @@ mod tests {
             "type_text": { "ref": 0, "text": "x" },
             "eval": { "js": "1+1" },
             "console": {},
+            "net": {},
             "screenshot": {},
             "scroll": {},
             "wait_load": {},

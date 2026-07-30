@@ -177,6 +177,10 @@ pub struct BrowserWindow {
     /// Console/error/network capture for `hwatu console`. Outlives
     /// discards: the page's state dies, what it logged did happen.
     pub console: crate::console::Buffer,
+    /// Structured request log for `hwatu net`: every resource load
+    /// (method, url, status, type, timing), not just failures.
+    /// Outlives discards for the same reason the console buffer does.
+    pub net: crate::net::Buffer,
 }
 
 /// `HWATU_WEBKIT_FEATURES=Ident:on,Other:off`: escape hatch for odd
@@ -482,6 +486,7 @@ impl BrowserWindow {
             nav_target: RefCell::new(None),
             load_committed: std::cell::Cell::new(true),
             console: crate::console::Buffer::default(),
+            net: crate::net::Buffer::default(),
         });
 
         this.attach_webview(webview);
@@ -599,6 +604,7 @@ impl BrowserWindow {
     /// Put a WebView into the window and wire its signals.
     fn attach_webview(self: &Rc<Self>, webview: webkit6::WebView) {
         crate::console::attach(&self.console, &webview);
+        crate::net::attach(&self.net, &webview);
         let win = self.window.clone();
         webview.connect_title_notify(move |wv| {
             let title = wv.title().unwrap_or_default();

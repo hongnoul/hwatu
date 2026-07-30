@@ -18,6 +18,7 @@ mod events;
 mod ipc_server;
 mod keys;
 mod launcher;
+mod net;
 mod observe;
 mod prompts;
 mod search;

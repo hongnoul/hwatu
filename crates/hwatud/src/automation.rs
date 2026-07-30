@@ -2203,6 +2203,19 @@ pub fn console(
     }
 }
 
+/// Read a window's structured network request log. Synchronous (the
+/// buffer lives daemon-side), but routed here for target resolution.
+/// Works on suspended windows: the buffer outlives the page.
+pub fn net(daemon: &Rc<Daemon>, id: Option<u64>, clear: bool, limit: Option<usize>) -> Response {
+    match resolve(daemon, id) {
+        Ok(win) => {
+            let entries = win.net.read(clear, limit);
+            Response::value(serde_json::to_value(entries).unwrap_or_default())
+        }
+        Err(resp) => *resp,
+    }
+}
+
 /// JSON string literal, which is also a valid JS string literal.
 fn js_string(s: &str) -> String {
     serde_json::to_string(s).unwrap_or_else(|_| "\"\"".into())
