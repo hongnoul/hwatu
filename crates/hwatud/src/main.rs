@@ -219,6 +219,22 @@ fn persist_cookies() {
 fn main() -> glib::ExitCode {
     // Keep RAM predictable: cap glibc arena explosion under GTK threads.
     std::env::set_var("MALLOC_ARENA_MAX", "2");
+    // Full-refresh-rate scrolling: WebKitGTK's default DMA-BUF
+    // presentation path paces `frameDone` at 60Hz on setups where its
+    // vblank monitor falls back to a fixed 60fps timer (observed on
+    // 144Hz Wayland/niri, WebKitGTK 2.52; idle rAF hits 144 but any
+    // scroll/repaint work drops to ~59). Disabling the DMA-BUF
+    // renderer falls back to the legacy EGLImage path, which follows
+    // the GTK frame clock: measured idle=142.9/scroll=142.9 vs
+    // 62.5/58.8 on the same fixture, with equal CPU cost and vsync
+    // intact (docs/research-input-lag.md "144Hz scroll cap"). WebKit
+    // treats any value other than "0" as "disable", so exporting
+    // WEBKIT_DISABLE_DMABUF_RENDERER=0 restores the DMA-BUF path if
+    // this fallback ever misbehaves; explicit user env always wins.
+    // Must run before GTK/WebKit init; web processes inherit the env.
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
     // Display-free operation (roadmap G4): with no usable
     // WAYLAND_DISPLAY/DISPLAY, spawn a managed headless child
     // compositor and point GTK at it. Must run before any GTK/GDK
