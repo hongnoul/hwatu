@@ -9,7 +9,7 @@ mod mcp;
 mod onboarding;
 mod update;
 
-use hwatu_ipc::{AdblockCmd, ClockAction, LoadStage, OpenMode, Request, Response};
+use hwatu_ipc::{AdblockCmd, ClockAction, LoadStage, OpenMode, Request, Response, Viewport};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::process::Command;
@@ -270,6 +270,8 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
     let mut use_stdin = false;
     let mut tolerance: Option<u8> = None;
     let mut heatmap: Option<String> = None;
+    let mut viewports: Vec<Viewport> = Vec::new();
+    let mut baseline_dir: Option<String> = None;
     let mut expect_text: Option<String> = None;
     let mut absent = false;
     let mut visible = false;
@@ -412,6 +414,29 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                     .ok_or("usage: --heatmap <png-path>")?
                     .clone(),
             );
+        } else if arg == "--viewports" {
+            let list = it
+                .next()
+                .filter(|v| !v.trim().is_empty())
+                .ok_or("usage: --viewports <WxH>[,<WxH>...] (e.g. 360x640,1920x1080)")?;
+            viewports = Viewport::parse_list(list)?;
+        } else if let Some(v) = arg.strip_prefix("--viewports=") {
+            if v.trim().is_empty() {
+                return Err("usage: --viewports=<WxH>[,<WxH>...] (e.g. 360x640,1920x1080)".into());
+            }
+            viewports = Viewport::parse_list(v)?;
+        } else if arg == "--baseline-dir" {
+            baseline_dir = Some(
+                it.next()
+                    .filter(|v| !v.is_empty())
+                    .ok_or("usage: --baseline-dir <dir>")?
+                    .clone(),
+            );
+        } else if let Some(v) = arg.strip_prefix("--baseline-dir=") {
+            if v.trim().is_empty() {
+                return Err("usage: --baseline-dir=<dir>".into());
+            }
+            baseline_dir = Some(v.to_string());
         } else if arg == "--text" {
             expect_text = Some(
                 it.next()
@@ -547,9 +572,20 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 .ok_or(
                     "usage: hwatu check <url> [--eval <js>] [--shot | --shot=<png>] [--full] \
                      [--baseline <png> [--tolerance <0-255>] [--heatmap <png>]] \
+                     [--viewports <WxH>[,<WxH>...] [--baseline-dir <dir>]] \
                      [--until (committed|dom|settled)] [--keep] [--timeout-ms <ms>]",
                 )?
                 .to_string();
+            if baseline_dir.is_some() && viewports.is_empty() {
+                return Err("--baseline-dir needs --viewports".into());
+            }
+            if baseline_dir.is_some() && baseline.is_some() {
+                return Err(
+                    "--baseline and --baseline-dir are mutually exclusive (per-size \
+                     baselines live in the dir as <WxH>.png)"
+                        .into(),
+                );
+            }
             Ok(Request::Check {
                 url: Some(url),
                 render: None,
@@ -564,13 +600,26 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 until: until.unwrap_or_default(),
                 keep,
                 timeout_ms,
+                viewports,
+                baseline_dir,
             })
         }
         Some("render") => {
             const USAGE_RENDER: &str = "usage: hwatu render (--stdin | <file.html>) \
                  [--base <url>] [--eval <js>] [--shot | --shot=<png>] [--full] \
                  [--baseline <png> [--tolerance <0-255>] [--heatmap <png>]] \
+                 [--viewports <WxH>[,<WxH>...] [--baseline-dir <dir>]] \
                  [--until (committed|dom|settled)] [--keep] [--timeout-ms <ms>]";
+            if baseline_dir.is_some() && viewports.is_empty() {
+                return Err("--baseline-dir needs --viewports".into());
+            }
+            if baseline_dir.is_some() && baseline.is_some() {
+                return Err(
+                    "--baseline and --baseline-dir are mutually exclusive (per-size \
+                     baselines live in the dir as <WxH>.png)"
+                        .into(),
+                );
+            }
             let html = match (use_stdin, rest.get(1)) {
                 (true, Some(_)) => {
                     return Err(format!("render takes --stdin or a file, not both\n{USAGE_RENDER}"))
@@ -610,6 +659,8 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 until: until.unwrap_or_default(),
                 keep,
                 timeout_ms,
+                viewports,
+                baseline_dir,
             })
         }
         Some("prefetch") => {
@@ -852,7 +903,7 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--foc
 | list [--json] | close <id> | focus <id> | unfocus <id> \
 | eval [--id <id>] [--timeout-ms <ms>] <js> | goto [--id <id>] [--no-wait] [--until <stage>] <url> \
     | shot [--id <id>] [--full] [path] | wait-load [--id <id>] [--until (committed|dom|settled)] \
-    | check <url> [--eval <js>] [--shot | --shot=<png>] [--full] [--baseline <png> [--tolerance <0-255>] [--heatmap <png>]] [--until <stage>] [--keep] \
+    | check <url> [--eval <js>] [--shot | --shot=<png>] [--full] [--baseline <png> [--tolerance <0-255>] [--heatmap <png>]] [--viewports <WxH>[,<WxH>...] [--baseline-dir <dir>]] [--until <stage>] [--keep] \
     | render (--stdin | <file.html>) [--base <url>] [--eval <js>] [--shot | --shot=<png>] [--full] [--baseline <png> ...] [--until <stage>] [--keep] \
     | prefetch <url> \
     | watch [--id <id>] [--kinds load,console,download,window,expect] \

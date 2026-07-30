@@ -135,10 +135,27 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
             until,
             keep,
             timeout_ms,
+            viewports,
+            baseline_dir,
         } => {
             return automation::check(
-                daemon, url, render, base, eval, shot, shot_path, full, baseline, tolerance,
-                heatmap, until, keep, timeout_ms, reply,
+                daemon,
+                url,
+                render,
+                base,
+                eval,
+                shot,
+                shot_path,
+                full,
+                baseline,
+                tolerance,
+                heatmap,
+                until,
+                keep,
+                timeout_ms,
+                viewports,
+                baseline_dir,
+                reply,
             );
         }
         Request::Prefetch { url } => {

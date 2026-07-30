@@ -378,6 +378,16 @@ impl BrowserWindow {
         }
     }
 
+    /// Drop any per-window viewport override, returning the window to
+    /// the headless_size() default. A multi-viewport check sweep calls
+    /// this before parking its window so the next (plain) check does
+    /// not inherit the sweep's last size.
+    pub fn reset_viewport(self: &Rc<Self>) {
+        if self.viewport.take().is_some() && self.mode.get() == OpenMode::Headless {
+            self.allocate_viewport();
+        }
+    }
+
     /// (Re-)allocate the headless toplevel at the current viewport.
     fn allocate_viewport(self: &Rc<Self>) {
         gtk::prelude::WidgetExt::realize(&self.window);
