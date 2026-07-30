@@ -216,12 +216,6 @@ return {{ animations: anims.length, touched, resumed: resume }};"#,
 ///   pass for a constant k, and the loop is capped either way so a
 ///   pathological backend costs a bounded number of evals.
 pub fn resize(daemon: &Rc<Daemon>, id: Option<u64>, w: i32, h: i32, reply: Reply) {
-    // A resize is cheap, but reading the resulting CSS viewport executes on the
-    // page's main thread. Heavy pages can legitimately keep that thread busy
-    // for more than the generic 2 s eval default during initial hydration.
-    // Keep this bounded while giving verification commands enough time to
-    // return the measured dimensions instead of a false timeout.
-    const RESIZE_MEASURE_TIMEOUT_MS: u64 = 10_000;
     if !(1..=16384).contains(&w) || !(1..=16384).contains(&h) {
         return reply(Response::err(format!("bad viewport {w}x{h}")));
     }
@@ -231,7 +225,16 @@ pub fn resize(daemon: &Rc<Daemon>, id: Option<u64>, w: i32, h: i32, reply: Reply
     };
     let win_id = win.id;
     win.resize_viewport(w, h);
-    measure_and_correct(daemon, win_id, w, h, w, h, 0, reply);
+    measure_and_correct(
+        daemon,
+        ResizeAttempt {
+            win_id,
+            requested: (w, h),
+            allocated: (w, h),
+            attempt: 0,
+        },
+        reply,
+    );
 }
 
 /// Maximum correction passes after the initial allocation. Pass 1 is
@@ -242,23 +245,35 @@ pub fn resize(daemon: &Rc<Daemon>, id: Option<u64>, w: i32, h: i32, reply: Reply
 /// caller still gets an honest measurement.
 const RESIZE_MAX_CORRECTIONS: u32 = 3;
 
-/// Measure the CSS viewport the page actually sees and, if it misses
-/// the request, re-allocate and recurse. `alloc_w/alloc_h` are the
-/// logical px currently allocated; `attempt` counts corrections made
-/// so far.
-fn measure_and_correct(
-    daemon: &Rc<Daemon>,
+/// A resize is cheap, but reading the resulting CSS viewport executes on
+/// the page's main thread. Heavy pages can legitimately keep that thread
+/// busy for more than the generic 2 s eval default during initial
+/// hydration. Keep this bounded while giving verification commands enough
+/// time to return the measured dimensions instead of a false timeout.
+const RESIZE_MEASURE_TIMEOUT_MS: u64 = 10_000;
+
+/// One step of the resize correction loop: which window, the CSS size
+/// the caller asked for, the logical px currently allocated for it,
+/// and how many corrections have already been made.
+#[derive(Clone, Copy)]
+struct ResizeAttempt {
     win_id: u64,
-    w: i32,
-    h: i32,
-    alloc_w: i32,
-    alloc_h: i32,
+    requested: (i32, i32),
+    allocated: (i32, i32),
     attempt: u32,
-    reply: Reply,
-) {
-    const RESIZE_MEASURE_TIMEOUT_MS: u64 = 10_000;
+}
+
+/// Measure the CSS viewport the page actually sees and, if it misses
+/// the request, re-allocate and recurse.
+fn measure_and_correct(daemon: &Rc<Daemon>, step: ResizeAttempt, reply: Reply) {
     const MEASURE: &str =
         "return { css_width: innerWidth, css_height: innerHeight, dpr: window.devicePixelRatio }";
+    let ResizeAttempt {
+        win_id,
+        requested: (w, h),
+        allocated: (alloc_w, alloc_h),
+        attempt,
+    } = step;
     let daemon2 = daemon.clone();
     automation::eval(
         daemon,
@@ -303,12 +318,11 @@ fn measure_and_correct(
                     // actually sees, so the caller never has to trust us.
                     measure_and_correct(
                         &daemon2,
-                        win_id,
-                        w,
-                        h,
-                        next_w,
-                        next_h,
-                        attempt + 1,
+                        ResizeAttempt {
+                            allocated: (next_w, next_h),
+                            attempt: attempt + 1,
+                            ..step
+                        },
                         reply,
                     );
                 }
