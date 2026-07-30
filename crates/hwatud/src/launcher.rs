@@ -12,6 +12,7 @@ use crate::keys::{Action, Keymap};
 /// `/` and history keys are summarized rather than exhaustive: the
 /// page is a reminder, not a manual.
 const SHOWN: &[Action] = &[
+    Action::NewWindow,
     Action::UrlOpen,
     Action::UrlEdit,
     Action::Find,
@@ -20,6 +21,8 @@ const SHOWN: &[Action] = &[
     Action::Reload,
     Action::ScrollDown,
     Action::ScrollUp,
+    Action::ZoomIn,
+    Action::ZoomOut,
     Action::Close,
 ];
 

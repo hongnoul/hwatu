@@ -1317,6 +1317,9 @@ impl BrowserWindow {
         use keys::Action;
         match action {
             Action::Close => self.window.close(),
+            Action::NewWindow => {
+                Self::open(&self.daemon, None, None, OpenMode::Normal);
+            }
             Action::UrlOpen => self.bar.open_url(""),
             Action::UrlEdit => self.open_url_bar(),
             Action::Find => self.bar.open_find(false),
@@ -1327,20 +1330,56 @@ impl BrowserWindow {
             Action::ScrollUp => self.scroll_page(-1.0),
             Action::Back => self.history_go(false),
             Action::Forward => self.history_go(true),
-            Action::Reload => self.reload(),
+            Action::Reload => self.reload(false),
+            Action::HardReload => self.reload(true),
+            Action::ZoomIn => self.zoom_by(1.1),
+            Action::ZoomOut => self.zoom_by(1.0 / 1.1),
+            Action::ZoomReset => self.zoom_reset(),
+            Action::Fullscreen => {
+                if self.window.is_fullscreen() {
+                    self.window.unfullscreen();
+                } else {
+                    self.window.fullscreen();
+                }
+            }
         }
         glib::Propagation::Stop
     }
 
-    /// Reload the current page. Restores a discarded window first
-    /// (restore already brings the page back at its saved state, so
-    /// this is only a fresh restore in that case).
-    fn reload(self: &Rc<Self>) {
+    /// Reload the current page, optionally bypassing the cache
+    /// (ctrl+shift+r, the "the CSS is stale" reflex). Restores a
+    /// discarded window first (restore already brings the page back at
+    /// its saved state, so this is only a fresh restore in that case).
+    fn reload(self: &Rc<Self>, bypass_cache: bool) {
         self.restore();
         let Some(webview) = self.live_webview() else {
             return;
         };
-        webview.reload();
+        if bypass_cache {
+            webview.reload_bypass_cache();
+        } else {
+            webview.reload();
+        }
+    }
+
+    /// Multiply the page zoom by `factor`, clamped to a sane range.
+    /// Zoom is per-window state on the WebView, like other browsers.
+    fn zoom_by(self: &Rc<Self>, factor: f64) {
+        let Some(webview) = self.live_webview() else {
+            return;
+        };
+        let level = (webview.zoom_level() * factor).clamp(0.25, 5.0);
+        webview.set_zoom_level(level);
+        self.flash_bar(&format!("zoom {:.0}%", level * 100.0), 1);
+    }
+
+    /// Back to 100% (ctrl+0).
+    fn zoom_reset(self: &Rc<Self>) {
+        let Some(webview) = self.live_webview() else {
+            return;
+        };
+        webview.set_zoom_level(1.0);
+        self.flash_bar("zoom 100%", 1);
     }
 
     /// Back/forward through this window's history. Restores a

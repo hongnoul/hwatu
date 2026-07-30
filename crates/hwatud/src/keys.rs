@@ -34,6 +34,7 @@ use gtk::gdk;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     Close,
+    NewWindow,
     UrlOpen,
     UrlEdit,
     Find,
@@ -45,11 +46,17 @@ pub enum Action {
     Back,
     Forward,
     Reload,
+    HardReload,
+    ZoomIn,
+    ZoomOut,
+    ZoomReset,
+    Fullscreen,
 }
 
 impl Action {
     const ALL: &'static [Action] = &[
         Action::Close,
+        Action::NewWindow,
         Action::UrlOpen,
         Action::UrlEdit,
         Action::Find,
@@ -61,11 +68,17 @@ impl Action {
         Action::Back,
         Action::Forward,
         Action::Reload,
+        Action::HardReload,
+        Action::ZoomIn,
+        Action::ZoomOut,
+        Action::ZoomReset,
+        Action::Fullscreen,
     ];
 
     pub fn name(self) -> &'static str {
         match self {
             Action::Close => "close",
+            Action::NewWindow => "new_window",
             Action::UrlOpen => "url_open",
             Action::UrlEdit => "url_edit",
             Action::Find => "find",
@@ -77,6 +90,11 @@ impl Action {
             Action::Back => "back",
             Action::Forward => "forward",
             Action::Reload => "reload",
+            Action::HardReload => "hard_reload",
+            Action::ZoomIn => "zoom_in",
+            Action::ZoomOut => "zoom_out",
+            Action::ZoomReset => "zoom_reset",
+            Action::Fullscreen => "fullscreen",
         }
     }
 
@@ -84,6 +102,7 @@ impl Action {
     pub fn describe(self) -> &'static str {
         match self {
             Action::Close => "close window",
+            Action::NewWindow => "new window",
             Action::UrlOpen => "open URL / search",
             Action::UrlEdit => "edit current URL",
             Action::Find => "find in page",
@@ -95,6 +114,11 @@ impl Action {
             Action::Back => "history back",
             Action::Forward => "history forward",
             Action::Reload => "reload page",
+            Action::HardReload => "reload (bypass cache)",
+            Action::ZoomIn => "zoom in",
+            Action::ZoomOut => "zoom out",
+            Action::ZoomReset => "reset zoom",
+            Action::Fullscreen => "toggle fullscreen",
         }
     }
 
@@ -106,17 +130,23 @@ impl Action {
     fn default_chords(self) -> &'static str {
         match self {
             Action::Close => "ctrl+w, ctrl+q",
+            Action::NewWindow => "ctrl+t, ctrl+n",
             Action::UrlOpen => "o",
             Action::UrlEdit => "ctrl+l, O",
-            Action::Find => "slash",
+            Action::Find => "slash, ctrl+f",
             Action::FindBack => "question",
             Action::FindNext => "n",
             Action::FindPrev => "N",
             Action::ScrollDown => "ctrl+shift+j",
             Action::ScrollUp => "ctrl+shift+k",
-            Action::Back => "ctrl+o",
-            Action::Forward => "ctrl+i",
+            Action::Back => "ctrl+o, alt+Left",
+            Action::Forward => "ctrl+i, alt+Right",
             Action::Reload => "ctrl+r, F5",
+            Action::HardReload => "ctrl+shift+r, ctrl+F5",
+            Action::ZoomIn => "ctrl+plus, ctrl+equal",
+            Action::ZoomOut => "ctrl+minus",
+            Action::ZoomReset => "ctrl+0",
+            Action::Fullscreen => "F11",
         }
     }
 }
@@ -446,6 +476,54 @@ mod tests {
         assert_eq!(
             map.lookup(Phase::Bubble, Key::F5, NONE),
             Some(Action::Reload)
+        );
+        // The chords everyone knows from mainstream browsers.
+        assert_eq!(
+            map.lookup(Phase::Capture, Key::t, CTRL),
+            Some(Action::NewWindow)
+        );
+        assert_eq!(
+            map.lookup(Phase::Capture, Key::n, CTRL),
+            Some(Action::NewWindow)
+        );
+        assert_eq!(map.lookup(Phase::Capture, Key::f, CTRL), Some(Action::Find));
+        assert_eq!(
+            map.lookup(Phase::Capture, Key::Left, ModifierType::ALT_MASK),
+            Some(Action::Back)
+        );
+        assert_eq!(
+            map.lookup(Phase::Capture, Key::Right, ModifierType::ALT_MASK),
+            Some(Action::Forward)
+        );
+        assert_eq!(
+            map.lookup(Phase::Capture, Key::R, CTRL | SHIFT),
+            Some(Action::HardReload)
+        );
+        assert_eq!(
+            map.lookup(Phase::Capture, Key::F5, CTRL),
+            Some(Action::HardReload)
+        );
+        // Zoom: `+` needs shift on most layouts, `=` is the unshifted
+        // sibling; both zoom in.
+        assert_eq!(
+            map.lookup(Phase::Capture, Key::plus, CTRL | SHIFT),
+            Some(Action::ZoomIn)
+        );
+        assert_eq!(
+            map.lookup(Phase::Capture, Key::equal, CTRL),
+            Some(Action::ZoomIn)
+        );
+        assert_eq!(
+            map.lookup(Phase::Capture, Key::minus, CTRL),
+            Some(Action::ZoomOut)
+        );
+        assert_eq!(
+            map.lookup(Phase::Capture, Key::_0, CTRL),
+            Some(Action::ZoomReset)
+        );
+        assert_eq!(
+            map.lookup(Phase::Bubble, Key::F11, NONE),
+            Some(Action::Fullscreen)
         );
     }
 
