@@ -70,9 +70,17 @@ human for a minute.
 For an agent, the JSON snapshot *is* the interface. Polish it the way
 a human browser polishes rendering:
 
-3. **Snapshot diffing.** `hwatu snapshot --diff` returns only what
-   changed since the last snapshot of that window. Saves tokens in
-   iterate loops.
+3. **Snapshot diffing.** **Shipped 2026-07-30:** `hwatu snapshot
+   --diff [--id <id>]` returns only what changed since the last
+   snapshot of that window ({added, removed, changed,
+   unchanged_count}), diffed via LCS + identity-key pairing so ref
+   renumbering is not misreported; per-line text so one edited line
+   diffs as one line. First call establishes a baseline (full
+   snapshot, `baseline_established: true`); navigation resets it;
+   refs stay live handles. MCP snapshot tool gained a `diff` arg.
+   `scripts/test-snapshot-diff.sh` (20 checks) covers baseline,
+   empty-diff, single-line mutation, live-ref clickability, and
+   navigation reset.
 4. **Stable refs.** Interactable refs that survive re-snapshots of an
    unchanged page, with clear staleness errors on navigation (already
    partially true; make it a documented guarantee).
@@ -95,11 +103,17 @@ a human browser polishes rendering:
    floor. Measured medians on the local fixture: unprefetched check
    84 ms, prefetched check 1 ms ([benchmarks](benchmarks.md)).
 5c. **Multi-viewport sweep.** `hwatu check --viewports
+   **Shipped 2026-07-30:**
    360x640,768x1024,1920x1080` runs the same pass at N sizes
-   (sequentially on pooled windows) and reports per-viewport results,
+   sequentially on ONE pooled window (resize-reuse measured ~4x
+   faster than N separate checks: 15-18 ms vs 66-72 ms for 3 sizes)
+   and reports per-viewport results ({size, eval, shot, pass_ms}),
    directly answering the diff envelope's "other widths unverified"
    caveat in one call. Composes with `--baseline-dir` for per-size
-   baselines.
+   baselines. `scripts/test-viewports.sh` (15 checks) and
+   `scripts/bench-viewports.sh` cover it. Known pre-existing quirk
+   filed as issue #6: each resize emits one masked "Script error."
+   console entry.
 6. **Virtual time.** **Prototyped (proto/clock):** `hwatu clock
    pause|resume|step <ms>|set <ms>` puts rAF, `performance.now`,
    `Date.now`, and timers behind one controllable timeline (plus
