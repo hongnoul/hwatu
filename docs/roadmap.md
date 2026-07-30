@@ -74,8 +74,10 @@ a human browser polishes rendering:
    changed since the last snapshot of that window. Saves tokens in
    iterate loops.
 4. **Stable refs.** Interactable refs that survive re-snapshots of an
-   unchanged page, with clear staleness errors on navigation (already
-   partially true; make it a documented guarantee).
+   unchanged page, with clear staleness errors on navigation.
+   **Documented:** [agents.md](agents.md) now states the guarantee
+   (refs are live element handles; navigation staleness is a clear
+   structured error, not a silent mismatch).
 5. **Assertion primitives.** **Shipped:** `hwatu expect <selector>
    [--text X] [--absent]` polls until the assertion holds (failure
    names what WAS found), and `hwatu diff` covers pixel comparison
@@ -100,13 +102,19 @@ a human browser polishes rendering:
    directly answering the diff envelope's "other widths unverified"
    caveat in one call. Composes with `--baseline-dir` for per-size
    baselines.
-6. **Virtual time.** **Prototyped (proto/clock):** `hwatu clock
+6. **Virtual time.** **Shipped 2026-07-23** (merged from
+   proto/toolsmith): `hwatu clock
    pause|resume|step <ms>|set <ms>` puts rAF, `performance.now`,
    `Date.now`, and timers behind one controllable timeline (plus
    CSS/WAAPI from the same clock), so script-driven motion that `seek`
    cannot pin becomes deterministic and diffable. Also the missing
    piece for animation verification in headless windows, where rAF
-   and IntersectionObserver never fire natively.
+   and IntersectionObserver never fire natively. Shipped surface also
+   includes `clock seed <u64>` (deterministic `Math.random`),
+   `clock status`, `HWATU_CLOCK_START_PAUSED` for deterministic
+   loads, and the companion `hwatu motion [--observe]` (declared
+   animation inventory plus model fitting of live motion under
+   virtual time); both are documented in [agents.md](agents.md).
 
 ### P2: concurrency and isolation
 
@@ -368,9 +376,11 @@ Test plan:
 
 ### Sequencing and session protocol
 
-Order: G1 → G2 → G3 (needs G2) → G4 → G5. G4 can proceed in parallel
-with G2/G3 if two sessions run concurrently; they touch disjoint
-code (windowing vs IPC).
+Order: G1 → G2 → G3 (needs G2) → G4 → G5. Status 2026-07-30: G1, G2,
+G3, and G3.1 are shipped; G4 (display-free operation) and G5
+(zero-copy pixels) are the open items, and they touch disjoint code
+(windowing vs pixel transport) so two sessions can run them in
+parallel.
 
 Each session working an item should: (1) re-run the existing gates
 (fmt/clippy/tests + bench-spawn.sh) before starting, to pin the
