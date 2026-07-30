@@ -278,6 +278,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
     let mut shot = false;
     let mut shot_path: Option<String> = None;
     let mut keep = false;
+    let mut diff = false;
     let mut expect_watch = false;
     let mut mode = default_mode;
     let mut rest: Vec<&String> = Vec::new();
@@ -447,6 +448,8 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             shot_path = Some(v.to_string());
         } else if arg == "--keep" {
             keep = true;
+        } else if arg == "--diff" {
+            diff = true;
         } else if arg == "--to-y" {
             to_y = Some(
                 it.next()
@@ -653,7 +656,11 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 timeout_ms,
             })
         }
-        Some("snapshot") => Ok(Request::Snapshot { id, timeout_ms }),
+        Some("snapshot") => Ok(Request::Snapshot {
+            id,
+            diff,
+            timeout_ms,
+        }),
         Some("expect") => {
             let selector = rest
                 .get(1)

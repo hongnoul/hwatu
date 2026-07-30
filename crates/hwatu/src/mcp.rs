@@ -314,7 +314,11 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
         "prefetch" => Ok(Request::Prefetch {
             url: req_str(args, "url")?,
         }),
-        "snapshot" => Ok(Request::Snapshot { id, timeout_ms }),
+        "snapshot" => Ok(Request::Snapshot {
+            id,
+            diff: opt_bool(args, "diff").unwrap_or(false),
+            timeout_ms,
+        }),
         "expect" => Ok(Request::Expect {
             id,
             selector: req_str(args, "selector")?,

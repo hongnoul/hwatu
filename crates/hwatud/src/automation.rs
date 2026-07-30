@@ -1968,7 +1968,17 @@ return {{ ok: true, matches: els.length, tag: el.tagName.toLowerCase(), text: ac
 /// The elements are remembered on `window.__hwatu_refs`, so a
 /// follow-up click/type can target `ref: n` without a selector. The
 /// designed alternative to screenshot-and-squint for agents.
-pub fn snapshot(daemon: &Rc<Daemon>, id: Option<u64>, timeout_ms: Option<u64>, reply: Reply) {
+pub fn snapshot(
+    daemon: &Rc<Daemon>,
+    id: Option<u64>,
+    diff: bool,
+    timeout_ms: Option<u64>,
+    reply: Reply,
+) {
+    // Wired to the diff engine in a follow-up commit; a diff request
+    // currently answers with the full snapshot (the documented
+    // old-daemon fallback), so the plumbing lands compilable.
+    let _ = diff;
     const JS: &str = r#"
 const MAX_TEXT = 4000;
 const MAX_ELS = 120;
