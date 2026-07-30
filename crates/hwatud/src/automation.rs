@@ -979,11 +979,13 @@ pub fn check(
 
 /// State for one multi-viewport check sweep: the loaded window, the
 /// per-pass options, and the accumulated per-viewport entries. The
-/// window is resized between passes rather than reopened: a resize +
-/// settle costs ~15 ms while a fresh pooled window pays the whole
-/// load again (hundreds of ms on real pages), and N windows would
-/// also multiply daemon memory. One window also guarantees every
-/// size sees the same document instance, not N racing loads.
+/// window is resized between passes rather than reopened: measured
+/// here (scripts/bench-viewports.sh, warm pool, local fixture with a
+/// breakpoint, eval+shot per size), a 3-size sweep totals ~17-21 ms
+/// (per-pass resize+eval+shot 1-11 ms) vs ~55-92 ms for 3 separate
+/// checks, and on real pages a fresh load costs hundreds of ms per
+/// size on top. One window also guarantees every size sees the same
+/// document instance, not N racing loads, and adds no daemon memory.
 struct Sweep {
     daemon: Rc<Daemon>,
     win_id: u64,
