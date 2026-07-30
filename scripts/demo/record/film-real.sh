@@ -31,6 +31,7 @@ OUT=$(cd "$(dirname "$OUT")" && pwd)/$(basename "$OUT")
 JCODE_DIR="${OUT%.mp4}-jcode"
 JCODE_SOCKET="$JCODE_DIR/jcode.sock"
 JCODE_LOG="$JCODE_DIR/server.log"
+COMPLETE_FILE="$JCODE_DIR/verification.complete"
 rm -rf "$JCODE_DIR"
 mkdir -p -m 700 "$JCODE_DIR/run"
 rm -f "$OUT" "$MARKS"
@@ -68,6 +69,7 @@ curl -fsS -o /dev/null "http://127.0.0.1:$APP_PORT/" || fail "fixture servers di
 # provider configuration. Tool exposure is deliberately reduced to bash for a
 # small, legible, honest verification session.
 XDG_RUNTIME_DIR="$JCODE_DIR/run" JCODE_NO_TELEMETRY=1 \
+  AIUC_DEMO_COMPLETE_FILE="$COMPLETE_FILE" \
   "$JCODE_BIN" serve --socket "$JCODE_SOCKET" --server-name Demo \
   --provider jcode --model "$JCODE_MODEL" --tool-profile none --tools bash \
   --no-update >"$JCODE_LOG" 2>&1 & PIDS+=("$!")
@@ -99,9 +101,9 @@ sleep 2.5
 REF="http://127.0.0.1:$REF_PORT/"
 APP="http://127.0.0.1:$APP_PORT/"
 if [ "${HWATU_DEMO_SCENARIO:-stripe}" = aiuc ]; then
-  PROMPT="Run exactly this one verification command, without inspecting files first: scripts/demo-aiuc/stage-matrix.sh '$APP' '$REF'. Report its four scores and caveat concisely. Make no file changes."
+  PROMPT="Verify this AIUC preview. Run only: scripts/demo-aiuc/stage-matrix.sh '$APP' '$REF'. Do not inspect or edit files. Return only the four viewport scores and the caveat."
 else
-  PROMPT="Use scripts/demo/record/stage-hwatu.sh to compare APP $APP with REF $REF. It accepts normal hwatu args. Open both headless, use the returned numeric ids to wait and diff, report the score, then focus APP. No file changes."
+  PROMPT="Compare APP $APP with REF $REF using scripts/demo/record/stage-hwatu.sh. Open both headless, wait, diff, report only the score, then focus APP. Do not edit files."
 fi
 # The film opens with the full prompt already sent: paste it in one shot (no
 # typing animation), submit, then start rolling so the first frame shows the
@@ -125,13 +127,18 @@ mark() {
 mark prompt
 mark submitted
 
-# Completion is observed from the product boundary: the app begins headless and
-# only disappears from the headless mode when Jcode executes the requested
-# state-preserving handoff. This is more robust than sleeping for model latency.
+# The AIUC preview is focused as the first useful action. Its checked-in matrix
+# writes a completion marker after all four measurements, so an early reveal
+# cannot make the recorder stop before verification finishes. Other scenarios
+# retain the state-preserving handoff boundary.
 handed_off=0
 for _ in $(seq 1 600); do
+  if [ "${HWATU_DEMO_SCENARIO:-stripe}" = aiuc ] && [ -f "$COMPLETE_FILE" ]; then
+    handed_off=1
+    break
+  fi
   windows=$("$STAGE_HWATU" list --json 2>/dev/null || printf '[]')
-  if python3 - "$APP" "$windows" <<'PY' >/dev/null 2>&1
+  if [ "${HWATU_DEMO_SCENARIO:-stripe}" != aiuc ] && python3 - "$APP" "$windows" <<'PY' >/dev/null 2>&1
 import json, sys
 app, raw = sys.argv[1:]
 windows = json.loads(raw)
