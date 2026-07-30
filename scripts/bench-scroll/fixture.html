@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>hwatu scroll bench</title>
+<style>
+  body { margin: 0; font: 16px/1.5 sans-serif; background: #fafafa; }
+  header { position: fixed; top: 0; left: 0; right: 0; height: 56px;
+           background: rgba(20,20,30,.85); backdrop-filter: blur(8px);
+           color: #fff; display: flex; align-items: center; padding: 0 20px;
+           z-index: 10; box-shadow: 0 2px 8px rgba(0,0,0,.3); }
+  main { padding: 76px 10vw 40px; }
+  .card { background: #fff; border-radius: 12px; padding: 24px; margin: 18px 0;
+          box-shadow: 0 1px 4px rgba(0,0,0,.12); }
+  .grad { height: 120px; border-radius: 8px; margin: 12px 0;
+          background: linear-gradient(120deg, #7c3aed, #06b6d4, #f59e0b); }
+  .row { display: flex; gap: 12px; }
+  .row div { flex: 1; height: 80px; border-radius: 8px; background: #e2e8f0; }
+</style>
+</head>
+<body>
+<header>hwatu scroll benchmark fixture</header>
+<main id="main"></main>
+<script>
+  const main = document.getElementById('main');
+  let html = '';
+  for (let i = 0; i < 300; i++) {
+    html += `<div class="card"><h2>Section ${i}</h2>
+      <p>Lorem ipsum dolor sit amet, consectetur adipiscing elit. Integer nec
+      odio. Praesent libero. Sed cursus ante dapibus diam. Sed nisi. Nulla
+      quis sem at nibh elementum imperdiet. Duis sagittis ipsum.</p>
+      <div class="grad"></div>
+      <div class="row"><div></div><div></div><div></div></div></div>`;
+  }
+  main.innerHTML = html;
+</script>
+</body>
+</html>

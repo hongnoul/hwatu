@@ -1,0 +1,58 @@
+<!doctype html>
+<!-- Wheel-scroll smoothness recorder.
+     Records every wheel event (t, deltaY, deltaMode) and samples
+     scrollY on every rAF. Read back via `hwatu eval` (window.__scrollTrace)
+     or, when loaded with ?post=<url>, POSTs the JSON there after 1.5s
+     of quiet. Used to compare hwatu's scroll curve against helium's. -->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body { margin: 0; height: 60000px;
+         background: repeating-linear-gradient(#123, #789 400px, #123 800px); }
+  #hud { position: fixed; top: 8px; left: 8px; color: #fff;
+         font: 14px monospace; background: rgba(0,0,0,.6); padding: 6px; }
+</style>
+</head>
+<body>
+<div id="hud">waiting for wheel…</div>
+<script>
+(() => {
+  const wheel = [];
+  const frames = [];
+  let lastActivity = 0;
+  let posted = false;
+
+  addEventListener('wheel', e => {
+    wheel.push({ t: performance.now(), dy: e.deltaY, dx: e.deltaX, mode: e.deltaMode });
+    lastActivity = performance.now();
+    document.getElementById('hud').textContent =
+      `wheel ${wheel.length}  dy=${e.deltaY} mode=${e.deltaMode}`;
+  }, { passive: true });
+
+  let lastY = -1;
+  function tick(t) {
+    const y = scrollY;
+    frames.push({ t, y });
+    if (frames.length > 20000) frames.shift();
+    if (y !== lastY) { lastY = y; lastActivity = performance.now(); }
+    maybePost();
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+
+  window.__scrollTrace = () => JSON.stringify({ wheel, frames });
+
+  const postUrl = new URLSearchParams(location.search).get('post');
+  function maybePost() {
+    if (!postUrl || posted || !wheel.length) return;
+    if (performance.now() - lastActivity < 1500) return;
+    posted = true;
+    fetch(postUrl, { method: 'POST', body: window.__scrollTrace() })
+      .then(() => document.getElementById('hud').textContent = 'posted ✓')
+      .catch(err => document.getElementById('hud').textContent = 'post failed: ' + err);
+  }
+})();
+</script>
+</body>
+</html>
