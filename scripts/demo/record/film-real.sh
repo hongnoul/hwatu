@@ -98,7 +98,11 @@ sleep 2.5
 
 REF="http://127.0.0.1:$REF_PORT/"
 APP="http://127.0.0.1:$APP_PORT/"
-PROMPT="Use scripts/demo/record/stage-hwatu.sh to compare APP $APP with REF $REF. It accepts normal hwatu args. Open both headless, use the returned numeric ids to wait and diff, report the score, then focus APP. No file changes."
+if [ "${HWATU_DEMO_SCENARIO:-stripe}" = aiuc ]; then
+  PROMPT="Run exactly this one verification command, without inspecting files first: scripts/demo-aiuc/stage-matrix.sh '$APP' '$REF'. Report its four scores and caveat concisely. Make no file changes."
+else
+  PROMPT="Use scripts/demo/record/stage-hwatu.sh to compare APP $APP with REF $REF. It accepts normal hwatu args. Open both headless, use the returned numeric ids to wait and diff, report the score, then focus APP. No file changes."
+fi
 # The film opens with the full prompt already sent: paste it in one shot (no
 # typing animation), submit, then start rolling so the first frame shows the
 # prompt delivered to Jcode.

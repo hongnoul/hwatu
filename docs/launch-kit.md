@@ -23,6 +23,8 @@ same live session to a human when needed.**
 - Live headless ↔ headed hand-off with page and session state intact.
 - One Rust client and daemon, using the system WebKitGTK engine.
 - Reproducible Stripe clone result: **85.1% → 98.8% pixel match**.
+- Reproducible AIUC recording: a real agent measures four responsive
+  viewports, reports the score envelope, then hands off the same live session.
 
 All measurements are Linux/WebKitGTK results on the machine documented in
 [`benchmarks.md`](benchmarks.md). Hwatu is Linux-only today.
@@ -31,7 +33,9 @@ All measurements are Linux/WebKitGTK results on the machine documented in
 
 - Project: https://github.com/hongnoul/hwatu
 - Website: https://hongnoul.github.io/hwatu/
-- Demo: https://github.com/hongnoul/hwatu/releases/download/readme-assets/demo-v2.mp4
+- Demo: https://github.com/hongnoul/hwatu/releases/download/readme-assets/demo-aiuc.mp4
+- AIUC reproduction kit: https://github.com/hongnoul/hwatu/tree/main/scripts/demo-aiuc
+- Stripe motion/convergence kit: https://github.com/hongnoul/hwatu/tree/main/scripts/demo
 - Benchmarks: https://hongnoul.github.io/hwatu/benchmarks
 - Technical article: https://hongnoul.github.io/hwatu/blog/13ms-window-spawn.html
 

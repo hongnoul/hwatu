@@ -201,6 +201,12 @@ return {{ animations: anims.length, touched, resumed: resume }};"#,
 /// re-verified, so the caller gets the size it asked for (or an
 /// honest measurement of the miss).
 pub fn resize(daemon: &Rc<Daemon>, id: Option<u64>, w: i32, h: i32, reply: Reply) {
+    // A resize is cheap, but reading the resulting CSS viewport executes on the
+    // page's main thread. Heavy pages can legitimately keep that thread busy
+    // for more than the generic 2 s eval default during initial hydration.
+    // Keep this bounded while giving verification commands enough time to
+    // return the measured dimensions instead of a false timeout.
+    const RESIZE_MEASURE_TIMEOUT_MS: u64 = 10_000;
     if !(1..=16384).contains(&w) || !(1..=16384).contains(&h) {
         return reply(Response::err(format!("bad viewport {w}x{h}")));
     }
@@ -217,7 +223,7 @@ pub fn resize(daemon: &Rc<Daemon>, id: Option<u64>, w: i32, h: i32, reply: Reply
         daemon,
         Some(win_id),
         MEASURE.into(),
-        Some(2000),
+        Some(RESIZE_MEASURE_TIMEOUT_MS),
         Box::new(move |resp| {
             let measured = match &resp {
                 Response::Ok { value: Some(v), .. } => (
@@ -250,7 +256,13 @@ pub fn resize(daemon: &Rc<Daemon>, id: Option<u64>, w: i32, h: i32, reply: Reply
                     win.resize_viewport(aw.unwrap_or(w), ah.unwrap_or(h));
                     // Re-verify: the reply always carries what the page
                     // actually sees, so the caller never has to trust us.
-                    automation::eval(&daemon2, Some(win_id), MEASURE.into(), Some(2000), reply);
+                    automation::eval(
+                        &daemon2,
+                        Some(win_id),
+                        MEASURE.into(),
+                        Some(RESIZE_MEASURE_TIMEOUT_MS),
+                        reply,
+                    );
                 }
             }
         }),

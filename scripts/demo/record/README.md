@@ -13,6 +13,15 @@ frames, or presentation-only animation.
 scripts/demo/record/run-real.sh
 ```
 
+For the AIUC responsive-matrix scenario used by the README hero, run:
+
+```sh
+scripts/demo-aiuc/run.sh
+```
+
+The Stripe scenario remains the motion/convergence fixture; AIUC is kept
+separate because its current page has no active Web Animations API animations.
+
 This records one uninterrupted workflow, renders the MP4 and animated WebP,
 builds an 800px contact sheet, and runs the local media checks.
 

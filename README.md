@@ -168,7 +168,10 @@ hwatu diff --id 2 --other 1
 
 We ran this loop against a clone of stripe.com's landing page: an
 agent took it from **85.1% to 98.8% pixel match**. Reproduce it:
-[scripts/demo/](scripts/demo/). A full verification pass (open, load,
+[scripts/demo/](scripts/demo/). The README hero uses a second, real-agent
+scenario against AIUC: four responsive viewport diffs followed by live human
+hand-off. Reproduce that take, including its evidence manifests, from
+[scripts/demo-aiuc/](scripts/demo-aiuc/). A full verification pass (open, load,
 eval, screenshot, close) is **one command, one tool call, ~35 ms
 median** ([benchmarks](docs/benchmarks.md)):
 

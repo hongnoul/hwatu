@@ -13,4 +13,5 @@ export XDG_DATA_HOME="$STAGE_DIR/data"
 export WAYLAND_DISPLAY="wayland-1"
 unset DISPLAY
 
-exec hwatu "$@"
+HWATU_BIN=${HWATU_DEMO_HWATU_BIN:-hwatu}
+exec "$HWATU_BIN" "$@"
