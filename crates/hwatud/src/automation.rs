@@ -258,69 +258,131 @@ pub fn eval_with(
         }
     };
 
-    // Trailing semicolons are meaningless on an expression but would
-    // break the `return ( ... )` wrapping; strip them for both the
-    // probe and the expression run.
-    let trimmed = js.trim().trim_end_matches(';').trim_end().to_string();
-    // Compile-only probe: defines an arrow wrapping the expression and
-    // returns it without calling it. Parses iff `js` is an expression;
-    // never executes user code, so a probe failure carries no side
-    // effects and a runtime SyntaxError cannot be mistaken for one.
-    let probe = format!("return typeof (async () => (\n{trimmed}\n));");
-    let expr = format!("return (\n{trimmed}\n);");
-    // Multi-statement scripts without an explicit `return` used to
-    // resolve to null, which agents read as "the script broke". Real
-    // REPLs answer with the completion value of the last statement;
-    // indirect eval gives exactly those semantics, so route return-less
-    // bodies through it. Bodies using `return` or `await` keep the
-    // plain async-function-body path: `return` because the author
-    // already chose the value, `await` because eval code is not an
-    // async context and would turn it into a SyntaxError.
-    let body = if js.contains("return") || js.contains("await") {
-        js
-    } else {
-        format!(
-            "return (0, eval)({});",
-            serde_json::to_string(&js).expect("string serializes")
-        )
+    let source = match plan_eval_source(&js) {
+        Ok(source) => source,
+        Err(message) => {
+            unwire();
+            return reply.send(Response::err(format!(
+                "eval failed: SyntaxError: {message}"
+            )));
+        }
     };
-    let view2 = view.clone();
-    let cancellable2 = cancellable.clone();
     view.call_async_javascript_function(
-        &probe,
+        &source,
         None,
         None,
         None,
         Some(&cancellable),
-        move |probed| {
-            let source = if probed.is_ok() { expr } else { body };
-            view2.call_async_javascript_function(
-                &source,
-                None,
-                None,
-                None,
-                Some(&cancellable2),
-                move |result| {
-                    match result {
-                        Ok(value) => {
-                            unwire();
-                            reply.send(Response::value(jsc_to_json(&value)));
-                        }
-                        Err(e) => {
-                            // A cancelled eval means the timeout or the
-                            // nav watcher already owns the reply; do not
-                            // unwire, a Success-policy load may still be
-                            // waiting to resolve it.
-                            if !reply.is_spent() && nav_watch_untriggered(&e) {
-                                unwire();
-                                reply.send(Response::err(format!("eval failed: {e}")));
-                            }
-                        }
+        move |result| {
+            match result {
+                Ok(value) => {
+                    unwire();
+                    reply.send(Response::value(jsc_to_json(&value)));
+                }
+                Err(e) => {
+                    // A cancelled eval means the timeout or the
+                    // nav watcher already owns the reply; do not
+                    // unwire, a Success-policy load may still be
+                    // waiting to resolve it.
+                    if !reply.is_spent() && nav_watch_untriggered(&e) {
+                        unwire();
+                        reply.send(Response::err(format!("eval failed: {e}")));
                     }
-                },
-            );
+                }
+            }
         },
     );
+}
+
+/// Decide the one source string an eval runs in the page, or reject
+/// bad syntax with the parser's message.
+///
+/// An earlier design probed the expression form by *compiling in the
+/// page* (an API-world script that parse-fails for every function
+/// body). WebKit reports that parse failure to the page as a
+/// cross-origin-masked `window` error event, so each probe miss
+/// buffered a spurious `{kind: "exception", text: "Script error."}`
+/// console entry: the resize path's `return {...}` viewport
+/// measurement emitted one per measure eval, polluting every resize
+/// and multi-viewport sweep reply (issue #6). Parsing daemon-side
+/// (same JSC engine, so exact dialect parity with the page) keeps
+/// failed candidates out of the page entirely, so `hwatu console`
+/// only ever reports the page's own errors, and saves the probe's
+/// page round trip.
+///
+/// The form rules are unchanged: an *expression* runs as `return
+/// (expr)` (so `document.title` just works); a function body with an
+/// explicit `return` or `await` runs as-is; a return-less
+/// multi-statement body routes through indirect eval, which answers
+/// with the completion value of the last statement the way a REPL
+/// would (`await` cannot take that route: eval code is not an async
+/// context, so it would turn into a SyntaxError).
+fn plan_eval_source(js: &str) -> Result<String, String> {
+    // Trailing semicolons are meaningless on an expression but would
+    // break the `return ( ... )` wrapping; strip them for the
+    // expression form.
+    let trimmed = js.trim().trim_end_matches(';').trim_end();
+    let expr = format!("return (\n{trimmed}\n);");
+    if js_syntax_check(&wrap_async_body(&expr)).is_ok() {
+        return Ok(expr);
+    }
+    let body = if js.contains("return") || js.contains("await") {
+        js.to_string()
+    } else {
+        format!(
+            "return (0, eval)({});",
+            serde_json::to_string(js).expect("string serializes")
+        )
+    };
+    js_syntax_check(&wrap_async_body(&body))?;
+    Ok(body)
+}
+
+/// The shape `call_async_javascript_function` compiles a body into
+/// (an async function wrapper), so daemon-side parse verdicts match
+/// what the page's compile would say about the same body.
+fn wrap_async_body(body: &str) -> String {
+    format!("async function __hwatu_probe() {{\n{body}\n}}")
+}
+
+/// Parse-only syntax check in a daemon-local JSC context (the same
+/// engine the page uses, so the dialect matches exactly).
+/// `jsc_context_check_syntax` never executes code, so hostile input
+/// that escapes the wrapper braces still cannot run in the daemon;
+/// the context is reused (thread_local) because creating one costs
+/// ~1 ms while a check costs microseconds.
+fn js_syntax_check(code: &str) -> Result<(), String> {
+    use glib::translate::{from_glib_full, ToGlibPtr};
+    use webkit6::javascriptcore as jsc;
+    thread_local! {
+        static CTX: jsc::Context = jsc::Context::new();
+    }
+    CTX.with(|ctx| {
+        let mut exception: *mut jsc::ffi::JSCException = std::ptr::null_mut();
+        // SAFETY: a plain FFI parse call; every pointer is owned by
+        // this frame, and the nullable exception out-pointer is
+        // adopted into a managed Option immediately. The safe binding
+        // is unusable here: it asserts the exception is non-null,
+        // which is exactly the success case.
+        let result = unsafe {
+            jsc::ffi::jsc_context_check_syntax(
+                ctx.to_glib_none().0,
+                code.to_glib_none().0,
+                code.len() as _,
+                jsc::ffi::JSC_CHECK_SYNTAX_MODE_SCRIPT,
+                "hwatu-eval".to_glib_none().0,
+                1,
+                &mut exception,
+            )
+        };
+        let exception: Option<jsc::Exception> = unsafe { from_glib_full(exception) };
+        if result == jsc::ffi::JSC_CHECK_SYNTAX_RESULT_SUCCESS {
+            return Ok(());
+        }
+        Err(exception
+            .and_then(|e| e.message().map(|m| m.to_string()))
+            .unwrap_or_else(|| "invalid syntax".into()))
+    })
 }
 
 /// True when an eval error is a genuine script failure rather than
@@ -2614,8 +2676,8 @@ fn mime_from_extension(path: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        base64, challenge_detect_js, challenge_wait_js, expect_watch_js, ExpectSpec,
-        VISIBILITY_INSPECTOR_JS,
+        base64, challenge_detect_js, challenge_wait_js, expect_watch_js, plan_eval_source,
+        ExpectSpec, VISIBILITY_INSPECTOR_JS,
     };
 
     #[test]
@@ -2734,5 +2796,83 @@ mod tests {
     #[test]
     fn expect_event_kind_is_advertised_for_subscriptions() {
         assert!(hwatu_ipc::EVENT_KINDS.contains(&"expect"));
+    }
+
+    /// The regression these pin (issue #6): the eval form choice must
+    /// never compile a failing candidate in the page. The page-world
+    /// probe surfaced every function-body eval as a cross-origin-masked
+    /// "Script error." console entry (one per `hwatu resize`, one per
+    /// sweep viewport). plan_eval_source decides daemon-side and
+    /// returns exactly one source string.
+    #[test]
+    fn expressions_run_wrapped_in_return() {
+        for js in ["document.title", "1+1", "{a: 1}", "await fetch('/x')"] {
+            let source = plan_eval_source(js).expect("expression accepted");
+            assert_eq!(source, format!("return (\n{js}\n);"), "for {js}");
+        }
+        // Trailing semicolons are stripped from the expression form.
+        assert_eq!(
+            plan_eval_source("document.title;").unwrap(),
+            "return (\ndocument.title\n);"
+        );
+    }
+
+    #[test]
+    fn bodies_with_return_or_await_run_as_is() {
+        for js in [
+            "return document.title",
+            "const n = 6*7; return n",
+            "await hwatuSleep(10); return 1",
+        ] {
+            assert_eq!(plan_eval_source(js).unwrap(), js, "for {js}");
+        }
+    }
+
+    #[test]
+    fn return_less_bodies_route_through_indirect_eval() {
+        let source = plan_eval_source("const n = 6*7; n").unwrap();
+        assert!(
+            source.starts_with("return (0, eval)("),
+            "REPL completion-value semantics: {source}"
+        );
+        assert!(source.contains("const n = 6*7; n"));
+    }
+
+    #[test]
+    fn statements_that_probe_as_neither_form_still_run() {
+        // `throw` parses as a body statement, not an expression.
+        let source = plan_eval_source("throw new Error('boom')").unwrap();
+        assert!(source.starts_with("return (0, eval)("));
+    }
+
+    #[test]
+    fn bad_syntax_is_rejected_daemon_side_with_the_parser_message() {
+        // Bodies that must run as-is (they use return/await) are the
+        // ones whose parse errors used to be compiled in the page;
+        // now they are rejected before touching it. Return-less bad
+        // syntax still routes through indirect eval as string data
+        // and fails at runtime with a normal SyntaxError reply.
+        for js in ["return foo(", "await foo("] {
+            let err = plan_eval_source(js).expect_err("syntax error rejected");
+            assert!(!err.is_empty(), "parser message expected for {js}");
+        }
+        assert!(plan_eval_source("foo(")
+            .expect("routed through indirect eval")
+            .starts_with("return (0, eval)("));
+    }
+
+    #[test]
+    fn wrapper_escape_attempts_do_not_widen_what_runs() {
+        // Escaping the async-wrapper braces makes the candidate fail
+        // to parse as one function body; the check must reject it (or
+        // route it through indirect eval as a string), never let it
+        // parse into extra top-level code.
+        let js = "} globalThis.pwned = 1; async function x() {";
+        match plan_eval_source(js) {
+            // Rejected outright: fine.
+            Err(_) => {}
+            // Accepted only as data inside an indirect eval string.
+            Ok(source) => assert!(source.starts_with("return (0, eval)(")),
+        }
     }
 }
