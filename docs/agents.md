@@ -58,6 +58,7 @@ machine the human is working on.
 | `shot` / `shot --full` | what a user would see (real GPU-composited WebKit render) |
 | `click` / `type` / `scroll` / `upload` | real pointer/input events, structured errors on misses |
 | `console` | JS errors, console output, failed requests since last check |
+| `net` | structured per-window request log: method, url, status, type, timing |
 | `challenge` | is this a CAPTCHA / anti-bot wall, should a human take over |
 | `resize` | verify responsive layouts across viewport widths |
 | `focus <id>` | materialize any headless session as a real window for the human |
@@ -126,6 +127,7 @@ hwatu close 3
 | `click` | `id?`, `selector?`, `nth?`, `contains?`, `ref?` | click an element (real pointer events), reports what it hit |
 | `type` | `id?`, `selector?`/`ref?`, `text`, `clear?`, `enter?` | fill input/textarea/select/contenteditable |
 | `console` | `id?`, `clear?`, `limit?` | read the console/error/network capture buffer |
+| `net` | `id?`, `clear?`, `limit?` | structured per-window network request log (method, final url, HTTP status, resource type inferred from response MIME, start_ms offset from navigation start, duration_ms); bounded 500-entry ring buffer, `clear` empties it |
 | `upload` | `id?`, `selector`, `path` | set a file input's files from disk |
 | `clock` | `id?`, `action` (`pause`/`resume`/`step`/`set`/`seed`/`status`), `ms?`, `seed?` | control the page's virtual clock: freeze, step, or scrub every time source the page can read |
 | `motion` | `id?`, `observe?`, `observe_ms?` | declared animation inventory (CSS/WAAPI/CSSOM); with `observe`, also samples the live page under virtual time and fits models to script-driven motion (velocity, period, easing, r²) |
@@ -172,7 +174,8 @@ controls.
 ### Eval semantics
 
 `js` can be an **expression** or a **function body**; the daemon
-picks the right form with a compile-only probe, so both just work:
+picks the right form with a daemon-side parse (nothing but the code
+that actually runs ever reaches the page), so both just work:
 
 ```sh
 hwatu eval 'document.title'                # expression
