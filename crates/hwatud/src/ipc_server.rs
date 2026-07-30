@@ -50,8 +50,11 @@ fn handle_conn(conn: gio::SocketConnection, daemon: Rc<Daemon>) {
     // that cannot unwind. The utf8 variant passes a null length
     // pointer and models EOF as Ok(None). Requests are JSON, so utf8
     // is not a restriction.
+    // Automation shares GTK's main context with the visible browser. Keep
+    // socket readiness below input, frame, and WebKit callbacks so a burst of
+    // agent commands cannot make keyboard or pointer events wait behind IPC.
     input.clone().read_line_utf8_async(
-        glib::Priority::DEFAULT,
+        glib::Priority::DEFAULT_IDLE,
         gio::Cancellable::NONE,
         move |res| {
             let line = match res {
