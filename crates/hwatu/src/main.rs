@@ -9,7 +9,7 @@ mod mcp;
 mod onboarding;
 mod update;
 
-use hwatu_ipc::{AdblockCmd, ClockAction, LoadStage, OpenMode, Request, Response};
+use hwatu_ipc::{AdblockCmd, ClockAction, LoadStage, OpenMode, Request, Response, Viewport};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::process::Command;
@@ -270,6 +270,8 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
     let mut use_stdin = false;
     let mut tolerance: Option<u8> = None;
     let mut heatmap: Option<String> = None;
+    let mut viewports: Vec<Viewport> = Vec::new();
+    let mut baseline_dir: Option<String> = None;
     let mut expect_text: Option<String> = None;
     let mut absent = false;
     let mut visible = false;
@@ -413,6 +415,29 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                     .ok_or("usage: --heatmap <png-path>")?
                     .clone(),
             );
+        } else if arg == "--viewports" {
+            let list = it
+                .next()
+                .filter(|v| !v.trim().is_empty())
+                .ok_or("usage: --viewports <WxH>[,<WxH>...] (e.g. 360x640,1920x1080)")?;
+            viewports = Viewport::parse_list(list)?;
+        } else if let Some(v) = arg.strip_prefix("--viewports=") {
+            if v.trim().is_empty() {
+                return Err("usage: --viewports=<WxH>[,<WxH>...] (e.g. 360x640,1920x1080)".into());
+            }
+            viewports = Viewport::parse_list(v)?;
+        } else if arg == "--baseline-dir" {
+            baseline_dir = Some(
+                it.next()
+                    .filter(|v| !v.is_empty())
+                    .ok_or("usage: --baseline-dir <dir>")?
+                    .clone(),
+            );
+        } else if let Some(v) = arg.strip_prefix("--baseline-dir=") {
+            if v.trim().is_empty() {
+                return Err("usage: --baseline-dir=<dir>".into());
+            }
+            baseline_dir = Some(v.to_string());
         } else if arg == "--text" {
             expect_text = Some(
                 it.next()
@@ -550,9 +575,20 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 .ok_or(
                     "usage: hwatu check <url> [--eval <js>] [--shot | --shot=<png>] [--full] \
                      [--baseline <png> [--tolerance <0-255>] [--heatmap <png>]] \
+                     [--viewports <WxH>[,<WxH>...] [--baseline-dir <dir>]] \
                      [--until (committed|dom|settled)] [--keep] [--timeout-ms <ms>]",
                 )?
                 .to_string();
+            if baseline_dir.is_some() && viewports.is_empty() {
+                return Err("--baseline-dir needs --viewports".into());
+            }
+            if baseline_dir.is_some() && baseline.is_some() {
+                return Err(
+                    "--baseline and --baseline-dir are mutually exclusive (per-size \
+                     baselines live in the dir as <WxH>.png)"
+                        .into(),
+                );
+            }
             Ok(Request::Check {
                 url: Some(url),
                 render: None,
@@ -567,13 +603,26 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 until: until.unwrap_or_default(),
                 keep,
                 timeout_ms,
+                viewports,
+                baseline_dir,
             })
         }
         Some("render") => {
             const USAGE_RENDER: &str = "usage: hwatu render (--stdin | <file.html>) \
                  [--base <url>] [--eval <js>] [--shot | --shot=<png>] [--full] \
                  [--baseline <png> [--tolerance <0-255>] [--heatmap <png>]] \
+                 [--viewports <WxH>[,<WxH>...] [--baseline-dir <dir>]] \
                  [--until (committed|dom|settled)] [--keep] [--timeout-ms <ms>]";
+            if baseline_dir.is_some() && viewports.is_empty() {
+                return Err("--baseline-dir needs --viewports".into());
+            }
+            if baseline_dir.is_some() && baseline.is_some() {
+                return Err(
+                    "--baseline and --baseline-dir are mutually exclusive (per-size \
+                     baselines live in the dir as <WxH>.png)"
+                        .into(),
+                );
+            }
             let html = match (use_stdin, rest.get(1)) {
                 (true, Some(_)) => {
                     return Err(format!("render takes --stdin or a file, not both\n{USAGE_RENDER}"))
@@ -613,6 +662,8 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 until: until.unwrap_or_default(),
                 keep,
                 timeout_ms,
+                viewports,
+                baseline_dir,
             })
         }
         Some("prefetch") => {
@@ -859,7 +910,7 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--foc
 | list [--json] | close <id> | focus <id> | unfocus <id> \
 | eval [--id <id>] [--timeout-ms <ms>] <js> | goto [--id <id>] [--no-wait] [--until <stage>] <url> \
     | shot [--id <id>] [--full] [path] | wait-load [--id <id>] [--until (committed|dom|settled)] \
-    | check <url> [--eval <js>] [--shot | --shot=<png>] [--full] [--baseline <png> [--tolerance <0-255>] [--heatmap <png>]] [--until <stage>] [--keep] \
+    | check <url> [--eval <js>] [--shot | --shot=<png>] [--full] [--baseline <png> [--tolerance <0-255>] [--heatmap <png>]] [--viewports <WxH>[,<WxH>...] [--baseline-dir <dir>]] [--until <stage>] [--keep] \
     | render (--stdin | <file.html>) [--base <url>] [--eval <js>] [--shot | --shot=<png>] [--full] [--baseline <png> ...] [--until <stage>] [--keep] \
     | prefetch <url> \
     | watch [--id <id>] [--kinds load,console,download,window,expect] \
@@ -1305,6 +1356,99 @@ mod tests {
         assert_eq!(baseline, None);
         assert_eq!(until, hwatu_ipc::LoadStage::Settled);
         assert!(!keep);
+    }
+
+    /// `--viewports` parses a size list into the sweep field; bad
+    /// sizes, empty lists, and flag conflicts are usage errors; a
+    /// plain check keeps an empty sweep (old behavior).
+    #[test]
+    fn check_parses_viewports() {
+        let Ok(Request::Check {
+            viewports,
+            baseline_dir,
+            ..
+        }) = parse(&args(&[
+            "check",
+            "localhost:3000",
+            "--viewports",
+            "360x640,768x1024,1920x1080",
+            "--baseline-dir",
+            "/tmp/base",
+        ]))
+        else {
+            panic!("expected Check");
+        };
+        assert_eq!(
+            viewports,
+            vec![
+                hwatu_ipc::Viewport { w: 360, h: 640 },
+                hwatu_ipc::Viewport { w: 768, h: 1024 },
+                hwatu_ipc::Viewport { w: 1920, h: 1080 },
+            ]
+        );
+        assert_eq!(baseline_dir.as_deref(), Some("/tmp/base"));
+
+        // `--viewports=` form works too.
+        let Ok(Request::Check { viewports, .. }) =
+            parse(&args(&["check", "x.test", "--viewports=800x600"]))
+        else {
+            panic!("expected Check");
+        };
+        assert_eq!(viewports, vec![hwatu_ipc::Viewport { w: 800, h: 600 }]);
+
+        // Invalid sizes are rejected at parse time, naming the entry.
+        for bad in ["banana", "360", "360x", "0x640", "-1x640", "99999x2", ""] {
+            assert!(
+                parse(&args(&["check", "x.test", "--viewports", bad])).is_err(),
+                "size {bad:?} should be rejected"
+            );
+        }
+        // Flag coherence: baseline-dir needs viewports; --baseline
+        // conflicts with a sweep's per-size baselines.
+        assert!(parse(&args(&["check", "x.test", "--baseline-dir", "/tmp/b"])).is_err());
+        assert!(parse(&args(&[
+            "check",
+            "x.test",
+            "--viewports",
+            "360x640",
+            "--baseline",
+            "/tmp/b.png",
+            "--baseline-dir",
+            "/tmp/b",
+        ]))
+        .is_err());
+
+        // No sweep flags: the request carries an empty sweep.
+        let Ok(Request::Check {
+            viewports,
+            baseline_dir,
+            ..
+        }) = parse(&args(&["check", "x.test"]))
+        else {
+            panic!("expected Check");
+        };
+        assert!(viewports.is_empty());
+        assert_eq!(baseline_dir, None);
+    }
+
+    /// `hwatu render --viewports ...` sweeps rendered markup too.
+    #[test]
+    fn render_parses_viewports() {
+        let dir = std::env::temp_dir().join(format!("hwatu-vp-parse-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("page.html");
+        std::fs::write(&file, "<h1>vp</h1>").unwrap();
+        let file = file.to_string_lossy().to_string();
+
+        let Ok(Request::Check {
+            render, viewports, ..
+        }) = parse(&args(&["render", &file, "--viewports", "360x640,1024x768"]))
+        else {
+            panic!("expected Check");
+        };
+        assert_eq!(render.as_deref(), Some("<h1>vp</h1>"));
+        assert_eq!(viewports.len(), 2);
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
