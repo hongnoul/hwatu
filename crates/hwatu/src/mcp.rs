@@ -887,6 +887,46 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
 mod tests {
     use super::*;
 
+    /// The MCP check tool takes `viewports` as the CLI-style size
+    /// string and `baseline_dir`; bad sizes and baseline_dir-without-
+    /// viewports are argument errors, and a plain check carries an
+    /// empty sweep.
+    #[test]
+    fn check_tool_parses_viewports() {
+        let req = build_request(
+            "check",
+            &json!({
+                "url": "localhost:3000",
+                "viewports": "360x640,1920x1080",
+                "baseline_dir": "/tmp/base",
+            }),
+        )
+        .unwrap();
+        let Request::Check {
+            viewports,
+            baseline_dir,
+            ..
+        } = req
+        else {
+            panic!("expected Check");
+        };
+        assert_eq!(
+            viewports,
+            vec![Viewport { w: 360, h: 640 }, Viewport { w: 1920, h: 1080 }]
+        );
+        assert_eq!(baseline_dir.as_deref(), Some("/tmp/base"));
+
+        assert!(build_request("check", &json!({ "url": "x", "viewports": "banana" })).is_err());
+        assert!(build_request("check", &json!({ "url": "x", "baseline_dir": "/tmp/b" })).is_err());
+
+        let Request::Check { viewports, .. } =
+            build_request("check", &json!({ "url": "x" })).unwrap()
+        else {
+            panic!("expected Check");
+        };
+        assert!(viewports.is_empty());
+    }
+
     #[test]
     fn open_defaults_to_headless() {
         let req = build_request("open", &json!({ "url": "localhost:3000" })).unwrap();
