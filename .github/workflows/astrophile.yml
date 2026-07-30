@@ -47,7 +47,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: scripts/screen-public-signals.sh
       - name: Upload screening report
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: public-signal-screen
           path: |
