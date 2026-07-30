@@ -87,6 +87,39 @@ jobs:
       - name: Check
         run: cargo check --workspace --all-targets --locked
 
+  display-free:
+    name: Display-free behavioral (G4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq libwebkitgtk-6.0-dev libgtk-4-dev cage
+
+      - name: Allow unprivileged user namespaces
+        # Ubuntu 24.04 runners restrict userns via AppArmor, which breaks
+        # WebKit's bubblewrap sandbox (bwrap: loopback: Failed RTM_NEWADDR).
+        run: sudo sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: display-free
+
+      - name: Build release binaries
+        run: cargo build --release --locked
+
+      # GitHub runners have no display server at all, which is exactly
+      # the environment G4 exists for: the daemon must spawn its own
+      # headless compositor. The script unsets WAYLAND_DISPLAY/DISPLAY
+      # itself and runs on isolated sockets.
+      - name: Run display-free behavioral suite
+        run: scripts/test-display-free.sh
+
   audit:
     name: Dependency audit
     runs-on: ubuntu-latest

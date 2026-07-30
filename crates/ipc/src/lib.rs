@@ -168,6 +168,22 @@ pub enum Request {
         keep: bool,
         #[serde(default)]
         timeout_ms: Option<u64>,
+        /// Multi-viewport sweep: run the same pass (eval, shot,
+        /// baseline diff) at each of these sizes sequentially on one
+        /// pooled window, and reply with per-viewport results under
+        /// `viewports: [{size, load_ms, eval, shot, diff, ...}]`.
+        /// Empty/absent means the classic single-viewport check with
+        /// the identical reply shape as before. Screenshot paths get
+        /// a `-<WxH>` suffix per size; `baseline_dir` supplies a
+        /// per-size baseline `<dir>/<WxH>.png`.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        viewports: Vec<Viewport>,
+        /// Directory of per-size baseline PNGs (`<dir>/360x640.png`)
+        /// for the viewport sweep; each size is diffed against its own
+        /// file. Only with `viewports`. Mutually exclusive with
+        /// `baseline` (which is a single file for a single size).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        baseline_dir: Option<String>,
     },
     /// Speculatively start loading `url` in a parked headless window,
     /// replying immediately. The next [`Request::Check`] of the same
@@ -246,6 +262,16 @@ pub enum Request {
     Snapshot {
         #[serde(default)]
         id: Option<u64>,
+        /// Return only what changed since the last `--diff` snapshot
+        /// of this window (`{added, removed, changed, unchanged_count}`)
+        /// instead of the full page state. The first diff snapshot of
+        /// a window (and the first after a navigation) returns the
+        /// full snapshot with `"baseline_established": true`. Absent
+        /// on the wire means `false`, so old clients keep the full
+        /// snapshot they were built for; an old daemon ignores the
+        /// field and answers a new client with a full snapshot.
+        #[serde(default, skip_serializing_if = "is_false")]
+        diff: bool,
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
@@ -502,6 +528,52 @@ fn default_true() -> bool {
 /// checks again because clients are not trusted.
 pub const RENDER_MAX_BYTES: usize = 8 * 1024 * 1024;
 
+/// One viewport size (CSS pixels) for a multi-viewport check sweep.
+/// Serialized as `{ "w": 360, "h": 640 }`; the user-facing form is
+/// `360x640` (see [`Viewport::parse`] / [`Viewport::label`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Viewport {
+    pub w: i32,
+    pub h: i32,
+}
+
+impl Viewport {
+    /// Parse a `<width>x<height>` size (e.g. `360x640`). Bounds match
+    /// the daemon's resize limits so a bad size fails at parse time
+    /// on the client instead of mid-sweep on the daemon.
+    pub fn parse(value: &str) -> Option<Self> {
+        let (w, h) = value.trim().split_once(['x', 'X'])?;
+        let (w, h) = (w.trim().parse().ok()?, h.trim().parse().ok()?);
+        if !(1..=16384).contains(&w) || !(1..=16384).contains(&h) {
+            return None;
+        }
+        Some(Self { w, h })
+    }
+
+    /// Parse a comma-separated size list (`360x640,768x1024`). Any
+    /// invalid entry fails the whole list, naming the bad entry.
+    pub fn parse_list(value: &str) -> Result<Vec<Self>, String> {
+        value
+            .split(',')
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| {
+                Self::parse(s).ok_or_else(|| {
+                    format!(
+                        "bad viewport {:?} (expected <width>x<height>, e.g. 360x640)",
+                        s.trim()
+                    )
+                })
+            })
+            .collect()
+    }
+
+    /// The canonical `<width>x<height>` label used for reply `size`
+    /// fields, per-size screenshot suffixes, and baseline filenames.
+    pub fn label(&self) -> String {
+        format!("{}x{}", self.w, self.h)
+    }
+}
+
 /// How far a load must progress before a wait releases. Real pages
 /// keep loading subresources (fonts, third-party JS, images) long
 /// after the DOM is usable; most agent checks only need the DOM, so
@@ -744,6 +816,10 @@ fn is_normal(mode: &OpenMode) -> bool {
     *mode == OpenMode::Normal
 }
 
+fn is_false(v: &bool) -> bool {
+    !*v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -785,6 +861,8 @@ mod tests {
             until: LoadStage::Dom,
             keep: false,
             timeout_ms: None,
+            viewports: vec![],
+            baseline_dir: None,
         };
         let wire = serde_json::to_string(&req).unwrap();
         assert!(
@@ -797,6 +875,106 @@ mod tests {
         };
         assert_eq!(render.as_deref(), Some("<h1>hi</h1>"));
         assert_eq!(base.as_deref(), Some("http://localhost:3000/"));
+    }
+
+    /// A viewport-sweep check roundtrips through the wire format; an
+    /// empty sweep is omitted from the JSON entirely so old daemons
+    /// keep parsing new clients' plain checks unchanged.
+    #[test]
+    fn viewport_check_roundtrips_and_empty_is_omitted() {
+        let req = Request::Check {
+            url: Some("http://localhost:3000".into()),
+            render: None,
+            base: None,
+            eval: None,
+            shot: false,
+            shot_path: None,
+            full: false,
+            baseline: None,
+            tolerance: None,
+            heatmap: None,
+            until: LoadStage::default(),
+            keep: false,
+            timeout_ms: None,
+            viewports: vec![Viewport { w: 360, h: 640 }, Viewport { w: 1920, h: 1080 }],
+            baseline_dir: Some("/tmp/base".into()),
+        };
+        let wire = serde_json::to_string(&req).unwrap();
+        assert!(wire.contains("\"viewports\""));
+        assert!(wire.contains("\"baseline_dir\""));
+        let Ok(Request::Check {
+            viewports,
+            baseline_dir,
+            ..
+        }) = serde_json::from_str::<Request>(&wire)
+        else {
+            panic!("viewport check failed to roundtrip");
+        };
+        assert_eq!(
+            viewports,
+            vec![Viewport { w: 360, h: 640 }, Viewport { w: 1920, h: 1080 }]
+        );
+        assert_eq!(baseline_dir.as_deref(), Some("/tmp/base"));
+
+        // No sweep: neither field appears on the wire, and an old
+        // request without them still parses (defaults).
+        let plain = Request::Check {
+            url: Some("http://localhost:3000".into()),
+            render: None,
+            base: None,
+            eval: None,
+            shot: false,
+            shot_path: None,
+            full: false,
+            baseline: None,
+            tolerance: None,
+            heatmap: None,
+            until: LoadStage::default(),
+            keep: false,
+            timeout_ms: None,
+            viewports: vec![],
+            baseline_dir: None,
+        };
+        let wire = serde_json::to_string(&plain).unwrap();
+        assert!(
+            !wire.contains("viewports"),
+            "empty sweep must be omitted: {wire}"
+        );
+        assert!(!wire.contains("baseline_dir"));
+        let Ok(Request::Check {
+            viewports,
+            baseline_dir,
+            ..
+        }) = serde_json::from_str::<Request>(r#"{"cmd":"check","url":"x.test"}"#)
+        else {
+            panic!("plain check failed to parse");
+        };
+        assert!(viewports.is_empty());
+        assert_eq!(baseline_dir, None);
+    }
+
+    /// Viewport size parsing: valid forms, bounds, and list errors.
+    #[test]
+    fn viewport_parsing() {
+        assert_eq!(
+            Viewport::parse("360x640"),
+            Some(Viewport { w: 360, h: 640 })
+        );
+        assert_eq!(
+            Viewport::parse(" 800X600 "),
+            Some(Viewport { w: 800, h: 600 })
+        );
+        assert_eq!(Viewport::parse("0x640"), None);
+        assert_eq!(Viewport::parse("360x"), None);
+        assert_eq!(Viewport::parse("360"), None);
+        assert_eq!(Viewport::parse("-1x640"), None);
+        assert_eq!(Viewport::parse("99999x640"), None);
+
+        let sizes = Viewport::parse_list("360x640,768x1024,1920x1080").unwrap();
+        assert_eq!(sizes.len(), 3);
+        assert_eq!(sizes[2].label(), "1920x1080");
+        assert!(Viewport::parse_list("360x640,banana").is_err());
+        assert!(Viewport::parse_list("").unwrap().is_empty());
     }
 
     /// A bare `{"cmd":"net"}` (all defaults) is valid, and a full Net
@@ -858,6 +1036,44 @@ mod tests {
             Some(&["load".to_string(), "console".to_string()][..])
         );
         assert_eq!(window, Some(7));
+    }
+
+    /// Snapshot keeps the wire back-compat contract around `diff`: a
+    /// bare `{"cmd":"snapshot"}` from an old client parses with
+    /// `diff: false`, and a new client's default (non-diff) snapshot
+    /// omits the field entirely so an old daemon still parses it.
+    #[test]
+    fn snapshot_diff_wire_compat() {
+        let Ok(Request::Snapshot { id, diff, .. }) =
+            serde_json::from_str::<Request>(r#"{"cmd":"snapshot"}"#)
+        else {
+            panic!("bare snapshot failed to parse");
+        };
+        assert_eq!(id, None);
+        assert!(!diff, "absent diff must default to false");
+
+        let plain = Request::Snapshot {
+            id: Some(2),
+            diff: false,
+            timeout_ms: None,
+        };
+        let wire = serde_json::to_string(&plain).unwrap();
+        assert!(
+            !wire.contains("diff"),
+            "non-diff snapshot must omit the field for old daemons: {wire}"
+        );
+
+        let diffing = Request::Snapshot {
+            id: Some(2),
+            diff: true,
+            timeout_ms: None,
+        };
+        let wire = serde_json::to_string(&diffing).unwrap();
+        assert!(wire.contains("\"diff\":true"));
+        let Ok(Request::Snapshot { diff, .. }) = serde_json::from_str::<Request>(&wire) else {
+            panic!("diff snapshot failed to roundtrip");
+        };
+        assert!(diff);
     }
 
     /// Events serialize with seq + window_id and omit empty payloads;

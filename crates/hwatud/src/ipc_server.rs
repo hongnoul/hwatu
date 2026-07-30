@@ -135,10 +135,27 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
             until,
             keep,
             timeout_ms,
+            viewports,
+            baseline_dir,
         } => {
             return automation::check(
-                daemon, url, render, base, eval, shot, shot_path, full, baseline, tolerance,
-                heatmap, until, keep, timeout_ms, reply,
+                daemon,
+                url,
+                render,
+                base,
+                eval,
+                shot,
+                shot_path,
+                full,
+                baseline,
+                tolerance,
+                heatmap,
+                until,
+                keep,
+                timeout_ms,
+                viewports,
+                baseline_dir,
+                reply,
             );
         }
         Request::Prefetch { url } => {
@@ -172,8 +189,12 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
                 daemon, id, selector, nth, contains, to_y, by_pages, timeout_ms, reply,
             );
         }
-        Request::Snapshot { id, timeout_ms } => {
-            return automation::snapshot(daemon, id, timeout_ms, reply);
+        Request::Snapshot {
+            id,
+            diff,
+            timeout_ms,
+        } => {
+            return automation::snapshot(daemon, id, diff, timeout_ms, reply);
         }
         Request::Expect {
             id,
@@ -307,6 +328,18 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
             }
         }
         Request::Focus { id } => {
+            // Display-free mode has no session display to show a
+            // window on: the managed headless compositor renders to
+            // nothing a human can see. A structured error beats
+            // silently "focusing" into the void.
+            if crate::compositor::display_free() {
+                reply(Response::err(format!(
+                    "no display: hwatud is running display-free (headless child \
+                     compositor); window {id} cannot be shown. Start hwatud in a \
+                     graphical session to focus windows."
+                )));
+                return;
+            }
             let win = daemon.windows.borrow().get(&id).cloned();
             match win {
                 Some(w) => {

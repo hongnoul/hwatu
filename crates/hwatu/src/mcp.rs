@@ -12,7 +12,7 @@
 //! The daemon is autostarted on the first tool call, like every other
 //! `hwatu` invocation.
 
-use hwatu_ipc::{ClockAction, LoadStage, OpenMode, Request, Response};
+use hwatu_ipc::{ClockAction, LoadStage, OpenMode, Request, Response, Viewport};
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -271,21 +271,30 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
             until: parse_until(args)?,
             timeout_ms,
         }),
-        "check" => Ok(Request::Check {
-            url: Some(req_str(args, "url")?),
-            render: None,
-            base: None,
-            eval: opt_str(args, "eval"),
-            shot: opt_bool(args, "shot").unwrap_or(false),
-            shot_path: opt_str(args, "shot_path"),
-            full: opt_bool(args, "full").unwrap_or(false),
-            baseline: opt_str(args, "baseline"),
-            tolerance: opt_u64(args, "tolerance").map(|v| v.min(255) as u8),
-            heatmap: opt_str(args, "heatmap"),
-            until: parse_until(args)?,
-            keep: opt_bool(args, "keep").unwrap_or(false),
-            timeout_ms,
-        }),
+        "check" => {
+            let viewports = parse_viewports(args)?;
+            let baseline_dir = opt_str(args, "baseline_dir");
+            if baseline_dir.is_some() && viewports.is_empty() {
+                return Err("baseline_dir needs viewports".into());
+            }
+            Ok(Request::Check {
+                url: Some(req_str(args, "url")?),
+                render: None,
+                base: None,
+                eval: opt_str(args, "eval"),
+                shot: opt_bool(args, "shot").unwrap_or(false),
+                shot_path: opt_str(args, "shot_path"),
+                full: opt_bool(args, "full").unwrap_or(false),
+                baseline: opt_str(args, "baseline"),
+                tolerance: opt_u64(args, "tolerance").map(|v| v.min(255) as u8),
+                heatmap: opt_str(args, "heatmap"),
+                until: parse_until(args)?,
+                keep: opt_bool(args, "keep").unwrap_or(false),
+                timeout_ms,
+                viewports,
+                baseline_dir,
+            })
+        }
         "render" => {
             let html = req_str(args, "html")?;
             if html.len() > hwatu_ipc::RENDER_MAX_BYTES {
@@ -294,6 +303,11 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
                     html.len(),
                     hwatu_ipc::RENDER_MAX_BYTES
                 ));
+            }
+            let viewports = parse_viewports(args)?;
+            let baseline_dir = opt_str(args, "baseline_dir");
+            if baseline_dir.is_some() && viewports.is_empty() {
+                return Err("baseline_dir needs viewports".into());
             }
             Ok(Request::Check {
                 url: None,
@@ -309,12 +323,18 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
                 until: parse_until(args)?,
                 keep: opt_bool(args, "keep").unwrap_or(false),
                 timeout_ms,
+                viewports,
+                baseline_dir,
             })
         }
         "prefetch" => Ok(Request::Prefetch {
             url: req_str(args, "url")?,
         }),
-        "snapshot" => Ok(Request::Snapshot { id, timeout_ms }),
+        "snapshot" => Ok(Request::Snapshot {
+            id,
+            diff: opt_bool(args, "diff").unwrap_or(false),
+            timeout_ms,
+        }),
         "expect" => Ok(Request::Expect {
             id,
             selector: req_str(args, "selector")?,
@@ -483,6 +503,15 @@ fn parse_until(args: &Value) -> Result<LoadStage, String> {
     }
 }
 
+/// Optional `viewports` argument: a `"360x640,1920x1080"` string (the
+/// CLI spelling, friendly to LLM callers). Absent means no sweep.
+fn parse_viewports(args: &Value) -> Result<Vec<Viewport>, String> {
+    match opt_str(args, "viewports") {
+        None => Ok(Vec::new()),
+        Some(v) => Viewport::parse_list(&v),
+    }
+}
+
 // ---- tool schemas --------------------------------------------------
 
 /// Shorthand JSON-Schema property.
@@ -556,6 +585,8 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
                 "baseline": prop("string", "Baseline PNG path: pixel-diff the loaded page against it and include match_percent + mismatch regions in the reply."),
                 "tolerance": prop("integer", "Per-channel diff tolerance 0-255 (default 8; only with baseline)."),
                 "heatmap": prop("string", "Write a mismatch heatmap PNG here (only with baseline)."),
+                "viewports": prop("string", "Multi-viewport sweep: comma-separated sizes (e.g. \"360x640,768x1024,1920x1080\"). Runs the same pass at each size on one window and returns per-viewport results under `viewports` (size, load_ms, eval, shot, diff). Screenshot paths get a -WxH suffix per size."),
+                "baseline_dir": prop("string", "Directory of per-size baseline PNGs (<dir>/360x640.png) for the viewport sweep; each size diffs against its own file. Only with viewports."),
                 "until": { "type": "string", "enum": ["committed", "dom", "settled"],
                     "description": "Load stage gating eval/shot (default settled)." },
                 "keep": prop("boolean", "Keep the window open and return its id."),
@@ -581,6 +612,8 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
                 "baseline": prop("string", "Baseline PNG path: pixel-diff the rendered page against it."),
                 "tolerance": prop("integer", "Per-channel diff tolerance 0-255 (default 8; only with baseline)."),
                 "heatmap": prop("string", "Write a mismatch heatmap PNG here (only with baseline)."),
+                "viewports": prop("string", "Multi-viewport sweep: comma-separated sizes (e.g. \"360x640,1920x1080\"); per-viewport results under `viewports`."),
+                "baseline_dir": prop("string", "Directory of per-size baseline PNGs for the sweep (only with viewports)."),
                 "until": { "type": "string", "enum": ["committed", "dom", "settled"],
                     "description": "Load stage gating eval/shot (default settled)." },
                 "keep": prop("boolean", "Keep the window open and return its id."),
@@ -605,8 +638,16 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
             "Token-cheap page state as JSON: url, title, visible text (bounded), \
              scroll position, and indexed interactable elements (links, buttons, \
              inputs). Use the returned `ref` indices with click/type_text. \
-             Prefer this over screenshot for 'what is on this page'.",
-            json!({ "id": prop("integer", ID_DESC) }),
+             Prefer this over screenshot for 'what is on this page'. With \
+             diff=true, returns only what changed since the last diff snapshot \
+             of the window ({added, removed, changed, unchanged_count}); the \
+             first diff (and the first after a navigation) returns the full \
+             snapshot with baseline_established=true.",
+            json!({
+                "id": prop("integer", ID_DESC),
+                "diff": prop("boolean", "Return only changes since the last diff \
+                     snapshot of this window instead of the full page state."),
+            }),
             &[],
         ),
         tool(
@@ -857,6 +898,46 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The MCP check tool takes `viewports` as the CLI-style size
+    /// string and `baseline_dir`; bad sizes and baseline_dir-without-
+    /// viewports are argument errors, and a plain check carries an
+    /// empty sweep.
+    #[test]
+    fn check_tool_parses_viewports() {
+        let req = build_request(
+            "check",
+            &json!({
+                "url": "localhost:3000",
+                "viewports": "360x640,1920x1080",
+                "baseline_dir": "/tmp/base",
+            }),
+        )
+        .unwrap();
+        let Request::Check {
+            viewports,
+            baseline_dir,
+            ..
+        } = req
+        else {
+            panic!("expected Check");
+        };
+        assert_eq!(
+            viewports,
+            vec![Viewport { w: 360, h: 640 }, Viewport { w: 1920, h: 1080 }]
+        );
+        assert_eq!(baseline_dir.as_deref(), Some("/tmp/base"));
+
+        assert!(build_request("check", &json!({ "url": "x", "viewports": "banana" })).is_err());
+        assert!(build_request("check", &json!({ "url": "x", "baseline_dir": "/tmp/b" })).is_err());
+
+        let Request::Check { viewports, .. } =
+            build_request("check", &json!({ "url": "x" })).unwrap()
+        else {
+            panic!("expected Check");
+        };
+        assert!(viewports.is_empty());
+    }
 
     #[test]
     fn open_defaults_to_headless() {

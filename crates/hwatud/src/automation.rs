@@ -12,7 +12,7 @@ use crate::window::BrowserWindow;
 use crate::Daemon;
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
-use hwatu_ipc::{LoadStage, OpenMode, Response};
+use hwatu_ipc::{LoadStage, OpenMode, Response, Viewport};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use webkit6::prelude::*;
@@ -691,6 +691,8 @@ pub fn check(
     until: LoadStage,
     keep: bool,
     timeout_ms: Option<u64>,
+    viewports: Vec<Viewport>,
+    baseline_dir: Option<String>,
     reply: Reply,
 ) {
     let reply = OnceReply::new(reply);
@@ -702,6 +704,17 @@ pub fn check(
     }
     if base.is_some() && render.is_none() {
         return reply.send(Response::err("`base` only applies to `render`"));
+    }
+    // Sweep flag coherence: per-size baselines only make sense with a
+    // sweep, and a single-file baseline cannot cover N differently
+    // sized frames (the union-canvas diff would report noise).
+    if baseline_dir.is_some() && viewports.is_empty() {
+        return reply.send(Response::err("`baseline_dir` requires `viewports`"));
+    }
+    if baseline.is_some() && !viewports.is_empty() {
+        return reply.send(Response::err(
+            "pass `baseline_dir` (per-size baselines), not `baseline`, with `viewports`",
+        ));
     }
     if let Some(html) = &render {
         if html.len() > hwatu_ipc::RENDER_MAX_BYTES {
@@ -740,6 +753,13 @@ pub fn check(
     };
     let win_id = win.id;
     daemon.last_target.replace(Some(win_id));
+    // Sweeps load at the first requested size, so breakpoint-dependent
+    // initial renders (and any JS that reads innerWidth once at load)
+    // see the right viewport from the start. Pass 0 still runs the
+    // measure-and-correct resize to confirm what the page sees.
+    if let Some(first) = viewports.first() {
+        win.resize_viewport(first.w, first.h);
+    }
 
     // One deadline covers the whole pass. The timeout also closes the
     // window (unless `keep`): a check that timed out must not leak a
@@ -778,6 +798,32 @@ pub fn check(
         }
         if rendered {
             result.borrow_mut()["rendered"] = serde_json::json!(true);
+        }
+
+        // Multi-viewport sweep: run the pass per size sequentially on
+        // this one loaded window, then reply once with everything.
+        if !viewports.is_empty() {
+            let sweep = Rc::new(Sweep {
+                daemon: daemon.clone(),
+                win_id,
+                viewports: viewports.clone(),
+                eval_js: eval_js.clone(),
+                shot: shot || shot_path.is_some(),
+                shot_path: shot_path.clone(),
+                full,
+                baseline_dir: baseline_dir.clone(),
+                tolerance,
+                heatmap: heatmap.clone(),
+                keep,
+                timeout_ms,
+                started,
+                reply: reply.clone(),
+                result: result.clone(),
+                view: view.clone(),
+                entries: RefCell::new(Vec::new()),
+            });
+            sweep_pass(sweep, 0);
+            return;
         }
 
         // Eval and screenshot are independent of each other; run both
@@ -929,6 +975,223 @@ pub fn check(
     } else {
         wire_load_stage(&view, win.clone(), until, proceed);
     }
+}
+
+/// State for one multi-viewport check sweep: the loaded window, the
+/// per-pass options, and the accumulated per-viewport entries. The
+/// window is resized between passes rather than reopened: measured
+/// here (scripts/bench-viewports.sh, warm pool, local fixture with a
+/// breakpoint, eval+shot per size), a 3-size sweep totals ~17-21 ms
+/// (per-pass resize+eval+shot 1-11 ms) vs ~55-92 ms for 3 separate
+/// checks, and on real pages a fresh load costs hundreds of ms per
+/// size on top. One window also guarantees every size sees the same
+/// document instance, not N racing loads, and adds no daemon memory.
+struct Sweep {
+    daemon: Rc<Daemon>,
+    win_id: u64,
+    viewports: Vec<Viewport>,
+    eval_js: Option<String>,
+    shot: bool,
+    shot_path: Option<String>,
+    full: bool,
+    baseline_dir: Option<String>,
+    tolerance: Option<u8>,
+    heatmap: Option<String>,
+    keep: bool,
+    timeout_ms: Option<u64>,
+    started: std::time::Instant,
+    reply: OnceReply,
+    result: Rc<RefCell<serde_json::Value>>,
+    view: webkit6::WebView,
+    entries: RefCell<Vec<serde_json::Value>>,
+}
+
+/// Derive the per-size variant of a caller-supplied path: insert
+/// `-<WxH>` before the extension (`shot.png` -> `shot-360x640.png`).
+fn per_size_path(path: &str, label: &str) -> String {
+    let p = std::path::Path::new(path);
+    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("shot");
+    let ext = p.extension().and_then(|s| s.to_str()).unwrap_or("png");
+    let name = format!("{stem}-{label}.{ext}");
+    match p.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir.join(name).to_string_lossy().into_owned(),
+        _ => name,
+    }
+}
+
+/// Run sweep pass `i`: resize the window to `viewports[i]`, let the
+/// relayout land, then eval/shot/diff at that size and recurse to
+/// `i + 1`. The final pass assembles the combined reply.
+fn sweep_pass(sweep: Rc<Sweep>, i: usize) {
+    if sweep.reply.is_spent() {
+        return; // overall check timeout already answered
+    }
+    let Some(vp) = sweep.viewports.get(i).copied() else {
+        return sweep_finish(sweep);
+    };
+    let pass_started = std::time::Instant::now();
+    // resize() measures the resulting CSS viewport (and corrects
+    // fractional-scale backends), so when its reply lands the page
+    // has really relaid out at the new size; media queries and
+    // resize handlers have run.
+    let sweep2 = sweep.clone();
+    crate::verify::resize(
+        &sweep.daemon.clone(),
+        Some(sweep.win_id),
+        vp.w,
+        vp.h,
+        Box::new(move |resp| {
+            let sweep = sweep2;
+            if sweep.reply.is_spent() {
+                return;
+            }
+            let label = vp.label();
+            let entry = Rc::new(RefCell::new(serde_json::json!({ "size": label })));
+            if let Response::Err { message } = resp {
+                entry.borrow_mut()["error"] =
+                    serde_json::json!(format!("resize to {label} failed: {message}"));
+                sweep.entries.borrow_mut().push(entry.borrow().clone());
+                return sweep_pass(sweep, i + 1);
+            }
+
+            // Same concurrency shape as the single-viewport pass:
+            // eval/shot/diff run in parallel, the last one advances
+            // the sweep to the next size.
+            let pending = Rc::new(Cell::new(1u32));
+            let advance = {
+                let sweep = sweep.clone();
+                let entry = entry.clone();
+                let pending = pending.clone();
+                Rc::new(move || {
+                    pending.set(pending.get() - 1);
+                    if pending.get() > 0 || sweep.reply.is_spent() {
+                        return;
+                    }
+                    entry.borrow_mut()["pass_ms"] =
+                        serde_json::json!(pass_started.elapsed().as_millis() as u64);
+                    sweep.entries.borrow_mut().push(entry.borrow().clone());
+                    sweep_pass(sweep.clone(), i + 1);
+                })
+            };
+
+            if let Some(js) = sweep.eval_js.clone() {
+                pending.set(pending.get() + 1);
+                let advance = advance.clone();
+                let entry = entry.clone();
+                eval(
+                    &sweep.daemon,
+                    Some(sweep.win_id),
+                    js,
+                    sweep.timeout_ms,
+                    Box::new(move |resp| {
+                        entry.borrow_mut()["eval"] = match resp {
+                            Response::Ok { value, .. } => value.unwrap_or(serde_json::Value::Null),
+                            Response::Err { message } => serde_json::json!({ "error": message }),
+                        };
+                        advance();
+                    }),
+                );
+            }
+            if sweep.shot {
+                pending.set(pending.get() + 1);
+                let advance = advance.clone();
+                let entry = entry.clone();
+                let path = sweep.shot_path.as_deref().map(|p| per_size_path(p, &label));
+                screenshot(
+                    &sweep.daemon,
+                    Some(sweep.win_id),
+                    path,
+                    sweep.full,
+                    Box::new(move |resp| {
+                        match resp {
+                            Response::Ok { path: Some(p), .. } => {
+                                entry.borrow_mut()["shot"] = serde_json::json!(p);
+                            }
+                            Response::Err { message } => {
+                                entry.borrow_mut()["shot"] =
+                                    serde_json::json!({ "error": message });
+                            }
+                            _ => {}
+                        }
+                        advance();
+                    }),
+                );
+            }
+            if let Some(dir) = sweep.baseline_dir.as_deref() {
+                pending.set(pending.get() + 1);
+                let advance = advance.clone();
+                let entry = entry.clone();
+                let baseline = std::path::Path::new(dir)
+                    .join(format!("{label}.png"))
+                    .to_string_lossy()
+                    .into_owned();
+                let heatmap = sweep.heatmap.as_deref().map(|p| per_size_path(p, &label));
+                crate::verify::diff_against_baseline(
+                    &sweep.daemon,
+                    sweep.win_id,
+                    baseline,
+                    sweep.tolerance,
+                    heatmap,
+                    sweep.full,
+                    Box::new(move |value| {
+                        entry.borrow_mut()["diff"] = match value {
+                            Ok(v) => v,
+                            Err(e) => serde_json::json!({ "error": e }),
+                        };
+                        advance();
+                    }),
+                );
+            }
+            advance(); // release the base hold
+        }),
+    );
+}
+
+/// Assemble the sweep reply: console (whole sweep), title, timings,
+/// and the per-viewport entries. Resets the window's viewport before
+/// parking so a later plain check does not inherit the last size.
+fn sweep_finish(sweep: Rc<Sweep>) {
+    let console = sweep
+        .daemon
+        .windows
+        .borrow()
+        .get(&sweep.win_id)
+        .map(|w| w.console.read(true, Some(20)))
+        .unwrap_or_default();
+    {
+        let mut r = sweep.result.borrow_mut();
+        if !console.is_empty() {
+            r["console"] = serde_json::to_value(&console).unwrap_or_default();
+        }
+        r["viewports"] = serde_json::Value::Array(sweep.entries.borrow().clone());
+    }
+    let sweep2 = sweep.clone();
+    sweep.view.evaluate_javascript(
+        "document.title",
+        None,
+        None,
+        gio::Cancellable::NONE,
+        move |title| {
+            let sweep = sweep2;
+            {
+                let mut r = sweep.result.borrow_mut();
+                r["title"] = serde_json::json!(title
+                    .ok()
+                    .map(|v| v.to_str().to_string())
+                    .unwrap_or_default());
+                r["total_ms"] = serde_json::json!(sweep.started.elapsed().as_millis() as u64);
+            }
+            if let Some(win) = sweep.daemon.windows.borrow().get(&sweep.win_id).cloned() {
+                if !sweep.keep {
+                    win.reset_viewport();
+                }
+            }
+            release_check_window(&sweep.daemon, sweep.win_id, sweep.keep);
+            sweep
+                .reply
+                .send(Response::value(sweep.result.borrow().clone()));
+        },
+    );
 }
 
 /// How long an idle pooled check window is kept before being closed.
@@ -1968,7 +2231,13 @@ return {{ ok: true, matches: els.length, tag: el.tagName.toLowerCase(), text: ac
 /// The elements are remembered on `window.__hwatu_refs`, so a
 /// follow-up click/type can target `ref: n` without a selector. The
 /// designed alternative to screenshot-and-squint for agents.
-pub fn snapshot(daemon: &Rc<Daemon>, id: Option<u64>, timeout_ms: Option<u64>, reply: Reply) {
+pub fn snapshot(
+    daemon: &Rc<Daemon>,
+    id: Option<u64>,
+    diff: bool,
+    timeout_ms: Option<u64>,
+    reply: Reply,
+) {
     const JS: &str = r#"
 const MAX_TEXT = 4000;
 const MAX_ELS = 120;
@@ -2011,17 +2280,82 @@ const interactables = els.map((el, i) => {
   return out;
 });
 const doc = document.documentElement;
+// Per-line text (spaces collapsed within a line, newlines kept):
+// agents read it the same, and `snapshot --diff` can report the one
+// line that changed instead of the whole blob.
+const rawText = document.body ? document.body.innerText : '';
+let text = rawText.split('\n')
+  .map(l => l.replace(/\s+/g, ' ').trim())
+  .filter(Boolean)
+  .join('\n');
+if (text.length > MAX_TEXT) text = text.slice(0, MAX_TEXT - 1) + '…';
 return {
   url: location.href,
   title: document.title,
-  text: clip(document.body ? document.body.innerText : '', MAX_TEXT),
+  text,
   interactables,
   scroll: {
     y: window.scrollY,
     max_y: Math.max(0, doc.scrollHeight - window.innerHeight),
   },
 };"#;
-    eval(daemon, id, JS.to_string(), timeout_ms, reply);
+    if !diff {
+        return eval(daemon, id, JS.to_string(), timeout_ms, reply);
+    }
+    // Diff mode: pin the target window now so the baseline read and
+    // the post-eval write hit the same window even if focus moves
+    // while the script runs. The full snapshot script still executes
+    // (so `window.__hwatu_refs` is refreshed and every `ref` in the
+    // diff is a live handle); only the reply is reduced.
+    let win = match resolve(daemon, id) {
+        Ok(w) => w,
+        Err(resp) => return reply(*resp),
+    };
+    let window_id = win.id;
+    let daemon2 = daemon.clone();
+    eval(
+        daemon,
+        Some(window_id),
+        JS.to_string(),
+        timeout_ms,
+        Box::new(move |resp| {
+            let Response::Ok {
+                value: Some(full), ..
+            } = &resp
+            else {
+                return reply(resp); // errors pass through untouched
+            };
+            // Re-fetch the window: it may have closed mid-eval.
+            let Some(win) = daemon2.windows.borrow().get(&window_id).cloned() else {
+                return reply(Response::err(format!(
+                    "window {window_id} closed while the snapshot ran"
+                )));
+            };
+            let new = crate::snapdiff::normalize(full);
+            let previous = win.snapshot_baseline.replace(Some(new));
+            match previous {
+                Some(old) => {
+                    let baseline = win.snapshot_baseline.borrow();
+                    let new = baseline.as_deref().expect("baseline just stored");
+                    let mut out = crate::snapdiff::diff(&old, new);
+                    if let Some(map) = out.as_object_mut() {
+                        map.insert("url".into(), full["url"].clone());
+                    }
+                    reply(Response::value(out));
+                }
+                // First diff of this window (or first since a
+                // navigation reset the baseline): nothing to diff
+                // against, return the full snapshot and say so.
+                None => {
+                    let mut full = full.clone();
+                    if let Some(map) = full.as_object_mut() {
+                        map.insert("baseline_established".into(), serde_json::json!(true));
+                    }
+                    reply(Response::value(full));
+                }
+            }
+        }),
+    );
 }
 
 /// JS prelude that resolves a click/type target: by snapshot `ref` or

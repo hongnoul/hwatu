@@ -174,6 +174,13 @@ pub struct BrowserWindow {
     /// whether an eval would target the requested document or a stale
     /// one. Starts true: an idle window's document is its document.
     load_committed: std::cell::Cell<bool>,
+    /// Baseline for `hwatu snapshot --diff`: the previous diff
+    /// snapshot of this window in normalized form. `None` until the
+    /// first diff snapshot and after every cross-document navigation
+    /// (a new document is a new page; diffing across it would report
+    /// the whole world as changed anyway, and the agent is told
+    /// explicitly via `baseline_established` instead).
+    pub snapshot_baseline: RefCell<Option<Vec<crate::snapdiff::Node>>>,
     /// Console/error/network capture for `hwatu console`. Outlives
     /// discards: the page's state dies, what it logged did happen.
     pub console: crate::console::Buffer,
@@ -378,6 +385,16 @@ impl BrowserWindow {
         }
     }
 
+    /// Drop any per-window viewport override, returning the window to
+    /// the headless_size() default. A multi-viewport check sweep calls
+    /// this before parking its window so the next (plain) check does
+    /// not inherit the sweep's last size.
+    pub fn reset_viewport(self: &Rc<Self>) {
+        if self.viewport.take().is_some() && self.mode.get() == OpenMode::Headless {
+            self.allocate_viewport();
+        }
+    }
+
     /// (Re-)allocate the headless toplevel at the current viewport.
     fn allocate_viewport(self: &Rc<Self>) {
         gtk::prelude::WidgetExt::realize(&self.window);
@@ -485,6 +502,7 @@ impl BrowserWindow {
             nav_pending: RefCell::new(None),
             nav_target: RefCell::new(None),
             load_committed: std::cell::Cell::new(true),
+            snapshot_baseline: RefCell::new(None),
             console: crate::console::Buffer::default(),
             net: crate::net::Buffer::default(),
         });
@@ -652,6 +670,9 @@ impl BrowserWindow {
                 webkit6::LoadEvent::Committed => {
                     this.note_load_engaged(wv);
                     this.load_committed.set(true);
+                    // A new document invalidates the snapshot-diff
+                    // baseline: the next `snapshot --diff` starts over.
+                    this.snapshot_baseline.replace(None);
                     this.clear_recovery_overlay();
                     this.emit_load(wv, "committed");
                 }
