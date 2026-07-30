@@ -197,9 +197,24 @@ return {{ animations: anims.length, touched, resumed: resume }};"#,
 ///
 /// Trust nothing: the reply measures innerWidth/innerHeight from the
 /// page, and if some backend does not map logical px 1:1 onto CSS px
-/// the allocation is corrected once from the measured ratio and
-/// re-verified, so the caller gets the size it asked for (or an
-/// honest measurement of the miss).
+/// the allocation is corrected from the measurement and re-verified,
+/// so the caller gets the size it asked for (or an honest measurement
+/// of the miss).
+///
+/// Two backend behaviours have to be modelled, hence the small
+/// correction *loop* rather than one shot:
+///
+/// - multiplicative: the backend scales logical px (dpr double-apply);
+///   one ratio correction lands it.
+/// - affine: the compositor/window chrome eats a fixed number of rows,
+///   so measured = allocated - k. Seen under the display-free child
+///   compositor (cage), where `resize 1920x1080` landed 1920x1081 and
+///   360x640 landed 360x642 (issue #7). A ratio correction can never
+///   converge on a constant offset, so after the first (ratio) attempt
+///   the loop switches to offset correction: allocate
+///   `allocated + (requested - measured)`. That converges in one more
+///   pass for a constant k, and the loop is capped either way so a
+///   pathological backend costs a bounded number of evals.
 pub fn resize(daemon: &Rc<Daemon>, id: Option<u64>, w: i32, h: i32, reply: Reply) {
     // A resize is cheap, but reading the resulting CSS viewport executes on the
     // page's main thread. Heavy pages can legitimately keep that thread busy
@@ -214,11 +229,37 @@ pub fn resize(daemon: &Rc<Daemon>, id: Option<u64>, w: i32, h: i32, reply: Reply
         Ok(win) => win,
         Err(resp) => return reply(*resp),
     };
-    let daemon2 = daemon.clone();
     let win_id = win.id;
     win.resize_viewport(w, h);
+    measure_and_correct(daemon, win_id, w, h, w, h, 0, reply);
+}
+
+/// Maximum correction passes after the initial allocation. Pass 1 is
+/// the ratio correction (dpr-style scaling), pass 2 the offset
+/// correction (fixed chrome rows); a third is allowed for backends
+/// whose offset itself shifts slightly with size. Bounded so a
+/// backend that never converges costs a fixed number of evals and the
+/// caller still gets an honest measurement.
+const RESIZE_MAX_CORRECTIONS: u32 = 3;
+
+/// Measure the CSS viewport the page actually sees and, if it misses
+/// the request, re-allocate and recurse. `alloc_w/alloc_h` are the
+/// logical px currently allocated; `attempt` counts corrections made
+/// so far.
+fn measure_and_correct(
+    daemon: &Rc<Daemon>,
+    win_id: u64,
+    w: i32,
+    h: i32,
+    alloc_w: i32,
+    alloc_h: i32,
+    attempt: u32,
+    reply: Reply,
+) {
+    const RESIZE_MEASURE_TIMEOUT_MS: u64 = 10_000;
     const MEASURE: &str =
         "return { css_width: innerWidth, css_height: innerHeight, dpr: window.devicePixelRatio }";
+    let daemon2 = daemon.clone();
     automation::eval(
         daemon,
         Some(win_id),
@@ -242,9 +283,12 @@ pub fn resize(daemon: &Rc<Daemon>, id: Option<u64>, w: i32, h: i32, reply: Reply
                 (Some(cw), Some(ch)) => (cw, ch),
                 _ => return reply(resp),
             };
+            if attempt >= RESIZE_MAX_CORRECTIONS {
+                return reply(resp); // honest measurement of the miss
+            }
             let (aw, ah) = (
-                corrected_allocation(w, w, cw),
-                corrected_allocation(h, h, ch),
+                corrected_allocation(w, alloc_w, cw, attempt),
+                corrected_allocation(h, alloc_h, ch, attempt),
             );
             match (aw, ah) {
                 (None, None) => reply(resp), // exact: logical px == CSS px
@@ -253,14 +297,18 @@ pub fn resize(daemon: &Rc<Daemon>, id: Option<u64>, w: i32, h: i32, reply: Reply
                         Some(w) => w,
                         None => return reply(Response::err(format!("no window {win_id}"))),
                     };
-                    win.resize_viewport(aw.unwrap_or(w), ah.unwrap_or(h));
+                    let (next_w, next_h) = (aw.unwrap_or(alloc_w), ah.unwrap_or(alloc_h));
+                    win.resize_viewport(next_w, next_h);
                     // Re-verify: the reply always carries what the page
                     // actually sees, so the caller never has to trust us.
-                    automation::eval(
+                    measure_and_correct(
                         &daemon2,
-                        Some(win_id),
-                        MEASURE.into(),
-                        Some(RESIZE_MEASURE_TIMEOUT_MS),
+                        win_id,
+                        w,
+                        h,
+                        next_w,
+                        next_h,
+                        attempt + 1,
                         reply,
                     );
                 }
@@ -271,16 +319,28 @@ pub fn resize(daemon: &Rc<Daemon>, id: Option<u64>, w: i32, h: i32, reply: Reply
 
 /// One-shot correction for backends where widget logical px do not
 /// map 1:1 onto CSS px: given what was requested (CSS px), what was
-/// allocated (logical px), and what the page measured (CSS px),
-/// return the allocation that should land the request, or `None` if
-/// the measurement already matches. Pure so the double-apply bug
-/// class is pinned by unit tests.
-fn corrected_allocation(requested: i32, allocated: i32, measured: i32) -> Option<i32> {
+/// allocated (logical px), what the page measured (CSS px), and which
+/// correction `attempt` this is, return the allocation that should
+/// land the request, or `None` if the measurement already matches.
+///
+/// `attempt == 0` assumes a multiplicative backend (dpr double-apply)
+/// and scales; later attempts assume an affine one (fixed chrome rows
+/// under the display-free child compositor) and shift by the residual.
+/// Pure so both bug classes are pinned by unit tests.
+fn corrected_allocation(
+    requested: i32,
+    allocated: i32,
+    measured: i32,
+    attempt: u32,
+) -> Option<i32> {
     if measured == requested || measured <= 0 {
         return None;
     }
-    let corrected =
-        (f64::from(allocated) * f64::from(requested) / f64::from(measured)).round() as i32;
+    let corrected = if attempt == 0 {
+        (f64::from(allocated) * f64::from(requested) / f64::from(measured)).round() as i32
+    } else {
+        allocated.saturating_add(requested - measured)
+    };
     Some(corrected.clamp(1, 16384))
 }
 
@@ -704,25 +764,73 @@ mod tests {
     /// measures exactly what was asked.
     #[test]
     fn exact_measurement_needs_no_correction() {
-        assert_eq!(corrected_allocation(360, 360, 360), None);
-        assert_eq!(corrected_allocation(1920, 1920, 1920), None);
+        assert_eq!(corrected_allocation(360, 360, 360, 0), None);
+        assert_eq!(corrected_allocation(1920, 1920, 1920, 0), None);
+        // Also a no-op on later (offset-mode) attempts.
+        assert_eq!(corrected_allocation(640, 677, 640, 1), None);
     }
 
     #[test]
     fn double_applied_scale_is_corrected() {
         // dpr-2 double apply: asked 360, page saw 720 -> halve.
-        assert_eq!(corrected_allocation(360, 360, 720), Some(180));
+        assert_eq!(corrected_allocation(360, 360, 720, 0), Some(180));
         // hypothetical backend where logical px = CSS px * 2 the other
         // way: asked 360, page saw 180 -> double.
-        assert_eq!(corrected_allocation(360, 360, 180), Some(720));
+        assert_eq!(corrected_allocation(360, 360, 180, 0), Some(720));
+    }
+
+    /// Issue #7: under the display-free child compositor the chrome
+    /// eats a constant number of rows (measured = allocated - k), so
+    /// the ratio correction overshoots forever. From attempt 1 the
+    /// correction is additive and lands exactly in one more pass.
+    #[test]
+    fn constant_chrome_offset_is_corrected_additively() {
+        // Observed on the VM: k = 37 rows.
+        const K: i32 = 37;
+        for (requested, allocated) in [(640, 640), (1080, 1080), (100, 100)] {
+            let measured = allocated - K;
+            let next = corrected_allocation(requested, allocated, measured, 1)
+                .expect("miss must be corrected");
+            assert_eq!(next, requested + K);
+            // The re-measure of that allocation now matches exactly.
+            assert_eq!(corrected_allocation(requested, next, next - K, 2), None);
+        }
+    }
+
+    /// Why the loop switches modes rather than repeating the ratio
+    /// correction: on an affine backend a ratio pass only ever removes
+    /// *part* of a constant offset, so it never lands in one step (the
+    /// pre-fix single-shot behaviour, i.e. issue #7), and how many
+    /// steps it needs depends on rounding. Offset mode lands in one,
+    /// for every size.
+    #[test]
+    fn offset_mode_lands_where_ratio_mode_needs_extra_passes() {
+        const K: i32 = 37;
+        for requested in [100, 360, 640, 1080, 1920] {
+            // Ratio mode, one pass from the initial allocation: misses.
+            let ratio_next = corrected_allocation(requested, requested, requested - K, 0)
+                .expect("miss must be corrected");
+            assert_ne!(
+                ratio_next - K,
+                requested,
+                "ratio mode should not land {requested} in one pass"
+            );
+            // Offset mode, one pass: exact.
+            let offset_next = corrected_allocation(requested, requested, requested - K, 1)
+                .expect("miss must be corrected");
+            assert_eq!(offset_next - K, requested);
+        }
     }
 
     #[test]
     fn degenerate_measurements_do_not_explode() {
-        assert_eq!(corrected_allocation(360, 360, 0), None);
-        assert_eq!(corrected_allocation(360, 360, -5), None);
+        assert_eq!(corrected_allocation(360, 360, 0, 0), None);
+        assert_eq!(corrected_allocation(360, 360, -5, 1), None);
         // Correction stays in the request's valid range.
-        assert_eq!(corrected_allocation(16384, 16384, 1), Some(16384));
-        assert_eq!(corrected_allocation(1, 1, 16384), Some(1));
+        assert_eq!(corrected_allocation(16384, 16384, 1, 0), Some(16384));
+        assert_eq!(corrected_allocation(1, 1, 16384, 0), Some(1));
+        // Offset mode clamps too: a huge negative shift floors at 1.
+        assert_eq!(corrected_allocation(1, 1, 16384, 1), Some(1));
+        assert_eq!(corrected_allocation(16384, 16384, 1, 1), Some(16384));
     }
 }
