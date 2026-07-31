@@ -460,6 +460,7 @@ name = "hwatu"
 version = "0.6.0"
 dependencies = [
  "hwatu-ipc",
+ "png",
  "serde_json",
 ]
 

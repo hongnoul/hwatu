@@ -5,6 +5,7 @@
 //! `hana <url>` opens a window in ~1 IPC roundtrip. If no daemon is
 //! running, it spawns one and waits for the socket.
 
+mod clone;
 mod mcp;
 mod onboarding;
 mod update;
@@ -25,6 +26,9 @@ fn main() {
     }
     if args.first().map(String::as_str) == Some("watch") {
         std::process::exit(watch(&args[1..]));
+    }
+    if args.first().map(String::as_str) == Some("clone") {
+        std::process::exit(clone::run(&args[1..]));
     }
     if is_onboarding_command(args.first().map(String::as_str)) {
         std::process::exit(onboarding::run(&args));
@@ -931,6 +935,7 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--foc
 | seek [--id <id>] (--time-ms <ms> | --progress <0..1> | --resume) \
 | clock [--id <id>] (pause | resume | step <ms> | set <ms> | seed <u64> | status) \
 | diff --id <id> (--other <id> | --baseline <png>) [--tolerance <0-255>] [--heatmap <png>] [--full] \
+| clone <url> [--out <dir>] [--viewport <WxH>] [--tolerance <0-255>] [--no-verify] [--keep] \
 | adblock [on|off|status|update] \
 | doctor | setup [--client claude|cursor|generic|jcode] [--scope project|user] [--dry-run] [--undo] \
 | demo [url] [--focus] \

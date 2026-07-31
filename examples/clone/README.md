@@ -1,5 +1,12 @@
 # Page-clone convergence kit
 
+> **Now built in:** `hwatu clone <url> [--out <dir>] [--viewport <WxH>]
+> [--tolerance <n>] [--no-verify] [--keep]` runs this whole pipeline
+> (capture, materialize, verify with a `report.json`) in one command
+> with no python/imagemagick dependencies. The scripts here remain as
+> the hackable reference implementation and for iterating on the
+> method itself.
+
 Captures a live page from a hwatu window into a self-contained local
 mirror, then verifies fidelity with `hwatu diff`. This is the pipeline
 behind the "pixel-perfect copy of stripe.com" demo: it reached a

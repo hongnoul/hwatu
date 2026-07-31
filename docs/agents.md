@@ -51,6 +51,7 @@ machine the human is working on.
 |---|---|
 | `snapshot` | what's on this page, what can I click (JSON, ~tokens not pixels) |
 | `diff --other/--baseline` | how close are these two renders, where do they differ, as a score + regions + heatmap |
+| `clone` | a self-contained local copy of a live page (rendered DOM + assets), verified against the original with a measured pixel-match report |
 | `motion` | every animation as numbers: duration, delay, easing, keyframes |
 | `seek` | pin all animations at time t; two shots at the same t are byte-identical |
 | `expect` | assert page state in one call (polls, structured pass/fail) |
