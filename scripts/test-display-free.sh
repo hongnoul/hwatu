@@ -12,6 +12,11 @@
 #      (diff score >= 99%).
 #   4. `hwatu focus <id>` returns the structured "no display" error,
 #      not a crash (daemon still answers afterwards).
+#   4b. Viewport-sized shots are EXACT under the child compositor
+#      (issue #7): the compositor's chrome ate a constant number of
+#      rows, so a requested 360x640 landed a 360x642 PNG. Both the
+#      measured CSS viewport and the PNG's pixel dimensions must equal
+#      the request.
 #   5. No orphan compositor survives daemon exit (clean quit AND
 #      SIGKILL, which exercises the PDEATHSIG supervisor).
 #
@@ -178,6 +183,36 @@ else
 fi
 out="$(hw ping)"
 check "daemon still answers after the focus error" grep -q '"build"' <<<"$out"
+
+# 4b. exact viewport sizing under the child compositor (issue #7).
+# The pre-fix bug was height-only and size-dependent, so sample a few
+# sizes including the two from the report.
+png_size() { # png_size <file> -> "<w>x<h>"
+    python3 - "$1" <<'PY'
+import struct, sys
+with open(sys.argv[1], 'rb') as f:
+    head = f.read(24)
+w, h = struct.unpack('>II', head[16:24])
+print(f"{w}x{h}")
+PY
+}
+for size in 360x640 800x600 1920x1080; do
+    vshot="$work/vp-$size.png"
+    out="$(hw render --stdin --viewports "$size" --shot="$vshot" \
+        --eval 'innerWidth + "x" + innerHeight' <<<"$fixture")"
+    # Parse the fields: the size LABEL is echoed in the reply too, so
+    # a bare grep for "360x640" would pass even on a 360x642 page.
+    measured="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["viewports"][0]["eval"])' <<<"$out")"
+    check "display-free $size: page measures exactly $size (got $measured)" \
+        test "$measured" = "$size"
+    shot_file="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["viewports"][0].get("shot",""))' <<<"$out")"
+    if [[ -s "${shot_file:-}" ]]; then
+        check "display-free $size: shot PNG is exactly $size" \
+            test "$(png_size "$shot_file")" = "$size"
+    else
+        bad "display-free $size: shot PNG is exactly $size (no shot written)"
+    fi
+done
 
 # 5a. clean quit leaves no compositor
 hw quit >/dev/null
