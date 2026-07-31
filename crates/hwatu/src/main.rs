@@ -26,10 +26,7 @@ fn main() {
     if args.first().map(String::as_str) == Some("watch") {
         std::process::exit(watch(&args[1..]));
     }
-    if matches!(
-        args.first().map(String::as_str),
-        Some("doctor") | Some("setup") | Some("demo")
-    ) {
+    if is_onboarding_command(args.first().map(String::as_str)) {
         std::process::exit(onboarding::run(&args));
     }
     // `--json` is a client-side output flag (machine-readable `list`
@@ -162,6 +159,12 @@ fn main() {
             std::process::exit(1);
         }
     }
+}
+
+/// Return whether the first argument is handled locally instead of being
+/// interpreted as a URL by the browser client.
+fn is_onboarding_command(command: Option<&str>) -> bool {
+    matches!(command, Some("doctor") | Some("setup") | Some("demo"))
 }
 
 fn parse(args: &[String]) -> Result<Request, String> {
@@ -1140,8 +1143,17 @@ pub(crate) fn connect_or_spawn() -> std::io::Result<UnixStream> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_with_default_mode, OpenMode};
+    use super::{is_onboarding_command, parse_with_default_mode, OpenMode};
     use hwatu_ipc::Request;
+
+    #[test]
+    fn onboarding_commands_are_handled_before_url_parsing() {
+        assert!(is_onboarding_command(Some("doctor")));
+        assert!(is_onboarding_command(Some("setup")));
+        assert!(is_onboarding_command(Some("demo")));
+        assert!(!is_onboarding_command(Some("https://example.com")));
+        assert!(!is_onboarding_command(None));
+    }
 
     /// Env-independent parse: tests themselves often run under a
     /// coding agent, which would flip `default_open_mode()`.
