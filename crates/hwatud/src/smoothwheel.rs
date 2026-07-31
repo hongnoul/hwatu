@@ -262,7 +262,10 @@ mod tests {
         assert!(SMOOTH_WHEEL_JS.contains("e.defaultPrevented || !e.cancelable"));
         // preventDefault must appear after the discrete/scrollable
         // guards in the handler body.
-        let handler = SMOOTH_WHEEL_JS.split("addEventListener('wheel'").nth(1).unwrap();
+        let handler = SMOOTH_WHEEL_JS
+            .split("addEventListener('wheel'")
+            .nth(1)
+            .unwrap();
         let pd = handler.find("e.preventDefault()").unwrap();
         let discrete = handler.find("isDiscrete").unwrap();
         let target = handler.find("scrollTarget").unwrap();
