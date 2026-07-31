@@ -102,18 +102,28 @@ document.querySelectorAll('video[poster]').forEach(el => { const u = abs(el.getA
 // Inner scroll positions (carousels, code panes). Restored by a tiny
 // inline script the materializer appends, since scroll-snap can land
 // the clone's scrollers on a different snap point.
+// Two phases — read everything, then write the data attributes —
+// because a dataset write invalidates style and turns the next
+// element's layout read into a full recalc: interleaved, this loop is
+// O(n²) on JS-heavy DOMs (scale.com-sized pages blow the eval budget).
 const scrolls = [];
 {
-  let i = 0;
-  for (const el of document.querySelectorAll('*')) {
+  const MAX_SCAN = 60000; // huge DOMs: cap the walk, report the truth below
+  const all = document.querySelectorAll('*');
+  const n = Math.min(all.length, MAX_SCAN);
+  const found = [];
+  for (let k = 0; k < n; k++) {
+    const el = all[k];
     // Record every scrollable box, including ones at 0: scroll-snap in
     // the clone can otherwise pick a different initial snap point.
     const scrollable = el.scrollWidth > el.clientWidth + 4 || el.scrollHeight > el.clientHeight + 4;
     if (!scrollable || el === document.documentElement || el === document.body) continue;
-    el.dataset.hwatuScroll = i;
-    scrolls.push({ i, left: el.scrollLeft, top: el.scrollTop });
-    i++;
+    found.push([el, el.scrollLeft, el.scrollTop]);
   }
+  found.forEach(([el, left, top], i) => {
+    el.dataset.hwatuScroll = i;
+    scrolls.push({ i, left, top });
+  });
 }
 
 // 3.5 Pin transition state. Rules like `max-height: var(--max-height)`
@@ -134,8 +144,15 @@ const covers = (declared, pin) => declared === 'all' || pin === declared || pin.
 // responsive CSS instead of wearing this width's measurements.
 const pins = [];
 {
-  let pinId = 0;
-  for (const el of document.querySelectorAll('*')) {
+  // Same two-phase discipline as the scroll walk above: all
+  // getComputedStyle reads first, all dataset writes after, or the
+  // style invalidation makes this O(n²) on large DOMs.
+  const MAX_SCAN = 60000;
+  const all = document.querySelectorAll('*');
+  const n = Math.min(all.length, MAX_SCAN);
+  const found = [];
+  for (let k = 0; k < n; k++) {
+    const el = all[k];
     const st = getComputedStyle(el);
     const hasTransition = st.transitionProperty && !st.transitionDuration.split(',').every(d => parseFloat(d) === 0);
     // CSS animation state does not survive serialization: the clone
@@ -157,12 +174,12 @@ const pins = [];
       const v = st.getPropertyValue(p);
       if (v) decls.push(`${p}: ${v} !important`);
     }
-    if (decls.length) {
-      el.dataset.hwatuPin = pinId;
-      pins.push({ i: pinId, css: decls.join('; ') });
-      pinId++;
-    }
+    if (decls.length) found.push([el, decls.join('; ')]);
   }
+  found.forEach(([el, css], i) => {
+    el.dataset.hwatuPin = i;
+    pins.push({ i, css });
+  });
 }
 
 // 4. Serialized DOM. Strip scripts (the clone is a static still) and
