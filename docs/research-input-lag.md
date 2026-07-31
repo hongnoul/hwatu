@@ -193,3 +193,50 @@ pragmatic path.
 Not recommended: keystroke buffering across restores (reorder/IME
 hazards), forcing threaded scrolling features (known wheel breakage),
 a second engine or off-main-thread GTK (not how GTK works).
+
+## Addendum: the 144Hz scroll cap (found and fixed)
+
+Symptom on a 144Hz Wayland laptop (niri, Intel iGPU): idle rAF runs
+at ~144fps, but the moment the page actually repaints every frame
+(scrolling, animations driving layout) the rate collapses to ~59fps.
+GTK was innocent: a bare GTK4 app with a real draw func hits 141fps,
+GSK ngl/vulkan/cairo all ~143fps, and GDK reports the monitor's
+144003mHz correctly. The `refresh_interval=16.7ms` seen under
+`GDK_DEBUG=frames` before the first frame is just the frame-clock
+default, not evidence of a 60Hz clock.
+
+The cap lives in WebKitGTK's DMA-BUF presentation path (the default
+since 2.40): `AcceleratedSurface` frame completion is paced by
+WebKit's own vblank monitor, and when `DisplayVBlankMonitorDRM`
+cannot attach to the DRM CRTC it silently falls back to
+`DisplayVBlankMonitorTimer`, which ticks at a hardcoded
+`FullSpeedFramesPerSecond = 60` (`AnimationFrameRate.h`). Idle rAF
+still reads 144 because the UI-side frame clock drives it; only the
+produce-a-new-buffer-every-frame loop is throttled.
+
+Measured on the scroll fixture (`scripts/bench-scroll/`), median rAF
+delta, `hwatu eval` on the same machine:
+
+| config | idle | scroll |
+|---|---|---|
+| default (DMA-BUF path) | 62.5-142.9 | 58.8 |
+| `GDK_DEBUG=no-vsync` | 142.9 | 142.9 (tears; diagnostic only) |
+| `WEBKIT_DISABLE_DMABUF_RENDERER=1` | 142.9 | 142.9 |
+| `WEBKIT_DMABUF_RENDERER_FORCE_SHM=1` | 142.9 | 58.8 |
+| `GSK_RENDERER=ngl`, `no-offload`, `GDK_DISABLE=offload` | — | 58.8 |
+
+Disabling the DMA-BUF renderer falls back to the legacy EGLImage
+path, which presents through the GTK frame clock and therefore
+follows the real refresh rate. Verified on Wikipedia (100-142fps
+scroll vs 58.8 baseline), CPU cost equal within noise (~13-15%
+total during a scroll storm), wheel + keyboard scrolling intact
+(ydotool-synthesized wheel deltas land identically), WebGL still
+hardware-backed, vsync intact (no tearing).
+
+hwatud now exports `WEBKIT_DISABLE_DMABUF_RENDERER=1` by default
+(`main.rs`); explicit user env wins, so
+`WEBKIT_DISABLE_DMABUF_RENDERER=0 hwatud` restores WebKit's default
+path. Revisit when WebKitGTK's vblank monitor learns to follow the
+real display rate (or exposes a refresh-rate override): the DMA-BUF
+path is the better architecture and should win again once its pacing
+is fixed.
