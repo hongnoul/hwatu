@@ -37,7 +37,7 @@ cat >"$page" <<'HTML'
 <style>
   body { margin: 0; }
   #target { position: absolute; top: 1200px; left: 40px; width: 240px; height: 80px; }
-  #cover { display: none; position: fixed; z-index: 10; background: #111; color: white; }
+  #cover { display: none; position: absolute; z-index: 10; background: #111; color: white; }
 </style>
 <button id="target">Target</button>
 <div id="cover">sticky cover</div>
@@ -46,17 +46,25 @@ HTML
 id="$($bin/hwatu --headless "file://$page" | sed -n 's/^window \([0-9][0-9]*\).*/\1/p')"
 "$bin/hwatu" wait-load --id "$id" --until dom >/dev/null
 
-# Fully off-screen targets are scrolled into view before hit testing.
-"$bin/hwatu" expect --id "$id" '#target' --visible --timeout-ms 250 >/dev/null
+# Fully off-screen targets are scrolled into view for hit testing, but the
+# inspection is observational: the caller's scroll position is restored
+# afterwards, so scrollY must remain 0 while the diagnostics report the
+# internal scroll happened and was undone.
+out="$("$bin/hwatu" expect --id "$id" '#target' --visible --timeout-ms 250)"
 scroll_y="$($bin/hwatu eval --id "$id" 'scrollY')"
-python3 - "$scroll_y" <<'PY'
+python3 - "$out" "$scroll_y" <<'PY'
 import json, sys
-assert json.loads(sys.argv[1]) > 0, sys.argv[1]
+vis = json.loads(sys.argv[1])["visibility"]
+assert vis["scrolled"] is True, vis
+assert vis["scroll_restored"] is True, vis
+assert json.loads(sys.argv[2]) == 0, sys.argv[2]
 PY
 
 # Cover only the target's top edge. A center-only test would pass, while
-# the top-corner samples must identify the partial overlap.
-"$bin/hwatu" eval --id "$id" 'const t=document.querySelector("#target").getBoundingClientRect(); const c=document.querySelector("#cover"); Object.assign(c.style,{display:"block",left:t.left+"px",top:t.top+"px",width:t.width+"px",height:"16px"}); return true;' >/dev/null
+# the top-corner samples must identify the partial overlap. The cover is
+# absolutely positioned in document coordinates so it still overlaps the
+# target during the inspector's internal (restored) scroll-into-view.
+"$bin/hwatu" eval --id "$id" 'const t=document.querySelector("#target").getBoundingClientRect(); const c=document.querySelector("#cover"); Object.assign(c.style,{display:"block",left:(t.left+scrollX)+"px",top:(t.top+scrollY)+"px",width:t.width+"px",height:"16px"}); return true;' >/dev/null
 if "$bin/hwatu" expect --id "$id" '#target' --visible --timeout-ms 0 >"$work/out" 2>&1; then
     echo "FAIL - partially covered element passed --visible" >&2
     cat "$work/out" >&2
