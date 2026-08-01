@@ -62,23 +62,35 @@ done
 
 daemon_fds() { ls "/proc/$daemon_pid/fd" 2>/dev/null | wc -l; }
 
-# ---- 1. one-shot back-compat -----------------------------------------
+# ---- 1. one-shot and persistent connection back-compat ----------------
 lines="$(python3 - <<'EOF'
 import json, os, socket
 s = socket.socket(socket.AF_UNIX)
+s.settimeout(2)
 s.connect(os.environ["XDG_RUNTIME_DIR"] + "/hwatu.sock")
 s.sendall(b'{"cmd":"ping"}\n')
-buf = b""
-while True:
-    d = s.recv(65536)
-    if not d:
-        break
-    buf += d
-print(len([l for l in buf.decode().splitlines() if l.strip()]))
+f = s.makefile("rb")
+print(1 if json.loads(f.readline())["status"] == "ok" else 0)
 EOF
 )"
-check "one-shot request: exactly one reply line then EOF (got $lines)" \
+check "one-shot request: exactly one reply line without waiting for EOF (got $lines)" \
     test "$lines" -eq 1
+
+lines="$(python3 - <<'EOF'
+import json, os, socket
+s = socket.socket(socket.AF_UNIX)
+s.settimeout(2)
+s.connect(os.environ["XDG_RUNTIME_DIR"] + "/hwatu.sock")
+f = s.makefile("rwb", buffering=0)
+f.write(b'{"cmd":"ping"}\n')
+first = json.loads(f.readline())
+f.write(b'{"cmd":"ping"}\n')
+second = json.loads(f.readline())
+print(int(first["status"] == "ok") + int(second["status"] == "ok"))
+EOF
+)"
+check "persistent connection serves two sequential requests (got $lines replies)" \
+    test "$lines" -eq 2
 
 python3 - <<'EOF'
 import os, socket
