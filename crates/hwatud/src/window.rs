@@ -64,6 +64,20 @@ fn home_page() -> Option<String> {
         .filter(|v| !v.trim().is_empty())
 }
 
+/// Media autoplay policy for every WebView. WebKit's own default is
+/// ALLOW_WITHOUT_SOUND, which is why video sites autoplay muted: their
+/// unmuted-play probe is rejected, so they fall back to a muted player.
+/// hwatu defaults to full allow — sound is expected of a browser one
+/// actually watches things in. Override with HWATU_AUTOPLAY=muted (the
+/// WebKit default) or =deny (no autoplay at all).
+fn autoplay_policy() -> webkit6::AutoplayPolicy {
+    match std::env::var("HWATU_AUTOPLAY").as_deref() {
+        Ok("muted") | Ok("without-sound") => webkit6::AutoplayPolicy::AllowWithoutSound,
+        Ok("deny") | Ok("off") => webkit6::AutoplayPolicy::Deny,
+        _ => webkit6::AutoplayPolicy::Allow,
+    }
+}
+
 const DEFAULT_WINDOW_WIDTH: i32 = 1024;
 const DEFAULT_WINDOW_HEIGHT: i32 = 768;
 
@@ -283,7 +297,14 @@ fn set_wayland_app_id(window: &gtk::Window, app_id: &str) {
 /// Build a fully configured WebView. Called for the prewarm pool and as
 /// a fallback; all engine knobs live here, never on the spawn path.
 pub fn build_webview() -> webkit6::WebView {
-    let view = webkit6::WebView::new();
+    // website-policies is construct-only, hence the builder. Autoplay
+    // defaults to full allow (with sound); see autoplay_policy().
+    let policies = webkit6::WebsitePolicies::builder()
+        .autoplay(autoplay_policy())
+        .build();
+    let view = webkit6::WebView::builder()
+        .website_policies(&policies)
+        .build();
     apply_view_settings(&view);
     crate::console::wire_view(&view);
     crate::clock::wire_view(&view);
@@ -449,7 +470,13 @@ impl BrowserWindow {
     /// would break the popup contract. The window is presented on
     /// ready-to-show, once the engine has applied window features.
     fn open_popup(self: &Rc<Self>, related: &webkit6::WebView) -> webkit6::WebView {
-        let webview = webkit6::WebView::builder().related_view(related).build();
+        let popup_policies = webkit6::WebsitePolicies::builder()
+            .autoplay(autoplay_policy())
+            .build();
+        let webview = webkit6::WebView::builder()
+            .related_view(related)
+            .website_policies(&popup_policies)
+            .build();
         apply_view_settings(&webview);
         crate::console::wire_view(&webview);
         crate::clock::wire_view(&webview);
@@ -1634,9 +1661,7 @@ impl BrowserWindow {
         let Some(webview) = self.live_webview() else {
             return false;
         };
-        let on_launcher = webview
-            .uri()
-            .is_some_and(|u| launcher::is_launcher(&u));
+        let on_launcher = webview.uri().is_some_and(|u| launcher::is_launcher(&u));
         if on_launcher && !webview.can_go_back() {
             self.window.close();
             return true;
