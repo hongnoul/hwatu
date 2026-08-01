@@ -842,6 +842,17 @@ impl BrowserWindow {
         {
             let this = self.clone();
             webview.connect_load_failed(move |_, _, failing_uri, error| {
+                // A navigation converted into a download (attachment
+                // disposition or unrenderable MIME) aborts the frame
+                // load with FrameLoadInterruptedByPolicyChange. That
+                // is not a failure - the bytes are arriving via the
+                // download machinery - so a "Page failed to load"
+                // overlay would be a lie. Flash the bar instead; the
+                // download wiring reports the saved path when done.
+                if error.matches(webkit6::PolicyError::FrameLoadInterruptedByPolicyChange) {
+                    this.flash_bar("downloading…", 4);
+                    return true;
+                }
                 this.daemon.events.emit(
                     "load",
                     Some(this.id),
