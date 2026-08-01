@@ -34,7 +34,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// The in-page capture script (see module docs). Embedded so `clone`
 /// works from any directory with no sidecar files.
@@ -42,6 +42,12 @@ const EXTRACT_JS: &str = include_str!("../assets/extract.js");
 
 const UA: &str = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/605.1.15 \
                   (KHTML, like Gecko) Version/17.0 Safari/605.1.15";
+
+const SETTLE_AFTER_RESIZE_MS: u64 = 500;
+const SETTLE_AFTER_SCROLL_MS: u64 = 400;
+const SETTLE_CANVAS_VISIBLE_MS: u64 = 1_200;
+const SETTLE_AFTER_STYLE_ISOLATION_MS: u64 = 300;
+const SETTLE_MIN_FLOOR_MS: u64 = 32;
 
 const USAGE: &str = "usage: hwatu clone <url> [--out <dir>] [--viewport <WxH>] \
      [--tolerance <0-255>] [--no-verify] [--keep] [--timeout-ms <ms>]";
@@ -176,6 +182,87 @@ fn eval(id: u64, js: &str, timeout_ms: u64) -> Result<serde_json::Value, String>
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SettleWait {
+    floor: Duration,
+    timeout: Duration,
+}
+
+impl SettleWait {
+    fn new(floor_ms: u64, timeout_ms: u64) -> Self {
+        let floor_ms = floor_ms.max(SETTLE_MIN_FLOOR_MS);
+        let timeout_ms = timeout_ms.max(floor_ms);
+        Self {
+            floor: Duration::from_millis(floor_ms),
+            timeout: Duration::from_millis(timeout_ms),
+        }
+    }
+
+    fn eval_timeout_ms(self) -> u64 {
+        self.timeout
+            .saturating_add(Duration::from_millis(50))
+            .as_millis()
+            .min(u64::MAX as u128) as u64
+    }
+}
+
+/// Best-effort visual settle without protocol changes.
+///
+/// The page-side part waits for two animation frames and a stable scrollY,
+/// which is the cheap "a frame was produced" contract available through
+/// existing eval. Headless WebKit views can be unmapped, and an unmapped view
+/// may never deliver requestAnimationFrame. The daemon eval timeout plus this
+/// function's native `Instant` floor/timeout keep the wait bounded and preserve
+/// the old minimum pause semantics instead of hanging or failing the clone.
+fn wait_visual_settle(id: u64, floor_ms: u64, timeout_ms: u64, context: &str) {
+    let wait = SettleWait::new(floor_ms, timeout_ms);
+    let started = Instant::now();
+    let floor = wait.floor.as_millis();
+    let timeout = wait.timeout.as_millis();
+    let js = format!(
+        r#"
+        const floor = {floor};
+        const timeout = {timeout};
+        const start = performance.now();
+        return await new Promise((resolve) => {{
+            let lastY = Number.isFinite(scrollY) ? scrollY : 0;
+            let stableFrames = 0;
+            let done = false;
+            const finish = (settled, reason) => {{
+                if (done) return;
+                done = true;
+                resolve({{ settled, reason, scrollY: Number.isFinite(scrollY) ? scrollY : 0 }});
+            }};
+            const tick = () => {{
+                const y = Number.isFinite(scrollY) ? scrollY : 0;
+                stableFrames = Math.abs(y - lastY) < 0.5 ? stableFrames + 1 : 0;
+                lastY = y;
+                if (performance.now() - start >= floor && stableFrames >= 1) {{
+                    finish(true, 'double-raf-scroll-stable');
+                }} else {{
+                    requestAnimationFrame(tick);
+                }}
+            }};
+            setTimeout(() => finish(false, 'page-timeout'), timeout);
+            requestAnimationFrame(() => requestAnimationFrame(tick));
+        }});
+        "#
+    );
+    match eval(id, &js, wait.eval_timeout_ms()) {
+        Ok(_) => {}
+        Err(e) if e.contains("timed out") => {
+            eprintln!("clone: settle {context}: native timeout fallback after {timeout} ms");
+        }
+        Err(e) => {
+            eprintln!("clone: settle {context}: {e}; continuing after bounded wait");
+        }
+    }
+    let elapsed = started.elapsed();
+    if elapsed < wait.floor {
+        std::thread::sleep(wait.floor - elapsed);
+    }
+}
+
 fn open_headless(url: &str, timeout_ms: u64) -> Result<u64, String> {
     let Response::Ok { window, .. } = call_ok(&Request::Open {
         url: Some(url.to_string()),
@@ -307,8 +394,13 @@ fn crop_blank_canvases(cap: &serde_json::Value, live: u64, out: &Path) -> Result
         }
         let scroll_y = (doc_y - 80.0).max(0.0);
         eval(live, &format!("scrollTo(0,{scroll_y}); return 0"), 10_000)?;
-        // Give rAF draw loops a beat to paint now that it is visible.
-        std::thread::sleep(Duration::from_millis(1200));
+        // Give rAF draw loops a bounded chance to paint now that it is visible.
+        wait_visual_settle(
+            live,
+            SETTLE_MIN_FLOOR_MS,
+            SETTLE_CANVAS_VISIBLE_MS,
+            "canvas-visible",
+        );
         // Isolate the canvas paint: visibility on ancestors is
         // overridable by descendants, so the canvas stays visible while
         // overlaying DOM text does not get baked into the crop.
@@ -319,7 +411,12 @@ fn crop_blank_canvases(cap: &serde_json::Value, live: u64, out: &Path) -> Result
              document.head.appendChild(st); return 1"
         );
         eval(live, &iso, 10_000)?;
-        std::thread::sleep(Duration::from_millis(300));
+        wait_visual_settle(
+            live,
+            SETTLE_MIN_FLOOR_MS,
+            SETTLE_AFTER_STYLE_ISOLATION_MS,
+            "canvas-isolated",
+        );
         let shot = out.join(format!("canvas-shot-{i}.png"));
         let Response::Ok { path, .. } = call_ok(&Request::Screenshot {
             id: Some(live),
@@ -871,7 +968,18 @@ fn verify_with(opts: &Opts, live: u64, clone_win: u64) -> Result<serde_json::Val
             timeout_ms: Some(10_000),
         });
     }
-    std::thread::sleep(Duration::from_millis(500));
+    wait_visual_settle(
+        live,
+        SETTLE_MIN_FLOOR_MS,
+        SETTLE_AFTER_RESIZE_MS,
+        "live-resize-seek",
+    );
+    wait_visual_settle(
+        clone_win,
+        SETTLE_MIN_FLOOR_MS,
+        SETTLE_AFTER_RESIZE_MS,
+        "clone-resize-seek",
+    );
 
     let max_scroll = eval(
         live,
@@ -890,7 +998,18 @@ fn verify_with(opts: &Opts, live: u64, clone_win: u64) -> Result<serde_json::Val
         for id in [live, clone_win] {
             eval(id, &format!("scrollTo(0,{y}); return 0"), 10_000)?;
         }
-        std::thread::sleep(Duration::from_millis(400));
+        wait_visual_settle(
+            live,
+            SETTLE_MIN_FLOOR_MS,
+            SETTLE_AFTER_SCROLL_MS,
+            "live-scroll",
+        );
+        wait_visual_settle(
+            clone_win,
+            SETTLE_MIN_FLOOR_MS,
+            SETTLE_AFTER_SCROLL_MS,
+            "clone-scroll",
+        );
         let Response::Ok { value, .. } = call_ok(&Request::Diff {
             id: live,
             other: Some(clone_win),
@@ -973,6 +1092,21 @@ mod tests {
     fn opts_reject_unknown() {
         assert!(Opts::parse(&["x.com".into(), "--bogus".into()]).is_err());
         assert!(Opts::parse(&[]).is_err());
+    }
+
+    #[test]
+    fn settle_wait_preserves_minimum_floor() {
+        let wait = SettleWait::new(0, 1);
+        assert_eq!(wait.floor, Duration::from_millis(SETTLE_MIN_FLOOR_MS));
+        assert_eq!(wait.timeout, Duration::from_millis(SETTLE_MIN_FLOOR_MS));
+    }
+
+    #[test]
+    fn settle_wait_keeps_native_timeout_above_page_timeout() {
+        let wait = SettleWait::new(50, 400);
+        assert_eq!(wait.floor, Duration::from_millis(50));
+        assert_eq!(wait.timeout, Duration::from_millis(400));
+        assert!(wait.eval_timeout_ms() > wait.timeout.as_millis() as u64);
     }
 
     #[test]
