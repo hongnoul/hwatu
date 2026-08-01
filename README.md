@@ -6,7 +6,7 @@
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![CI](https://github.com/hongnoul/hwatu/actions/workflows/ci.yml/badge.svg)](https://github.com/hongnoul/hwatu/actions/workflows/ci.yml)
 
-**Your agents loop with real eyes. You watch some reels. One warm browser, native on Linux.**
+**Give your agent harness real eyes. Keep the browser for yourself. Native on Linux.**
 
 </div>
 
