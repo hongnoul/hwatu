@@ -24,6 +24,15 @@
 //! touchpad deltas (non-integer, small) are left to the engine, which
 //! already handles them well (instant + kinetic).
 //!
+//! Mandatory `scroll-snap` containers (Instagram Reels, YouTube
+//! Shorts, TikTok-style feeds) get native-app paging instead of the
+//! delta glide: one discrete tick animates to exactly the next snap
+//! point, ticks landing mid-flight are absorbed so a fast wheel can't
+//! skip pages, and a late or reverse tick retargets one page further
+//! while preserving velocity. A proportional glide on these feeds
+//! either fights the engine's snap resolution or strands the view
+//! between reels; paging is what the equivalent native apps do.
+//!
 //! Fail-open by design: the handler bails — leaving native scrolling
 //! intact — when the event is already `defaultPrevented`, not
 //! cancelable, ctrl/alt/meta-modified (zoom and friends), or when no
@@ -83,6 +92,13 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
     return bezier(0.42, 0.42 * slope, 0.58, 1);
   }
 
+  // Snap paging: one wheel tick = one snap point, like native reel
+  // feeds. Fixed duration (native apps page at a steady cadence) and
+  // an absorb window so the several ticks of one physical flick move
+  // exactly one page.
+  const SNAP_DUR = 350, SNAP_ABSORB = 0.55, SNAP_CACHE_MS = 300;
+  const snapCache = new WeakMap();
+
   // One live animation per scroller. Usually a single entry (the root).
   const anims = new Map();
   let rafId = 0;
@@ -135,6 +151,123 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
     if (e.deltaMode !== 0) return true;
     return Number.isInteger(e.deltaY) && Number.isInteger(e.deltaX)
         && Math.abs(e.deltaY || e.deltaX) >= 24;
+  }
+
+  // True when `el` snaps mandatorily on this axis. The root scroller's
+  // snap type may live on <html> or <body>.
+  function isMandatorySnap(el, h) {
+    const nodes = el === document.scrollingElement
+      ? [document.documentElement, document.body]
+      : [el];
+    for (const n of nodes) {
+      if (!n) continue;
+      const st = getComputedStyle(n).scrollSnapType || 'none';
+      if (!st.includes('mandatory')) continue;
+      const axis = st.split(' ')[0];
+      if (axis === 'both') return true;
+      if (h ? (axis === 'x' || axis === 'inline') : (axis === 'y' || axis === 'block')) return true;
+    }
+    return false;
+  }
+
+  // Content offsets of snap-aligned descendants (honoring
+  // start/center/end alignment), sorted and deduped. Depth-capped
+  // walk, memoized briefly so rapid ticks don't re-measure a
+  // virtualized feed every event.
+  function snapOffsets(el, h) {
+    const now = performance.now();
+    const c = snapCache.get(el);
+    if (c && c.h === h && now - c.t < SNAP_CACHE_MS) return c.offsets;
+    const scope = el === document.scrollingElement ? document.documentElement : el;
+    const base = scope.getBoundingClientRect();
+    const pos = getPos(el, h);
+    const max = maxScroll(el, h);
+    const port = h ? el.clientWidth : el.clientHeight;
+    const raw = [];
+    const stack = [[scope, 0]];
+    let seen = 0;
+    while (stack.length && seen < 600) {
+      const [node, d] = stack.pop();
+      for (const ch of node.children) {
+        if (++seen > 600) break;
+        const align = getComputedStyle(ch).scrollSnapAlign;
+        if (align !== 'none') {
+          const r = ch.getBoundingClientRect();
+          // Two-value form is `<block> <inline>`; vertical scrolling
+          // uses the block component, horizontal the inline one.
+          const parts = align.split(' ');
+          const ax = parts.length > 1 ? (h ? parts[1] : parts[0]) : parts[0];
+          let off = pos + (h ? r.left - base.left : r.top - base.top);
+          const size = h ? r.width : r.height;
+          if (ax === 'center') off -= (port - size) / 2;
+          else if (ax === 'end') off -= port - size;
+          raw.push(Math.min(Math.max(off, 0), max));
+        } else if (d < 3) {
+          stack.push([ch, d + 1]);
+        }
+      }
+    }
+    raw.sort((a, b) => a - b);
+    const offsets = [];
+    for (const v of raw) {
+      if (!offsets.length || v - offsets[offsets.length - 1] > 1) offsets.push(v);
+    }
+    snapCache.set(el, { t: now, h, offsets });
+    return offsets;
+  }
+
+  // Animate to an absolute snap offset over a fixed duration,
+  // preserving in-flight velocity on retarget.
+  function animateTo(el, horiz, target) {
+    const now = performance.now();
+    const cur = getPos(el, horiz);
+    let a = anims.get(el);
+    if (a && a.horiz !== horiz) { anims.delete(el); a = null; }
+    if (!a) {
+      if (Math.abs(target - cur) < EPS) return;
+      anims.set(el, { horiz, from: cur, to: target, start: now,
+                      dur: SNAP_DUR, curve: easeInOut(), snap: true });
+      ensureRaf();
+      return;
+    }
+    const t = Math.min((now - a.start) / a.dur, 1);
+    const pos = a.from + (a.to - a.from) * a.curve.value(t);
+    const vel = a.curve.slope(t) * (a.to - a.from) / a.dur;
+    const newDelta = target - pos;
+    if (Math.abs(newDelta) < EPS) { anims.delete(el); setPos(el, horiz, target); return; }
+    a.from = pos; a.to = target; a.start = now; a.dur = SNAP_DUR; a.snap = true;
+    a.curve = Math.abs(vel) > EPS ? easeWithSlope(vel * SNAP_DUR / newDelta) : easeInOut();
+    ensureRaf();
+  }
+
+  // Page a mandatory-snap scroller by one snap point. Returns true if
+  // the tick was consumed (paged, absorbed mid-flight, or at extent).
+  function pageSnap(el, horiz, dir) {
+    if (!isMandatorySnap(el, horiz)) return false;
+    const offsets = snapOffsets(el, horiz);
+    if (offsets.length < 2) return false;
+    const a = anims.get(el);
+    if (a && a.snap && a.horiz === horiz) {
+      const t = (performance.now() - a.start) / a.dur;
+      const going = a.to > a.from ? 1 : -1;
+      // A flick emits several ticks: absorb same-direction ticks
+      // early in flight so one flick moves exactly one page.
+      if (going === dir && t < SNAP_ABSORB) return true;
+    }
+    const eff = a && a.horiz === horiz ? a.to : getPos(el, horiz);
+    let target = null;
+    if (dir > 0) {
+      for (const v of offsets) { if (v > eff + 1) { target = v; break; } }
+    } else {
+      for (let i = offsets.length - 1; i >= 0; i--) {
+        if (offsets[i] < eff - 1) { target = offsets[i]; break; }
+      }
+    }
+    // At the feed's extent: consume the tick rather than leaking a
+    // glide into an ancestor mid-feed.
+    if (target == null) return true;
+    animateTo(el, horiz, target);
+    return true;
   }
 
   function animateBy(el, horiz, delta) {
@@ -192,6 +325,9 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
       const el = scrollTarget(e.target, horiz, delta > 0 ? 1 : -1);
       if (!el) return; // nothing scrollable: stay native
 
+      // Snap paging decides before preventDefault so an exception in
+      // it degrades to native scrolling, not a dead wheel.
+      if (pageSnap(el, horiz, delta > 0 ? 1 : -1)) { e.preventDefault(); return; }
       e.preventDefault();
       animateBy(el, horiz, delta);
     } catch (_) {
@@ -270,5 +406,22 @@ mod tests {
         let discrete = handler.find("isDiscrete").unwrap();
         let target = handler.find("scrollTarget").unwrap();
         assert!(discrete < pd && target < pd);
+    }
+
+    /// Snap paging must claim mandatory-snap feeds (Reels-style) and
+    /// must decide before any preventDefault so an exception in it
+    /// falls back to native scrolling.
+    #[test]
+    fn snap_paging_shape() {
+        assert!(SMOOTH_WHEEL_JS.contains("scrollSnapType"));
+        assert!(SMOOTH_WHEEL_JS.contains("mandatory"));
+        assert!(SMOOTH_WHEEL_JS.contains("scrollSnapAlign"));
+        let handler = SMOOTH_WHEEL_JS
+            .split("addEventListener('wheel'")
+            .nth(1)
+            .unwrap();
+        let snap = handler.find("pageSnap").unwrap();
+        let pd = handler.find("e.preventDefault()").unwrap();
+        assert!(snap < pd, "pageSnap must run before preventDefault");
     }
 }
