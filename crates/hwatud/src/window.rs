@@ -834,8 +834,10 @@ impl BrowserWindow {
         }
         // Non-displayable responses (Content-Disposition: attachment,
         // MIME types WebKit can't render) become downloads instead of
-        // dead ends.
-        webview.connect_decide_policy(|_, decision, decision_type| {
+        // dead ends. Main-document responses also pass through the
+        // per-site UA switcher (mobile UI for reels-style sites),
+        // which may restart the load under the right user-agent.
+        webview.connect_decide_policy(|wv, decision, decision_type| {
             if decision_type != webkit6::PolicyDecisionType::Response {
                 return false; // default handling
             }
@@ -843,6 +845,9 @@ impl BrowserWindow {
             else {
                 return false;
             };
+            if crate::siteua::handle_response_decision(wv, response) {
+                return true;
+            }
             if response.is_mime_type_supported() {
                 return false;
             }

@@ -25,6 +25,7 @@ mod palette;
 mod prompts;
 mod search;
 mod session;
+mod siteua;
 mod smoothwheel;
 mod snapdiff;
 mod verify;
