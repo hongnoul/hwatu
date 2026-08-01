@@ -1,6 +1,6 @@
 # hwatu roadmap
 
-Status: current as of 2026-07. This file is the plan of record; docs
+Status: current as of 2026-08. This file is the plan of record; docs
 and marketing should match it.
 
 Roadmap ordering is reviewed weekly using the evidence and scoring rules in
@@ -14,19 +14,34 @@ agents: a warm WebKit daemon where opening, driving, screenshotting,
 and closing a real rendered page costs milliseconds, on the same
 machine the human is working on.
 
-hwatu is **not** trying to be a daily-driver browser for humans. That
-market belongs to Chromium derivatives on polish and to qutebrowser on
-keyboard UX, and competing there would burn months on link hints,
-password fill, history, and sync for a niche of a niche. The human
-side of hwatu exists to serve exactly one flow: **hand-off**. An agent
-drives a headless session, hits something that needs a person (a
-CAPTCHA, an ambiguous UI, a visual judgment call), runs
-`hwatu focus <id>`, and the same live session materializes in the
-user's tiling WM. The human acts, the agent resumes.
+**Revised 2026-08:** hwatu is now ALSO becoming a **primary browser
+for tiling-WM users** (Hyprland, sway, niri, i3, river). The earlier
+position ("the human side exists only to serve hand-off") is
+retired. Two things changed it:
 
-Corollary: hwatu should be the best tool in the world at the agent
-inner loop, and merely *adequate* at being looked at and poked by a
-human for a minute.
+1. v0.7.0 proved the model: mainstream keybinds, media-correct video,
+   unified shortform controls, and Chromium-curve scrolling landed
+   fast because the daemon architecture (one warm engine, ~56 MB per
+   extra window, WM-native windows) does the heavy lifting. The
+   marginal cost of daily-driver polish is lower than assumed.
+2. The demand is real and unserved. Users of the window-per-page
+   model say so explicitly ("your web browser shouldn't try to be a
+   window manager", "tabs are redundant if my window manager provides
+   them") and report abandoning qutebrowser and friends over
+   execution polish, not over the model. Nobody owns this niche;
+   hwatu's daemon (instant windows from `xdg-open`, one process pool,
+   agent hand-off) is structurally the best fit for it.
+
+The hand-off loop stays the moat: an agent drives a headless session,
+hits something that needs a person, runs `hwatu focus <id>`, and the
+same live session materializes in the user's tiling WM. Daily-driver
+quality makes the hand-off destination a browser the human already
+lives in, which strengthens the loop rather than competing with it.
+
+Corollary, revised: hwatu should be the best tool in the world at the
+agent inner loop, and a **credible primary browser** for the
+keyboard-driven tiling-WM user, in that order of priority when they
+conflict.
 
 ## Why this is winnable
 
@@ -434,23 +449,148 @@ measured numbers for anything performance-claiming; (4) leave the
 one-shot protocol backward compatible: old clients against new
 daemons is the invariant that lets sessions ship incrementally.
 
-## The human side: frozen at hand-off quality
+## Workstream: the primary browser for tiling WMs
 
-Kept and maintained, because the hand-off flow needs them:
+Adopted 2026-08 after a three-track research pass: a code audit of
+what exists vs what a daily driver needs, user-testimony research on
+why people adopt and abandon minimal keyboard browsers (qutebrowser,
+vimb, luakit, nyxt), and a WebKitGTK 2.52 capability audit of what
+the engine gives us for free.
 
-- The bar (find, URL entry, y/n prompts), recovery overlays, TLS and
-  permission prompts, downloads, crash-restore sessions, keybinds and
-  `keys.conf`, the launcher page, adblock.
+The evidence pattern: people adopt this category for keyboard-first
+UX, minimal chrome, and config-as-dotfile, and abandon it over (in
+order) ad quality, broken sites, password friction, and video. The
+window-per-page model itself has vocal demand and no polished
+incumbent. So the plan is: fix what is silently broken first, then
+ship the category-defining features, then close the abandonment
+drivers.
 
-Explicitly **not planned** (churn-magnet human-browser features):
+Another session is currently fixing embedded iframe video
+interaction; it is deliberately absent from the list below.
 
-- Tabs, sync, extensions/WebExtensions, password manager integration,
-  link hints, browsing history and URL completion, bookmarks,
-  per-site settings UI, DRM (Widevine).
+### D0: silently broken or one-line-cheap (engine already does it)
 
-Small human papercuts (zoom, undo-close, yank-URL) are accepted as
-patches if they stay inside the existing Action/Keymap machinery, but
-they are not roadmap items.
+Each of these is small because WebKitGTK 2.52 already implements the
+hard part; hwatud just never connected the signal or flipped the
+setting.
+
+H1. **File uploads.** `run-file-chooser` is unhandled, so `<input
+    type=file>` does nothing today. Any upload flow (attaching a file
+    to an email, a GitHub issue, a form) is dead. Connect the signal
+    to a GTK file dialog (~80 lines). Highest urgency in this tier:
+    it is invisible until it bites, then it forces a browser switch.
+H2. **WebRTC calls.** `enable-webrtc` defaults OFF; one
+    `set_enable_webrtc(true)` plus documenting the `gst-plugins-bad`
+    runtime dependency turns on Meet/Discord/Zoom-web calls. The
+    permission prompt plumbing already exists. Verify live on
+    meet.google.com; per-site UA (`siteua.rs`) covers UA-sniffing
+    services.
+H3. **Hardware video decode.** Zero code: VA-API decode arrives with
+    `gst-plugin-va` (in gst-plugins-bad) + the vendor driver.
+    Document it in install/doctor; consider a `hwatu doctor` probe.
+    Big battery and smoothness win on laptops, and the same package
+    install as H2.
+H4. **Web notifications.** Permission prompt exists but
+    `show-notification` is unhandled and the Arch build does not link
+    libnotify, so grants are silent. Forward to
+    `org.freedesktop.Notifications` over D-Bus and route `clicked` to
+    window focus (~100 lines).
+H5. **Persistent per-site decisions.** Permission grants
+    (`prompts.rs` Memory) are daemon-lifetime RAM; every restart
+    re-asks mic/cam/notification questions. Persist the
+    (host, kind) -> bool map to disk. Add per-site zoom persistence
+    on the same store.
+H6. **Spell check.** Enchant backend is present; two lines
+    (`set_spell_checking_enabled` + languages) plus a config key.
+H7. **Printing.** Connect the `print` signal to a
+    `WebKitPrintOperation` (~30 lines) and bind Ctrl+P. Print-to-PDF
+    comes free.
+H8. **PDF viewing.** WebKitGTK ships pdf.js enabled by default;
+    verify `decide-policy` does not intercept `application/pdf`
+    into a download before the viewer sees it.
+
+### D1: category-defining features (what the audience switches for)
+
+Ordered by user-testimony criticality crossed with implementation
+cost. These reverse specific entries in the old not-planned list;
+the reversal is deliberate.
+
+H9. **Global history + URL completion.** The single most-missed
+    feature in the audit: the bar is a bare GTK Entry and nothing
+    records visited URLs, so every navigation is retyped. Store
+    (url, title, visit_count, last_visit) in SQLite next to the
+    cookie store; fuzzy-complete in the bar and the command palette.
+    "Press o and have access to the world" is the retention feature
+    of this category.
+H10. **Link hints.** Keyboard navigation to links is table stakes
+    for the audience (qutebrowser `f`). All the pieces exist: the JS
+    injection infra (automation.rs), the interactables enumeration
+    (snapshot machinery), and the bar for hint input. Variants can
+    wait; plain follow + open-in-new-window + yank-href cover most
+    use.
+H11. **Password manager integration.** The most-cited "almost
+    perfect but..." gap in competitor testimony. First-class fill
+    from `pass`, KeePassXC, and Bitwarden CLIs: a fill action that
+    shells out, matches by host, and types username/password (TOTP
+    next). No sync, no storage of our own, ever.
+H12. **Undo close window.** Ctrl+W with no undo loses the page and
+    its history; with WM-as-tab-bar this is a daily event. Keep an
+    N-deep closed-window stack (URL + serialized history blob, the
+    discard machinery already serializes it) and bind Ctrl+Shift+T.
+H13. **Quickmarks + search keywords.** Named shortcuts (`:open
+    foodrecipes`) and per-engine keywords (`w foo` searches
+    Wikipedia) in the existing search.conf/palette machinery. Cheap,
+    universally used.
+
+### D2: abandonment drivers (why people go back to Firefox)
+
+H14. **Cosmetic filtering.** Network-level EasyList blocking exists,
+    but the #1 stated reason users leave this category is ad quality:
+    element hiding is what makes YouTube/news sites bearable.
+    Compile EasyList cosmetic rules to per-site injected CSS (the
+    content-extension engine handles the network tier already).
+H15. **Forced dark mode.** Chromium-derived darkmode is a praised
+    qutebrowser feature with no WebKitGTK equivalent; ship a
+    prefers-color-scheme override plus an injected-CSS darkener with
+    a per-site toggle, persisted on the H5 store.
+H16. **Cookie/site-data management.** Persistence exists; clearing
+    does not (no verb, no keybind, only hand-deleting cookies.sqlite).
+    Add `hwatu clear-site-data [--host H]` and a palette action.
+H17. **mpv hand-off.** The loved mitigation for video gaps: a
+    keybind that hands the current URL (or hinted link) to `mpv`.
+    Trivial with H10's hint machinery.
+H18. **Edit-in-$EDITOR.** Celebrated in every browser of this class:
+    edit any textarea in the user's editor and paste back on save.
+H19. **Session restore to WM workspaces.** Crash-restore exists;
+    extend session entries with enough identity (stable per-window
+    app_id/title conventions, documented) that WM rules can re-place
+    restored windows, and restore on clean quit too (opt-in).
+
+### Engine-bound gaps (documented honestly, not planned)
+
+- **Widevine/DRM:** WebKitGTK has ClearKey only; no distro ships
+  OpenCDM for the GTK port. Netflix/Spotify-web will not play.
+  Mitigation: document it; keep a fallback-browser keybind.
+- **WebAuthn/passkeys:** not exposed by the GTK port at all. Track
+  upstream; sites that hard-require passkeys need the fallback
+  browser. This will grow into a real problem and the roadmap should
+  re-check upstream status quarterly.
+- **Anti-bot walls (Akamai/Cloudflare):** a growing category killer
+  for WebKitGTK browsers generally. Per-site UA helps; beyond that
+  it is upstream's fight, and `challenge` hand-off is the honest
+  answer.
+
+### Still not planned (churn magnets with no constituency here)
+
+- Tabs (the WM tiles), sync, extensions/WebExtensions as a platform
+  (specific needs get native features or the userscript escape
+  hatch), a password store of our own (we integrate, never store),
+  Widevine workarounds.
+
+The old blanket non-goals list claimed link hints, history+completion,
+bookmarks, password integration, and per-site settings would never
+happen; the daily-driver decision reverses those specific entries,
+and this section is the plan of record for them now.
 
 ## Non-goals, restated
 
