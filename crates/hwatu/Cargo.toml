@@ -13,3 +13,5 @@ readme = "../../README.md"
 [dependencies]
 hwatu-ipc = { path = "../ipc", version = "0.6.0" }
 serde_json = "1"
+# `hwatu clone` crops engine screenshots for blank WebGL canvases.
+png = "0.17"

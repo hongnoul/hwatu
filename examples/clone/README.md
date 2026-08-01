@@ -1,5 +1,12 @@
 # Page-clone convergence kit
 
+> **Now built in:** `hwatu clone <url> [--out <dir>] [--viewport <WxH>]
+> [--tolerance <n>] [--no-verify] [--keep]` runs this whole pipeline
+> (capture, materialize, verify with a `report.json`) in one command
+> with no python/imagemagick dependencies. The scripts here remain as
+> the hackable reference implementation and for iterating on the
+> method itself.
+
 Captures a live page from a hwatu window into a self-contained local
 mirror, then verifies fidelity with `hwatu diff`. This is the pipeline
 behind the "pixel-perfect copy of stripe.com" demo: it reached a
@@ -53,3 +60,18 @@ hwatu diff --id 1 --other 2 --heatmap heat.png
 Iterate on the clone until `match_percent` converges; the heatmap and
 `regions` name what to fix next. Verify motion parity with
 `hwatu motion` on both windows and diff the JSON.
+
+## The fidelity ladder
+
+`scripts/test-clone-suite.sh` is the canonical regression suite for
+`hwatu clone` — every phase of clone work must climb the same three
+rungs, in order:
+
+1. **webkit.org** — static-ish page; CSSOM + fonts + SVG floor.
+2. **stripe.com** — WebGL canvases, entrance reveals, transition pins.
+3. **scale.com** — heavy JS DOM, lazy loading, autoplay video.
+
+Run it after any change to `extract.js`, `clone.rs`, or engine
+settings that capture depends on. Thresholds in the script are floors
+measured from what the current phase achieves — raise them as later
+phases land; never lower them to pass.

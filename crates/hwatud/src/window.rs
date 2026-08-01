@@ -257,7 +257,25 @@ fn set_wayland_app_id(window: &gtk::Window, app_id: &str) {
 /// Build a fully configured WebView. Called for the prewarm pool and as
 /// a fallback; all engine knobs live here, never on the spawn path.
 pub fn build_webview() -> webkit6::WebView {
-    let view = webkit6::WebView::new();
+    // HWATU_BLOCK_AUTOPLAY=1: deny media autoplay engine-wide (muted
+    // videos included — the user-gesture setting exempts those).
+    // Escape hatch for a WebKitGTK+GStreamer wedge observed with gst
+    // 1.28.5: pages with several lazy-initialized autoplay videos
+    // (scale.com) deadlock the web process main thread in a futex
+    // inside the gst pipeline seconds after load, killing every
+    // subsequent eval. Still-capture flows (`hwatu clone`) don't need
+    // playback — poster frames render without it. Must be set at
+    // construction: website-policies is a construct-only property.
+    let view = if std::env::var_os("HWATU_BLOCK_AUTOPLAY").is_some_and(|v| v == "1") {
+        let policies = webkit6::WebsitePolicies::builder()
+            .autoplay(webkit6::AutoplayPolicy::Deny)
+            .build();
+        webkit6::WebView::builder()
+            .website_policies(&policies)
+            .build()
+    } else {
+        webkit6::WebView::new()
+    };
     apply_view_settings(&view);
     crate::console::wire_view(&view);
     crate::clock::wire_view(&view);
