@@ -330,6 +330,17 @@ fn clone_with_window(opts: &Opts, live: u64) -> Result<String, String> {
 
     crop_blank_canvases(&cap, live, &opts.out)?;
 
+    // #44: the still clone drops script-driven motion (rAF loops, GSAP
+    // tickers) and every event handler by design. Observe the live
+    // window with the motion sampler and name what will not survive,
+    // so "faithful" stays a measured claim instead of a still-envelope
+    // technicality.
+    eprintln!("clone: observing script-driven motion...");
+    let (unreplicated_motion, motion_err) = observe_motion(live);
+    if let Some(err) = &motion_err {
+        eprintln!("clone: motion observe failed ({err}); reporting without motion tracks");
+    }
+
     eprintln!("clone: materializing...");
     let stats = materialize(&cap, &opts.out)?;
     eprintln!(
@@ -344,20 +355,48 @@ fn clone_with_window(opts: &Opts, live: u64) -> Result<String, String> {
         stats.wanted
     );
 
+    let stripped_scripts = cap.get("scripts").and_then(|v| v.as_u64()).unwrap_or(0);
+    let interactive = cap.get("interactive").and_then(|v| v.as_u64()).unwrap_or(0);
+    let replayed = stats
+        .scroll_effects
+        .iter()
+        .filter(|e| e.get("replay").and_then(|v| v.as_str()) == Some("replayed"))
+        .count();
+    let honesty = format!(
+        "still clone: {} script-driven motion track(s) and ~{} interactive element(s) not replicated",
+        unreplicated_motion.len(),
+        interactive
+    );
+    let mut report = serde_json::json!({
+        "url": opts.url,
+        "viewport": { "w": opts.viewport.0, "h": opts.viewport.1 },
+        "unreplicated_motion": unreplicated_motion,
+        "stripped_scripts": stripped_scripts,
+        "interactive_elements": interactive,
+        "scroll_effects": stats.scroll_effects,
+        "summary": honesty,
+        "envelope": "still clone; scores cover exactly this viewport and these scroll offsets",
+    });
+    if let Some(err) = motion_err {
+        report["motion_observe_error"] = serde_json::Value::String(err);
+    }
+
     if opts.verify {
         eprintln!("clone: verifying against the live page...");
-        let report = verify(opts, live)?;
-        std::fs::write(
-            opts.out.join("report.json"),
-            serde_json::to_vec_pretty(&report).expect("serialize report"),
-        )
-        .map_err(|e| format!("write report.json: {e}"))?;
+        let verified = verify(opts, live)?;
+        if let (Some(map), Some(vmap)) = (report.as_object_mut(), verified.as_object()) {
+            for k in ["tolerance", "positions", "average_match_percent"] {
+                if let Some(v) = vmap.get(k) {
+                    map.insert(k.to_string(), v.clone());
+                }
+            }
+        }
         let avg = report
             .get("average_match_percent")
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0);
         summary.push_str(&format!(
-            "\nverify: {avg:.1}% average pixel match ({} positions), report.json written",
+            "\nverify: {avg:.1}% average pixel match ({} positions)",
             report
                 .get("positions")
                 .and_then(|v| v.as_array())
@@ -365,7 +404,74 @@ fn clone_with_window(opts: &Opts, live: u64) -> Result<String, String> {
                 .unwrap_or(0)
         ));
     }
+    std::fs::write(
+        opts.out.join("report.json"),
+        serde_json::to_vec_pretty(&report).expect("serialize report"),
+    )
+    .map_err(|e| format!("write report.json: {e}"))?;
+    summary.push_str(&format!("\n{honesty}"));
+    if !stats.scroll_effects.is_empty() {
+        summary.push_str(&format!(
+            "\nscroll effects: {replayed}/{} replayed by generated runtime",
+            stats.scroll_effects.len()
+        ));
+    }
+    summary.push_str("\nreport.json written");
     Ok(summary)
+}
+
+// ---- observed motion (issue #44) ---------------------------------------
+
+/// Ask the daemon to observe script-driven motion in the live window
+/// (`hwatu motion --observe` wiring) and translate the fitted tracks
+/// into report entries. Failure is soft: an unobservable page still
+/// clones, it just reports the error instead of tracks.
+fn observe_motion(live: u64) -> (Vec<serde_json::Value>, Option<String>) {
+    let resp = call(&Request::Motion {
+        id: Some(live),
+        observe: true,
+        observe_ms: None,
+        timeout_ms: Some(60_000),
+    });
+    match resp {
+        Ok(Response::Ok { value: Some(v), .. }) => (unreplicated_motion_entries(&v), None),
+        Ok(Response::Ok { .. }) => (vec![], Some("motion observe returned no data".into())),
+        Ok(Response::Err { message }) => (vec![], Some(message)),
+        Err(message) => (vec![], Some(message)),
+    }
+}
+
+/// Map fitted observed-motion tracks to `unreplicated_motion` report
+/// entries: `{selector, kind, period_ms, r2}` per track, with the
+/// fitted model's honest r² carried through.
+fn unreplicated_motion_entries(motion: &serde_json::Value) -> Vec<serde_json::Value> {
+    let Some(observed) = motion.get("observed").and_then(|v| v.as_array()) else {
+        return vec![];
+    };
+    observed
+        .iter()
+        .filter_map(|t| {
+            let model = t.get("model")?.as_str()?;
+            let kind = match model {
+                "linear" if t.get("period_s").is_some() => "loop",
+                "linear" => "linear",
+                "periodic" => "oscillation",
+                "bezier" => "one-shot",
+                other => other,
+            };
+            let period_ms = t
+                .get("period_s")
+                .and_then(|v| v.as_f64())
+                .map(|s| (s * 1000.0).round())
+                .or_else(|| t.get("duration_ms").and_then(|v| v.as_f64()));
+            Some(serde_json::json!({
+                "selector": t.get("target").cloned().unwrap_or_default(),
+                "kind": kind,
+                "period_ms": period_ms,
+                "r2": t.get("fit_r2").cloned().unwrap_or_default(),
+            }))
+        })
+        .collect()
 }
 
 // ---- blank-canvas fallback (engine screenshot crop) -------------------
@@ -500,6 +606,9 @@ struct MaterializeStats {
     fetched: usize,
     wanted: usize,
     html_bytes: usize,
+    /// Detected scroll-coupled effects annotated with replay status
+    /// (`replayed` | `report-only`) and fit parameters when replayed.
+    scroll_effects: Vec<serde_json::Value>,
 }
 
 fn materialize(cap: &serde_json::Value, out: &Path) -> Result<MaterializeStats, String> {
@@ -633,18 +742,47 @@ fn materialize(cap: &serde_json::Value, out: &Path) -> Result<MaterializeStats, 
         }
     }
 
-    // 6.5. Scroll-coupled text-style evidence. These effects come from
-    // JS scroll/rAF loops that mutate computed styles. Phase-0 static
-    // clones do not replay that dependency, so make it explicit and keep
-    // representative entry/midpoint/exit samples beside the capture.
+    // 6.5. Scroll-coupled text-style replay (#45). These effects come
+    // from JS scroll/rAF loops that mutate computed styles; the effect
+    // is a pure function of scrollY, so for effects whose sampled
+    // per-word flip thresholds fit a linear stagger model, emit a
+    // generated replay runtime (same pattern as scroll_restore_script).
+    // Below the fit gate, fall back to report-only evidence.
+    let mut scroll_effects_out: Vec<serde_json::Value> = Vec::new();
     if let Some(effects) = cap.get("scrollEffects").and_then(|v| v.as_array()) {
         if !effects.is_empty() {
-            write_scroll_effects_report(out, effects)?;
-            if let Some(notice) = scroll_effect_notice(effects) {
+            let mut fits = Vec::new();
+            for effect in effects {
+                let mut annotated = effect.clone();
+                let entry = annotated.as_object_mut().expect("effect is an object");
+                // The dense per-word sweep is fitting input, not report
+                // material: it dwarfs the rest of the report.
+                entry.remove("words");
+                match fit_scroll_effect(effect) {
+                    Some(fit) => {
+                        entry.insert("replay".into(), serde_json::json!("replayed"));
+                        entry.insert("replay_fit".into(), fit.to_json());
+                        fits.push(fit);
+                    }
+                    None => {
+                        entry.insert("replay".into(), serde_json::json!("report-only"));
+                    }
+                }
+                scroll_effects_out.push(annotated);
+            }
+            write_scroll_effects_report(out, &scroll_effects_out)?;
+            let mut inject = String::new();
+            if let Some(notice) = scroll_effect_notice(&scroll_effects_out) {
+                inject.push_str(&notice);
+            }
+            if !fits.is_empty() {
+                inject.push_str(&scroll_replay_script(&fits));
+            }
+            if !inject.is_empty() {
                 if let Some(pos) = html.find("</body>") {
-                    html.insert_str(pos, &notice);
+                    html.insert_str(pos, &inject);
                 } else {
-                    html.push_str(&notice);
+                    html.push_str(&inject);
                 }
             }
         }
@@ -669,6 +807,7 @@ fn materialize(cap: &serde_json::Value, out: &Path) -> Result<MaterializeStats, 
         fetched: mapping.len(),
         wanted,
         html_bytes,
+        scroll_effects: scroll_effects_out,
     })
 }
 
@@ -922,7 +1061,7 @@ fn scroll_restore_script(scrolls: &[serde_json::Value]) -> String {
 
 fn write_scroll_effects_report(out: &Path, effects: &[serde_json::Value]) -> Result<(), String> {
     let report = serde_json::json!({
-        "envelope": "scroll-coupled text style mutation detected; static clone records representative states but does not replay the scroll listener",
+        "envelope": "scroll-coupled text style mutation detected; effects marked `replayed` ship a generated scrollY->style runtime, `report-only` effects record representative states without replaying the scroll listener",
         "effects": effects,
     });
     std::fs::write(
@@ -932,15 +1071,300 @@ fn write_scroll_effects_report(out: &Path, effects: &[serde_json::Value]) -> Res
     .map_err(|e| format!("write scroll-effects.json: {e}"))
 }
 
+// ---- scroll-effect replay (issue #45) ----------------------------------
+
+/// Fitted scrollY->style model for one detected scroll-coupled text
+/// highlight:
+///
+/// ```text
+/// progress = clamp01((innerHeight*A - rect.top) / (rect.height*B))
+/// active_i = clamp01(progress * n_words - i)      // per-word stagger
+/// style_i  = lerp(muted, highlighted, active_i)
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+struct ScrollEffectFit {
+    selector: String,
+    a: f64,
+    b: f64,
+    n_words: usize,
+    r2: f64,
+    muted_color: String,
+    muted_opacity: String,
+    lit_color: String,
+    lit_opacity: String,
+}
+
+impl ScrollEffectFit {
+    fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "model": "progress = clamp01((innerHeight*A - rect.top) / (rect.height*B)); active_i = clamp01(progress*n - i)",
+            "a": round4(self.a),
+            "b": round4(self.b),
+            "n_words": self.n_words,
+            "r2": round4(self.r2),
+            "muted": { "color": self.muted_color, "opacity": self.muted_opacity },
+            "highlighted": { "color": self.lit_color, "opacity": self.lit_opacity },
+        })
+    }
+}
+
+fn round4(v: f64) -> f64 {
+    (v * 10_000.0).round() / 10_000.0
+}
+
+/// The style axes the replay runtime writes.
+fn word_style_key(state: &serde_json::Value) -> Option<String> {
+    let color = state.get("color")?.as_str()?;
+    let opacity = state.get("opacity")?.as_str()?;
+    Some(format!("{color}|{opacity}"))
+}
+
+/// Minimum r² for the flip-threshold regression before a replay
+/// runtime is emitted; below it the effect stays report-only.
+const SCROLL_FIT_MIN_R2: f64 = 0.8;
+
+/// Fit the scrollY->style model from the detector's fine per-word
+/// sweep. Returns None (report-only fallback) when the data does not
+/// support a confident fit: too few flipping words, non-monotone
+/// flips, or a low-r² threshold regression.
+fn fit_scroll_effect(effect: &serde_json::Value) -> Option<ScrollEffectFit> {
+    let selector = effect.get("selector")?.as_str()?.to_string();
+    let geom = effect.get("geometry")?;
+    let doc_top = geom.get("docTop")?.as_f64()?;
+    let height = geom.get("height")?.as_f64()?;
+    let inner_height = geom.get("innerHeight")?.as_f64()?;
+    if height <= 0.0 || inner_height <= 0.0 {
+        return None;
+    }
+    let words = effect.get("words")?.as_array()?;
+    let n = words.len();
+    if n < 3 {
+        return None;
+    }
+
+    // Per word: the scrollY where its (color, opacity) leaves the
+    // entry state and stays away (a clean monotone flip).
+    let mut flips: Vec<(usize, f64)> = Vec::new(); // (word index, flip y)
+    let mut entry_styles: Vec<(&str, &str)> = Vec::new();
+    let mut exit_styles: Vec<(&str, &str)> = Vec::new();
+    for (k, word) in words.iter().enumerate() {
+        let states = word.get("states").and_then(|v| v.as_array())?;
+        if states.len() < 4 {
+            continue;
+        }
+        let keys: Vec<String> = states.iter().filter_map(word_style_key).collect();
+        if keys.len() != states.len() {
+            continue;
+        }
+        let entry_key = &keys[0];
+        let exit_key = &keys[keys.len() - 1];
+        if entry_key == exit_key {
+            continue; // never flipped in the sampled window
+        }
+        let flip = keys.iter().position(|key| key != entry_key)?;
+        if flip == 0 {
+            continue; // already flipped at entry: threshold unobserved
+        }
+        // Monotone: once away from the entry state, never back.
+        if keys[flip..].iter().any(|key| key == entry_key) {
+            continue;
+        }
+        let y_before = states[flip - 1].get("y")?.as_f64()?;
+        let y_after = states[flip].get("y")?.as_f64()?;
+        flips.push((k, (y_before + y_after) / 2.0));
+        let first = &states[0];
+        let last = &states[states.len() - 1];
+        entry_styles.push((first.get("color")?.as_str()?, first.get("opacity")?.as_str()?));
+        exit_styles.push((last.get("color")?.as_str()?, last.get("opacity")?.as_str()?));
+    }
+    if flips.len() < 3 || flips.len() * 2 < n {
+        return None;
+    }
+
+    // Regress flip y against the word's stagger midpoint
+    // t_k = (k + 0.5) / n:  y_k = C + D * t_k. The runtime's
+    // active_i = clamp01(progress*n - i) crosses 0.5 exactly there, so
+    // the fitted runtime reproduces the observed flip positions
+    // regardless of how the source page parameterized its own model.
+    let pts: Vec<(f64, f64)> = flips
+        .iter()
+        .map(|&(k, y)| ((k as f64 + 0.5) / n as f64, y))
+        .collect();
+    let (d, c, r2) = linear_regress(&pts)?;
+    if r2 < SCROLL_FIT_MIN_R2 || d <= 0.0 {
+        return None;
+    }
+    // y_k = docTop - innerHeight*A + t_k*height*B.
+    let a = (doc_top - c) / inner_height;
+    let b = d / height;
+    if !a.is_finite() || !b.is_finite() || b <= 0.0 {
+        return None;
+    }
+
+    let majority = |styles: &[(&str, &str)]| -> Option<(String, String)> {
+        let mut counts: BTreeMap<(&str, &str), usize> = BTreeMap::new();
+        for &s in styles {
+            *counts.entry(s).or_insert(0) += 1;
+        }
+        counts
+            .into_iter()
+            .max_by_key(|&(_, c)| c)
+            .map(|((color, op), _)| (color.to_string(), op.to_string()))
+    };
+    let (muted_color, muted_opacity) = majority(&entry_styles)?;
+    let (lit_color, lit_opacity) = majority(&exit_styles)?;
+    if muted_color == lit_color && muted_opacity == lit_opacity {
+        return None;
+    }
+
+    Some(ScrollEffectFit {
+        selector,
+        a,
+        b,
+        n_words: n,
+        r2,
+        muted_color,
+        muted_opacity,
+        lit_color,
+        lit_opacity,
+    })
+}
+
+/// Least-squares fit y = intercept + slope * x. Returns
+/// (slope, intercept, r²), or None for degenerate inputs.
+fn linear_regress(pts: &[(f64, f64)]) -> Option<(f64, f64, f64)> {
+    let n = pts.len() as f64;
+    if pts.len() < 2 {
+        return None;
+    }
+    let (mut sx, mut sy, mut sxx, mut sxy) = (0.0, 0.0, 0.0, 0.0);
+    for &(x, y) in pts {
+        sx += x;
+        sy += y;
+        sxx += x * x;
+        sxy += x * y;
+    }
+    let denom = n * sxx - sx * sx;
+    if denom.abs() < 1e-12 {
+        return None;
+    }
+    let slope = (n * sxy - sx * sy) / denom;
+    let intercept = (sy - slope * sx) / n;
+    let mean = sy / n;
+    let (mut sse, mut sst) = (0.0, 0.0);
+    for &(x, y) in pts {
+        sse += (y - (slope * x + intercept)).powi(2);
+        sst += (y - mean).powi(2);
+    }
+    let r2 = if sst > 1e-12 { 1.0 - sse / sst } else { 1.0 };
+    Some((slope, intercept, r2))
+}
+
+/// Generated replay runtime for fitted scroll-coupled highlights.
+///
+/// Hardened for hostile environments (lesson from debugging the
+/// scale.com clone): never trust a single update signal. Headless and
+/// virtual-clock contexts deliver neither native scroll events nor
+/// rAF, so the driver stacks window + capture-phase document scroll
+/// listeners, a rAF loop, AND a coarse setInterval fallback. The
+/// update is idempotent and reads one getBoundingClientRect per
+/// effect, so overdriving it is cheap.
+fn scroll_replay_script(fits: &[ScrollEffectFit]) -> String {
+    let payload: Vec<serde_json::Value> = fits
+        .iter()
+        .map(|f| {
+            serde_json::json!({
+                "sel": f.selector,
+                "a": f.a,
+                "b": f.b,
+                "muted": { "color": f.muted_color, "opacity": f.muted_opacity },
+                "lit": { "color": f.lit_color, "opacity": f.lit_opacity },
+            })
+        })
+        .collect();
+    format!(
+        r#"<script id="hwatu-scroll-replay">(function () {{
+  const cfg = {payload};
+  const parse = (c) => {{
+    const m = /rgba?\(([^)]+)\)/.exec(c);
+    if (!m) return null;
+    const p = m[1].split(',').map(parseFloat);
+    return [p[0], p[1], p[2], p.length > 3 ? p[3] : 1];
+  }};
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const mix = (c1, c2, t) => 'rgba(' + Math.round(lerp(c1[0], c2[0], t)) + ',' +
+    Math.round(lerp(c1[1], c2[1], t)) + ',' + Math.round(lerp(c1[2], c2[2], t)) + ',' +
+    lerp(c1[3], c2[3], t).toFixed(3) + ')';
+  const states = cfg.map((e) => {{
+    const root = document.querySelector(e.sel);
+    if (!root) return null;
+    const words = [...root.querySelectorAll('[data-hwatu-scroll-word]')]
+      .sort((x, y) => (+x.dataset.hwatuScrollWord) - (+y.dataset.hwatuScrollWord));
+    if (!words.length) return null;
+    return {{
+      e, root, words,
+      mc: parse(e.muted.color), lc: parse(e.lit.color),
+      mo: parseFloat(e.muted.opacity), lo: parseFloat(e.lit.opacity),
+    }};
+  }}).filter(Boolean);
+  const update = () => {{
+    for (const s of states) {{
+      const rect = s.root.getBoundingClientRect();
+      const progress = Math.max(0, Math.min(1,
+        (innerHeight * s.e.a - rect.top) / (rect.height * s.e.b)));
+      const pos = progress * s.words.length;
+      for (let i = 0; i < s.words.length; i++) {{
+        const active = Math.max(0, Math.min(1, pos - i));
+        const w = s.words[i];
+        if (s.mc && s.lc) w.style.color = mix(s.mc, s.lc, active);
+        if (Number.isFinite(s.mo) && Number.isFinite(s.lo)) {{
+          w.style.opacity = String(lerp(s.mo, s.lo, active));
+        }}
+      }}
+    }}
+  }};
+  addEventListener('scroll', update, {{ passive: true }});
+  document.addEventListener('scroll', update, {{ passive: true, capture: true }});
+  if (typeof requestAnimationFrame === 'function') {{
+    const loop = () => {{ update(); requestAnimationFrame(loop); }};
+    requestAnimationFrame(loop);
+    // Smooth the discrete scroll-event steps like the live pages do, but
+    // only once the frame clock provably advances: in headless/suspended
+    // WebKit a CSSTransition freezes at time 0 and pins the computed
+    // style to the START value forever, hiding every update.
+    let frames = 0;
+    const arm = (ts0) => requestAnimationFrame((ts1) => {{
+      if (ts1 > ts0 && ++frames >= 2) {{
+        for (const s of states) for (const w of s.words) {{
+          w.style.transition = 'color 180ms ease-out, opacity 180ms ease-out';
+        }}
+        return;
+      }}
+      arm(ts1);
+    }});
+    requestAnimationFrame(arm);
+  }}
+  setInterval(update, 250);
+  update();
+}})();</script>"#,
+        payload = serde_json::Value::Array(payload)
+    )
+}
+
 fn scroll_effect_notice(effects: &[serde_json::Value]) -> Option<String> {
     if effects.is_empty() {
         return None;
     }
     let count = effects.len();
+    let replayed = effects
+        .iter()
+        .filter(|e| e.get("replay").and_then(|v| v.as_str()) == Some("replayed"))
+        .count();
     Some(format!(
-        "\n<!-- hwatu: detected {count} scroll-coupled text style region(s); \
-         see scroll-effects.json for entry/midpoint/exit samples. The static clone \
-         records evidence but does not replay the page's scroll listener. -->\n"
+        "\n<!-- hwatu: detected {count} scroll-coupled text style region(s): \
+         {replayed} replayed by a generated scrollY->style runtime, {} report-only; \
+         see scroll-effects.json for fits and entry/midpoint/exit samples. -->\n",
+        count - replayed
     ))
 }
 
@@ -1238,19 +1662,22 @@ mod tests {
     }
 
     #[test]
-    fn scroll_effect_notice_names_static_dependency() {
-        let effects = vec![serde_json::json!({
-            "kind": "scroll-coupled-text-style",
-            "sampleOffsets": [
-                {"label": "entry", "y": 120},
-                {"label": "midpoint", "y": 240},
-                {"label": "exit", "y": 360}
-            ]
-        })];
+    fn scroll_effect_notice_names_replay_split() {
+        let effects = vec![
+            serde_json::json!({
+                "kind": "scroll-coupled-text-style",
+                "replay": "replayed",
+            }),
+            serde_json::json!({
+                "kind": "scroll-coupled-text-style",
+                "replay": "report-only",
+            }),
+        ];
         let notice = scroll_effect_notice(&effects).unwrap();
-        assert!(notice.contains("scroll-coupled text style"), "{notice}");
+        assert!(notice.contains("detected 2 scroll-coupled"), "{notice}");
+        assert!(notice.contains("1 replayed"), "{notice}");
+        assert!(notice.contains("1 report-only"), "{notice}");
         assert!(notice.contains("scroll-effects.json"), "{notice}");
-        assert!(notice.contains("does not replay"), "{notice}");
         assert!(scroll_effect_notice(&[]).is_none());
     }
 
@@ -1287,8 +1714,115 @@ mod tests {
             "{report}"
         );
         assert!(report.contains("midpoint"), "{report}");
+        assert!(report.contains("report-only"), "{report}");
         let html = std::fs::read_to_string(out.join("index.html")).unwrap();
         assert!(html.contains("see scroll-effects.json"), "{html}");
         let _ = std::fs::remove_dir_all(&out);
+    }
+
+    /// Synthetic effect matching the runtime model with A=0.72, B=0.7
+    /// on a 900px section at docTop=1500, innerHeight=720, 13 words.
+    fn synthetic_effect(n_words: usize) -> serde_json::Value {
+        let (doc_top, height, inner_height) = (1500.0, 900.0, 720.0);
+        let (a, b) = (0.72, 0.7);
+        let words: Vec<serde_json::Value> = (0..n_words)
+            .map(|k| {
+                // Flip threshold from the model: progress = t_k when
+                // scrollY makes rect.top = docTop - y.
+                let t = (k as f64 + 0.5) / n_words as f64;
+                let flip_y = doc_top - inner_height * a + t * height * b;
+                let states: Vec<serde_json::Value> = (0..=12)
+                    .map(|s| {
+                        let y = 800.0 + s as f64 * 100.0;
+                        let lit = y >= flip_y;
+                        serde_json::json!({
+                            "y": y,
+                            "color": if lit { "rgb(255, 255, 255)" } else { "rgba(255, 255, 255, 0.12)" },
+                            "opacity": if lit { "1" } else { "0.42" },
+                        })
+                    })
+                    .collect();
+                serde_json::json!({ "i": k, "text": format!("w{k}"), "states": states })
+            })
+            .collect();
+        serde_json::json!({
+            "kind": "scroll-coupled-text-style",
+            "selector": "[data-hwatu-scroll-effect=\"0\"]",
+            "geometry": { "docTop": doc_top, "height": height, "innerHeight": inner_height },
+            "words": words,
+        })
+    }
+
+    #[test]
+    fn scroll_effect_fit_recovers_model() {
+        let fit = fit_scroll_effect(&synthetic_effect(13)).expect("fit");
+        // Discrete 100px sampling quantizes each threshold; the
+        // regression should still land near the true parameters.
+        assert!((fit.a - 0.72).abs() < 0.12, "a={}", fit.a);
+        assert!((fit.b - 0.7).abs() < 0.12, "b={}", fit.b);
+        assert!(fit.r2 > SCROLL_FIT_MIN_R2, "r2={}", fit.r2);
+        assert_eq!(fit.n_words, 13);
+        assert_eq!(fit.muted_color, "rgba(255, 255, 255, 0.12)");
+        assert_eq!(fit.lit_color, "rgb(255, 255, 255)");
+        let script = scroll_replay_script(&[fit]);
+        assert!(script.contains("hwatu-scroll-replay"), "{script}");
+        assert!(script.contains("data-hwatu-scroll-word"), "{script}");
+        // Hostile-environment drivers: scroll + rAF + interval.
+        assert!(script.contains("addEventListener('scroll'"), "{script}");
+        assert!(script.contains("requestAnimationFrame"), "{script}");
+        assert!(script.contains("setInterval(update"), "{script}");
+    }
+
+    #[test]
+    fn scroll_effect_fit_gates_on_quality() {
+        // No words at all: report-only.
+        assert!(fit_scroll_effect(&serde_json::json!({
+            "selector": "[data-hwatu-scroll-effect=\"0\"]",
+            "geometry": { "docTop": 100, "height": 900, "innerHeight": 720 },
+        }))
+        .is_none());
+        // Random (non-monotone-in-index) flips: r² below the gate.
+        let mut effect = synthetic_effect(8);
+        let words = effect["words"].as_array_mut().unwrap();
+        words.reverse(); // reverses flip order vs index -> negative slope
+        for (k, w) in words.iter_mut().enumerate() {
+            w["i"] = serde_json::json!(k);
+        }
+        assert!(fit_scroll_effect(&effect).is_none());
+    }
+
+    #[test]
+    fn linear_regress_recovers_line() {
+        let pts: Vec<(f64, f64)> = (0..10).map(|i| (i as f64, 3.0 + 2.0 * i as f64)).collect();
+        let (slope, intercept, r2) = linear_regress(&pts).unwrap();
+        assert!((slope - 2.0).abs() < 1e-9);
+        assert!((intercept - 3.0).abs() < 1e-9);
+        assert!((r2 - 1.0).abs() < 1e-9);
+        assert!(linear_regress(&[(1.0, 2.0)]).is_none());
+        assert!(linear_regress(&[(1.0, 2.0), (1.0, 3.0)]).is_none());
+    }
+
+    #[test]
+    fn unreplicated_motion_maps_fitted_tracks() {
+        let motion = serde_json::json!({
+            "observed": [
+                { "model": "linear", "target": "ul.marquee", "velocity_px_s": -30.0,
+                  "period_s": 28.0, "fit_r2": 0.99 },
+                { "model": "periodic", "target": "div.bob", "period_s": 1.5, "fit_r2": 0.8 },
+                { "model": "bezier", "target": "aside.slide", "duration_ms": 300.0,
+                  "fit_r2": 0.97 },
+            ],
+        });
+        let entries = unreplicated_motion_entries(&motion);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0]["kind"], "loop");
+        assert_eq!(entries[0]["selector"], "ul.marquee");
+        assert_eq!(entries[0]["period_ms"], 28_000.0);
+        assert_eq!(entries[0]["r2"], 0.99);
+        assert_eq!(entries[1]["kind"], "oscillation");
+        assert_eq!(entries[1]["period_ms"], 1_500.0);
+        assert_eq!(entries[2]["kind"], "one-shot");
+        assert_eq!(entries[2]["period_ms"], 300.0);
+        assert!(unreplicated_motion_entries(&serde_json::json!({})).is_empty());
     }
 }

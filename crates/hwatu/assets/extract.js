@@ -89,9 +89,10 @@ async function detectScrollEffects() {
       backgroundColor: st.backgroundColor,
       opacity: st.opacity,
       textShadow: st.textShadow,
+      transform: st.transform,
     };
   };
-  const styleKey = (s) => `${s.color}|${s.backgroundColor}|${s.opacity}|${s.textShadow}`;
+  const styleKey = (s) => `${s.color}|${s.backgroundColor}|${s.opacity}|${s.textShadow}|${s.transform}`;
   const coarse = [...new Set([0, .125, .25, .375, .5, .625, .75, .875, 1]
     .map(f => Math.round(maxScroll * f)))];
   const seen = candidates.map(() => []);
@@ -156,6 +157,35 @@ async function detectScrollEffects() {
         })),
       });
     }
+    // Replay fitting data: a scroll-coupled highlight is a pure function
+    // of scrollY (stateless, deterministic). Tag each changed word,
+    // sweep the activation window finely, and record per-word style
+    // states so the materializer can fit
+    //   progress = clamp01((innerHeight*A - rect.top) / (rect.height*B))
+    // and emit a generated replay runtime.
+    const wordEls = items.slice(0, 60).map(i => i.el).filter(el => el.isConnected);
+    wordEls.sort((a, b) =>
+      (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) ? -1 : 1);
+    wordEls.forEach((el, k) => { el.dataset.hwatuScrollWord = k; });
+    const words = wordEls.map((el, k) => ({ i: k, text: ownText(el), states: [] }));
+    const fineFrom = offsets[0].y;
+    const fineTo = offsets[2].y;
+    if (fineTo - fineFrom >= 40 && wordEls.length >= 3) {
+      const steps = 12;
+      for (let s = 0; s <= steps; s++) {
+        await waitScroll(fineFrom + (fineTo - fineFrom) * s / steps);
+        const y = Math.round(scrollY);
+        for (let k = 0; k < wordEls.length; k++) {
+          words[k].states.push({ y, ...styleOf(wordEls[k]) });
+        }
+      }
+    }
+    // Coherent baseline: record each word's sampled ENTRY state; it is
+    // baked into inline style after the final scroll-return below (the
+    // page's own scroll handler would overwrite anything written now).
+    // Without the bake the sweep's return-to-zero can serialize a
+    // mid-reset frame (opacity-0 words) that no live scroll position
+    // ever shows.
     effects.push({
       kind: 'scroll-coupled-text-style',
       selector: `[data-hwatu-scroll-effect="${effectIndex}"]`,
@@ -164,6 +194,8 @@ async function detectScrollEffects() {
       sampleOffsets: offsets,
       textPreview: (root.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 220),
       samples,
+      geometry: { docTop: Math.round(docTop), height: Math.round(r.height), innerHeight },
+      words,
     });
     effectIndex += 1;
     if (effects.length >= 3) break;
@@ -172,6 +204,25 @@ async function detectScrollEffects() {
   return effects;
 }
 const scrollEffects = await detectScrollEffects();
+// Bake the coherent baseline now that scrolling is over: each tagged
+// word gets its sampled entry-state styles inline, so the serialized
+// DOM is a still of a real scroll position (the effect's entry), never
+// a mid-sweep reset. The replay runtime (or a reader) owns these
+// subtrees from here; the pin pass below skips them.
+for (const effect of scrollEffects) {
+  const root = document.querySelector(effect.selector);
+  if (!root) continue;
+  for (const word of effect.words || []) {
+    const entry = word.states && word.states[0];
+    if (!entry) continue;
+    const el = root.querySelector(`[data-hwatu-scroll-word="${word.i}"]`);
+    if (!el) continue;
+    el.style.color = entry.color;
+    el.style.opacity = entry.opacity;
+    el.style.backgroundColor = entry.backgroundColor;
+    el.style.transform = entry.transform;
+  }
+}
 
 // Freeze animation state for a still capture. Just pause, at the
 // current frame: the sweep above already ran entrance reveals to
@@ -293,6 +344,12 @@ const pins = [];
   const found = [];
   for (let k = 0; k < n; k++) {
     const el = all[k];
+    // Scroll-effect subtrees are owned by the replay runtime (or the
+    // baked entry state): pinning their computed values here would
+    // cement one sweep instant with !important and fight the replay
+    // script's inline writes (the pin-vs-normalizer ownership papercut
+    // from the scale.com clone).
+    if (el.closest && el.closest('[data-hwatu-scroll-effect]')) continue;
     const st = getComputedStyle(el);
     const hasTransition = st.transitionProperty && !st.transitionDuration.split(',').every(d => parseFloat(d) === 0);
     // CSS animation state does not survive serialization: the clone
@@ -322,6 +379,14 @@ const pins = [];
   });
 }
 
+// Honest-report inputs: count what the static still drops. Scripts
+// are stripped below by design; interactive-looking elements lose
+// their handlers with them. The clone report names both.
+const scriptCount = document.querySelectorAll('script').length;
+const interactiveCount = document.querySelectorAll(
+  'a[href], button, [role=button], [onclick], input, select, textarea, summary, [role=link], [role=tab], [role=menuitem]'
+).length;
+
 // 4. Serialized DOM. Strip scripts (the clone is a static still) and
 //    live stylesheet links (we inline the CSSOM text instead).
 const doc = document.documentElement.cloneNode(true);
@@ -346,6 +411,8 @@ return {
     scrolls,
     pins,
     scrollEffects,
+    scripts: scriptCount,
+    interactive: interactiveCount,
     viewport: { w: innerWidth, h: innerHeight, dpr: devicePixelRatio },
   };
 })();

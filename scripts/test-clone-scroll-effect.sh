@@ -72,10 +72,43 @@ colors = {s.get('color') for s in styles}
 opacities = {s.get('opacity') for s in styles}
 assert len(colors) >= 2 or len(opacities) >= 2, styles
 report = json.loads((out / 'scroll-effects.json').read_text())
-assert 'does not replay' in report['envelope'], report
+assert 'replayed' in report['envelope'], report
 html = (out / 'index.html').read_text()
 assert 'see scroll-effects.json' in html, html[-500:]
+
+# Issue #45: the fixture's highlight is a clean linear stagger, so it
+# must clear the fit gate and ship a generated replay runtime.
+reported = report['effects'][0]
+assert reported.get('replay') == 'replayed', reported.get('replay')
+fit = reported.get('replay_fit') or {}
+assert fit.get('r2', 0) >= 0.8, fit
+# Fixture model: progress = clamp01((innerHeight*0.72 - rect.top) / (rect.height*0.7)).
+assert abs(fit.get('a', 0) - 0.72) < 0.15, fit
+assert abs(fit.get('b', 0) - 0.7) < 0.2, fit
+assert 'hwatu-scroll-replay' in html, 'replay runtime missing from index.html'
+# Hostile-environment driver: scroll listeners + rAF loop + interval fallback.
+for marker in ("addEventListener('scroll'", 'requestAnimationFrame', 'setInterval(update'):
+    assert marker in html, f'replay driver missing {marker}'
+
+# Coherent baseline: the serialized words carry their sampled entry
+# state inline (never a mid-sweep reset such as opacity: 0).
+import re
+words = re.findall(r'<span[^>]*data-hwatu-scroll-word[^>]*>', html)
+assert len(words) >= 10, f'expected tagged words, got {len(words)}'
+assert not re.search(r'data-hwatu-scroll-word[^>]*style="[^"]*opacity:\s*0[;"]', html), \
+    'baseline serialized an opacity-0 word'
+
+# Issue #44: report.json always exists and names the still-clone envelope.
+main_report = json.loads((out / 'report.json').read_text())
+assert 'unreplicated_motion' in main_report, main_report.keys()
+assert main_report.get('stripped_scripts', 0) >= 1, main_report.get('stripped_scripts')
+assert main_report.get('interactive_elements', 0) >= 0
+assert 'still clone:' in main_report.get('summary', ''), main_report.get('summary')
+assert main_report['scroll_effects'][0].get('replay') == 'replayed', main_report['scroll_effects']
+
 print('PASS scrollEffects:', effect['changedTextNodes'], 'text nodes, labels=', ','.join(labels))
+print('PASS replay: fit a=%.3f b=%.3f r2=%.3f, runtime + report fields present'
+      % (fit['a'], fit['b'], fit['r2']))
 PY
 
 kill "$server_pid" >/dev/null 2>&1 || true
