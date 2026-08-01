@@ -6,31 +6,30 @@
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![CI](https://github.com/hongnoul/hwatu/actions/workflows/ci.yml/badge.svg)](https://github.com/hongnoul/hwatu/actions/workflows/ci.yml)
 
-**One warm browser, two users: you in your tiling WM, and your coding agent.**
+**Real eyes for your coding agent: verified page checks it can't fake, in one warm browser you can also live in.**
 
 </div>
 
-hwatu is a WebKit daemon with two front doors. For **humans on
-Hyprland, sway, niri, or i3**, it is a primary browser built for the
-window-per-page model: no tabs (your WM is the tab bar), mainstream
-keybinds, native ad blocking, media that actually plays. For **coding
-agents**, it is real eyes: one-call verified page checks in ~35 ms,
-pixel-diff scores instead of "looks right to me", and headless
-windows that never steal your focus.
+hwatu is a visual verification harness for coding agents, built as a
+WebKit daemon. Instead of "looks right to me", your agent gets
+**one-call verified page checks in ~35 ms**, **pixel-diff scores it
+can climb**, **animations as numbers**, and **headless windows that
+never steal your focus**, at any parallelism.
 
-The seam between the two is the feature no other browser has: an
-agent's invisible session and your daily-driver window are the same
-object. `hwatu focus <id>` materializes a live agent session, cookies
-and half-filled forms intact, into your tiler. You act, it takes
-back over.
-
-<a href="https://github.com/hongnoul/hwatu/releases/download/readme-assets/demo-shortform.mp4"><img src="https://github.com/hongnoul/hwatu/releases/download/readme-assets/demo-shortform.webp" alt="hwatu daily driving: quarter-width window spawns, buttery Chromium-curve scrolling, and one-keypress-one-reel shortform controls on Instagram Reels" width="800"></a>
+The same daemon has a second front door: it is a real browser for
+tiling WMs (Hyprland, sway, niri, i3), so while your agents loop you
+watch some reels. That is not a gimmick, it is the seam no other tool
+has: an agent's invisible session and your window are the same
+object. When the agent hits a CAPTCHA or wants human judgment,
+`hwatu focus <id>` materializes the live session, cookies and
+half-filled forms intact, into your tiler. You act, it takes back
+over.
 
 ## Documents
 
 - [Vision](VISION.md): durable product principles, native platform strategy, swarm model
-- [Human guide](docs/human.md): daily driving hwatu in a tiling WM, keybinds, media, hand-off
 - [Agent guide](docs/agents.md): protocol, primitives, verification loops
+- [Human guide](docs/human.md): daily driving hwatu in a tiling WM, keybinds, media, hand-off
 - [Benchmarks](docs/benchmarks.md): every number, measured, with methodology
 - [Roadmap](docs/roadmap.md): plan of record, priorities, non-goals
 - [Continuous improvement](docs/continuous-improvement.md): activation metric, feedback loop, weekly cadence
@@ -48,47 +47,9 @@ checks). On Arch: `yay -S hwatu`. From source: `cargo build --release`.
 Then pick your door, or take both:
 
 ```sh
-hwatu localhost:3000    # human: open a window like you open a terminal
 hwatu setup             # agent: detect Claude Code, Cursor, Jcode, or MCP
+hwatu localhost:3000    # human: open a window like you open a terminal
 ```
-
-## A primary browser for your tiling WM
-
-You already have a window manager you like. hwatu is the browser that
-stops fighting it:
-
-- **Your WM is the tab bar.** No tabs, no chrome: `hwatu <url>` opens
-  a window like your terminal opens a shell, at a third of the
-  monitor width, and your tiler does the rest. Ready-made configs:
-  [hyprland](examples/hyprland.conf), [sway](examples/sway.config),
-  [niri](examples/niri.kdl).
-- **Mainstream keybinds, all rebindable.** `ctrl+l` edits the URL,
-  `ctrl+f` finds, `ctrl+k` opens a fuzzy command palette,
-  `~/.config/hwatu/keys.conf` overrides anything. Config is a
-  dotfile, not a settings maze.
-- **Video actually works.** Unmuted autoplay, playback that survives
-  focus loss, and a blur-shield that took YouTube Shorts from ~34 to
-  ~95 fps. One shortform control scheme (arrows snap exactly one
-  video, Space pauses, hold ArrowRight for 2x) across Reels, Shorts,
-  and TikTok.
-- **Native ad blocking.** EasyList compiled into WebKit's
-  content-extension engine: ~119k rules, zero JS in the request path,
-  no extension process.
-- **Chromium-curve scrolling** for wheel and keys, replacing
-  WebKitGTK's isolated-pulse scroller.
-- **One warm engine.** Every window shares the daemon (~56 MB per
-  extra window), suspends when unfocused, and crash-restores at its
-  last URL.
-
-People adopt browsers in this category (qutebrowser, vimb, luakit)
-for keyboard-first UX and the window-per-page model, and abandon them
-over ad quality, broken sites, and video. hwatu attacks the
-abandonment list head-on; the [roadmap](docs/roadmap.md) tracks what
-is landed and what is next (global history and URL completion, link
-hints, password-manager integration). Honest gaps today: qutebrowser
-still wins on history completion and password fill, and WebKitGTK has
-no Widevine or passkeys, so keep a fallback browser bound for
-Netflix. Full keybind table and setup: [docs/human.md](docs/human.md).
 
 ## Real eyes for your coding agent
 
@@ -160,10 +121,10 @@ hwatu diff --id 2 --other 1
 
 We ran this loop against a clone of stripe.com's landing page: an
 agent took it from **85.1% to 98.8% pixel match**. Reproduce it:
-[scripts/demo/](scripts/demo/). The README hero uses a second,
-real-agent scenario against AIUC: four responsive viewport diffs
-followed by live human hand-off, reproducible with evidence manifests
-from [scripts/demo-aiuc/](scripts/demo-aiuc/).
+[scripts/demo/](scripts/demo/). A second, real-agent scenario against
+AIUC (four responsive viewport diffs followed by live human hand-off)
+is reproducible with evidence manifests from
+[scripts/demo-aiuc/](scripts/demo-aiuc/).
 
 A full verification pass (open, load, eval, screenshot, close) is
 **one command, one tool call, ~35 ms median**
@@ -213,9 +174,32 @@ for emergencies.
 `challenge` is detection and hand-off only, by design: no solver
 APIs, no token injection, no fingerprint games.
 
+## Agents loop, you watch some reels
+
+The hand-off works because hwatu is also a real browser, one built
+for tiling WMs. `hwatu <url>` opens a window like your terminal opens
+a shell (your WM is the tab bar, there is none in the window), with
+mainstream keybinds (`ctrl+l`, `ctrl+f`, `ctrl+k` palette, all
+rebindable via a dotfile), native ad blocking (~119k EasyList rules
+compiled into WebKit's content-extension engine, zero JS in the
+request path), Chromium-curve scrolling, and video that actually
+works: unmuted autoplay, a blur-shield that took Shorts from ~34 to
+~95 fps, and one shortform control scheme (arrows snap exactly one
+video, Space pauses, hold ArrowRight for 2x) across Reels, Shorts,
+and TikTok.
+
+<a href="https://github.com/hongnoul/hwatu/releases/download/readme-assets/demo-shortform.mp4"><img src="https://github.com/hongnoul/hwatu/releases/download/readme-assets/demo-shortform.webp" alt="hwatu daily driving: quarter-width window spawns, buttery Chromium-curve scrolling, and one-keypress-one-reel shortform controls on Instagram Reels" width="800"></a>
+
+Every window shares the one warm daemon (~56 MB per extra window),
+suspends when unfocused, and crash-restores at its last URL. Honest
+gaps: no Widevine or passkeys in WebKitGTK, so keep a fallback bound
+for Netflix. Ready-made WM configs
+([hyprland](examples/hyprland.conf), [sway](examples/sway.config),
+[niri](examples/niri.kdl)), the full keybind table, and setup:
+[docs/human.md](docs/human.md).
+
 ## Features
 
-- [x] A real browser for humans: mainstream keybinds, media-correct video, native ad blocking, crash restore
 - [x] Headless / background / focused as a *per-window* property, switchable live
 - [x] Human hand-off: `hwatu focus <id>` drops the live session into your tiling WM
 - [x] Pixel-diff scoring: match percent + diff regions + heatmap (`diff`)
@@ -228,6 +212,7 @@ APIs, no token injection, no fingerprint games.
 - [x] One-call page assertions with polling (`expect`)
 - [x] CAPTCHA / anti-bot detection with structured wait/resume (`challenge`)
 - [x] MCP server, plain CLI, and a 1-line JSON socket protocol
+- [x] A real browser for humans: mainstream keybinds, media-correct video, native ad blocking, crash restore
 
 ## Why not Playwright or chrome-devtools-mcp?
 
