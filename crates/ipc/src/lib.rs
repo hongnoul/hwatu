@@ -17,6 +17,11 @@ use std::path::PathBuf;
 /// falling back to `/tmp/hwatu-$UID.sock`.
 #[cfg(unix)]
 pub fn socket_path() -> PathBuf {
+    if let Ok(path) = std::env::var("HWATU_SOCKET") {
+        if !path.trim().is_empty() {
+            return PathBuf::from(path);
+        }
+    }
     if let Ok(dir) = std::env::var("XDG_RUNTIME_DIR") {
         return PathBuf::from(dir).join("hwatu.sock");
     }

@@ -2480,13 +2480,196 @@ matched.text = (el.textContent || el.value || '').trim().slice(0, 120);
     ))
 }
 
-fn trusted_input_unavailable(kind: &str) -> Response {
-    Response::err(format!(
-        "trusted {kind} is not implemented in this GTK4 build: GTK4/GDK exposes \
-         gdk_display_put_event but no public button/key event constructors or \
-         gtk_widget_event-style propagation API, so hwatud cannot synthesize \
-         event.isTrusted input through Path A without a compositor/backend injector"
+fn trusted_target_source(
+    selector: Option<&str>,
+    nth: Option<u32>,
+    contains: Option<&str>,
+    ref_idx: Option<u32>,
+) -> Result<String, Box<Response>> {
+    if selector.is_some() == ref_idx.is_some() {
+        return Err(Box::new(Response::err(
+            "pass exactly one of a CSS selector or --ref <n> (from `hwatu snapshot`)",
+        )));
+    }
+    Ok(format!(
+        r#"const resolver = window.__hwatuTrustedResolve;
+if (!resolver) throw new Error('trusted input resolver is not installed; reload the page after upgrading hwatud');
+return await resolver({selector}, {nth}, {contains}, {ref_idx});"#,
+        selector = json_or_null(selector),
+        nth = nth.unwrap_or(0),
+        contains = json_or_null(contains),
+        ref_idx = ref_idx.map_or("null".into(), |v| v.to_string()),
     ))
+}
+
+fn trusted_report(
+    action: &str,
+    target: crate::trusted_input::TargetPoint,
+    input: crate::trusted_input::InputReport,
+    url: Option<String>,
+) -> Response {
+    Response::value(serde_json::json!({
+        action: target.matched,
+        "trusted_backend_attempted": true,
+        "frame": target.frame,
+        "iframe": target.iframe,
+        "url": url.unwrap_or_default(),
+        "input": {
+            "backend": input.backend,
+            "niri_window_id": input.niri_window_id,
+            "x": input.x,
+            "y": input.y,
+            "window_origin": [input.window_origin_x, input.window_origin_y],
+            "window_size": [input.window_width, input.window_height],
+        }
+    }))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn trusted_click(
+    daemon: &Rc<Daemon>,
+    id: Option<u64>,
+    selector: Option<String>,
+    nth: Option<u32>,
+    contains: Option<String>,
+    ref_idx: Option<u32>,
+    timeout_ms: Option<u64>,
+    reply: Reply,
+) {
+    let reply = OnceReply::new(reply);
+    let win = match resolve(daemon, id) {
+        Ok(w) => w,
+        Err(resp) => return reply.send(*resp),
+    };
+    let view = match live_view(&win) {
+        Ok(v) => v,
+        Err(resp) => return reply.send(*resp),
+    };
+    let js = match trusted_target_source(selector.as_deref(), nth, contains.as_deref(), ref_idx) {
+        Ok(js) => js,
+        Err(resp) => return reply.send(*resp),
+    };
+    let source = match plan_eval_source(&js) {
+        Ok(source) => source,
+        Err(message) => {
+            return reply.send(Response::err(format!(
+                "trusted target eval failed: SyntaxError: {message}"
+            )))
+        }
+    };
+    let cancellable = gio::Cancellable::new();
+    arm_timeout(reply.clone(), timeout_ms, "trusted click");
+    let view_for_cb = view.clone();
+    view.call_async_javascript_function(
+        &source,
+        None,
+        None,
+        None,
+        Some(&cancellable),
+        move |result| {
+            if reply.is_spent() {
+                return;
+            }
+            let target = match result
+                .map(|value| jsc_to_json(&value))
+                .map_err(|e| e.to_string())
+                .and_then(|json| {
+                    serde_json::from_value::<crate::trusted_input::TargetPoint>(json)
+                        .map_err(|e| e.to_string())
+                }) {
+                Ok(target) => target,
+                Err(e) => {
+                    return reply.send(Response::err(format!("trusted click target failed: {e}")))
+                }
+            };
+            let input = match crate::trusted_input::inject_click(&win, &target) {
+                Ok(report) => report,
+                Err(e) => return reply.send(Response::err(format!("trusted click failed: {e}"))),
+            };
+            let url = view_for_cb.uri().map(|u| u.to_string());
+            glib::timeout_add_local_once(std::time::Duration::from_millis(75), move || {
+                reply.send(trusted_report("clicked", target, input, url));
+            });
+        },
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn trusted_type_text(
+    daemon: &Rc<Daemon>,
+    id: Option<u64>,
+    selector: Option<String>,
+    nth: Option<u32>,
+    contains: Option<String>,
+    ref_idx: Option<u32>,
+    text: String,
+    clear: bool,
+    enter: bool,
+    timeout_ms: Option<u64>,
+    reply: Reply,
+) {
+    if !text.is_ascii() {
+        return OnceReply::new(reply).send(Response::err(
+            "trusted type currently supports ASCII text only (wtype virtual-keyboard backend)",
+        ));
+    }
+    let reply = OnceReply::new(reply);
+    let win = match resolve(daemon, id) {
+        Ok(w) => w,
+        Err(resp) => return reply.send(*resp),
+    };
+    let view = match live_view(&win) {
+        Ok(v) => v,
+        Err(resp) => return reply.send(*resp),
+    };
+    let js = match trusted_target_source(selector.as_deref(), nth, contains.as_deref(), ref_idx) {
+        Ok(js) => js,
+        Err(resp) => return reply.send(*resp),
+    };
+    let source = match plan_eval_source(&js) {
+        Ok(source) => source,
+        Err(message) => {
+            return reply.send(Response::err(format!(
+                "trusted target eval failed: SyntaxError: {message}"
+            )))
+        }
+    };
+    let cancellable = gio::Cancellable::new();
+    arm_timeout(reply.clone(), timeout_ms, "trusted type");
+    let view_for_cb = view.clone();
+    view.call_async_javascript_function(
+        &source,
+        None,
+        None,
+        None,
+        Some(&cancellable),
+        move |result| {
+            if reply.is_spent() {
+                return;
+            }
+            let target = match result
+                .map(|value| jsc_to_json(&value))
+                .map_err(|e| e.to_string())
+                .and_then(|json| {
+                    serde_json::from_value::<crate::trusted_input::TargetPoint>(json)
+                        .map_err(|e| e.to_string())
+                }) {
+                Ok(target) => target,
+                Err(e) => {
+                    return reply.send(Response::err(format!("trusted type target failed: {e}")))
+                }
+            };
+            let input = match crate::trusted_input::inject_type(&win, &target, &text, clear, enter)
+            {
+                Ok(report) => report,
+                Err(e) => return reply.send(Response::err(format!("trusted type failed: {e}"))),
+            };
+            let url = view_for_cb.uri().map(|u| u.to_string());
+            glib::timeout_add_local_once(std::time::Duration::from_millis(100), move || {
+                reply.send(trusted_report("typed", target, input, url));
+            });
+        },
+    );
 }
 
 /// Click an element with a real pointer-event sequence at the
@@ -2509,7 +2692,9 @@ pub fn click(
         Err(resp) => return OnceReply::new(reply).send(*resp),
     };
     if trusted {
-        return OnceReply::new(reply).send(trusted_input_unavailable("click"));
+        return trusted_click(
+            daemon, id, selector, nth, contains, ref_idx, timeout_ms, reply,
+        );
     }
     let js = format!(
         r#"{native}{prelude}
@@ -2559,7 +2744,9 @@ pub fn type_text(
         Err(resp) => return OnceReply::new(reply).send(*resp),
     };
     if trusted {
-        return OnceReply::new(reply).send(trusted_input_unavailable("type"));
+        return trusted_type_text(
+            daemon, id, selector, nth, contains, ref_idx, text, clear, enter, timeout_ms, reply,
+        );
     }
     let js = format!(
         r#"{native}{prelude}

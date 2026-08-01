@@ -31,6 +31,7 @@ mod session;
 mod siteua;
 mod smoothwheel;
 mod snapdiff;
+mod trusted_input;
 mod verify;
 mod window;
 
