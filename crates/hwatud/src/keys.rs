@@ -109,7 +109,7 @@ impl Action {
     pub fn describe(self) -> &'static str {
         match self {
             Action::Close => "close window",
-            Action::NewWindow => "new window",
+            Action::NewWindow => "new tab",
             Action::UrlOpen => "open URL / search",
             Action::UrlEdit => "edit current URL",
             Action::YankUrl => "copy current URL",
@@ -140,10 +140,10 @@ impl Action {
         match self {
             Action::Close => "ctrl+w, ctrl+q",
             Action::NewWindow => "ctrl+t, ctrl+n",
-            // Ctrl+L edits the current address. Ctrl+Shift+L opens a blank
-            // address prompt without borrowing a Vim-style bare key.
-            Action::UrlOpen => "ctrl+shift+l",
-            Action::UrlEdit => "ctrl+l",
+            // Ctrl+L and Ctrl+Shift+L both edit the current address. The
+            // blank URL prompt remains available from the command palette.
+            Action::UrlOpen => "",
+            Action::UrlEdit => "ctrl+l, ctrl+shift+l",
             Action::YankUrl => "ctrl+y",
             Action::Find => "ctrl+f",
             Action::FindBack => "ctrl+shift+f",
@@ -439,7 +439,7 @@ mod tests {
     #[test]
     fn chords_for_lists_bindings_in_order() {
         let map = Keymap::default();
-        assert_eq!(map.chords_for(Action::UrlEdit), vec!["ctrl+l"]);
+        assert_eq!(map.chords_for(Action::UrlEdit), vec!["ctrl+l", "ctrl+L"]);
         assert_eq!(map.chords_for(Action::Find), vec!["ctrl+f"]);
     }
 
@@ -475,7 +475,7 @@ mod tests {
         );
         assert_eq!(
             map.lookup(Phase::Capture, Key::L, CTRL | SHIFT),
-            Some(Action::UrlOpen)
+            Some(Action::UrlEdit)
         );
         assert_eq!(map.lookup(Phase::Capture, Key::f, CTRL), Some(Action::Find));
         assert_eq!(

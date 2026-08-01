@@ -64,6 +64,25 @@ fn home_page() -> Option<String> {
         .filter(|v| !v.trim().is_empty())
 }
 
+/// Convert an otherwise-unhandled printable key into the first character
+/// for the URL/search prompt. Modified chords stay available to the keymap;
+/// whitespace stays native so a bare Space still scrolls the page.
+fn printable_key_text(key: gtk::gdk::Key, state: gtk::gdk::ModifierType) -> Option<String> {
+    let blocked = gtk::gdk::ModifierType::CONTROL_MASK
+        | gtk::gdk::ModifierType::ALT_MASK
+        | gtk::gdk::ModifierType::META_MASK
+        | gtk::gdk::ModifierType::SUPER_MASK
+        | gtk::gdk::ModifierType::HYPER_MASK;
+    if state.intersects(blocked) {
+        return None;
+    }
+    let ch = key.to_unicode()?;
+    if ch.is_control() || ch.is_whitespace() {
+        return None;
+    }
+    Some(ch.to_string())
+}
+
 /// Media autoplay policy for every WebView. WebKit's own default is
 /// ALLOW_WITHOUT_SOUND, which is why video sites autoplay muted: their
 /// unmuted-play probe is rejected, so they fall back to a muted player.
@@ -1534,9 +1553,9 @@ impl BrowserWindow {
 
     /// Window-level keys. This controller is on the toplevel in the
     /// default (bubble) phase, so it only sees keys the WebView did
-    /// not consume: `/` in a page's text box stays in the page, `/`
-    /// anywhere else opens find. Modified chords never reach here;
-    /// they are handled by the capture controller.
+    /// not consume. An otherwise-unhandled printable key opens the
+    /// current-URL prompt with that character as its first input.
+    /// Modified chords are handled by the capture controller.
     fn on_window_key(
         self: &Rc<Self>,
         key: gtk::gdk::Key,
@@ -1554,7 +1573,14 @@ impl BrowserWindow {
                         self.bar.close();
                         glib::Propagation::Proceed
                     }
-                    None => glib::Propagation::Proceed,
+                    None => {
+                        if let Some(seed) = printable_key_text(key, state) {
+                            self.open_url_with_seed(&seed);
+                            glib::Propagation::Stop
+                        } else {
+                            glib::Propagation::Proceed
+                        }
+                    }
                 }
             }
             // Find mode: entry has focus and eats printable keys; we
@@ -1742,6 +1768,14 @@ impl BrowserWindow {
         self.bar.open_url(&current);
     }
 
+    /// Open the current-URL prompt and seed it with a key that was typed
+    /// while the page had focus, replacing the selected current URL.
+    fn open_url_with_seed(self: &Rc<Self>, seed: &str) {
+        self.open_url_bar();
+        self.bar.entry.set_text(seed);
+        self.bar.entry.set_position(-1);
+    }
+
     /// Navigate this window, normalizing bare hosts the same way the
     /// CLI does (`example.com` -> `https://example.com`).
     fn navigate(self: &Rc<Self>, input: &str) {
@@ -1882,6 +1916,22 @@ mod tests {
     #[test]
     fn empty_input_is_empty() {
         assert!(parse_feature_overrides("").is_empty());
+    }
+
+    #[test]
+    fn printable_key_text_excludes_modified_and_whitespace_keys() {
+        assert_eq!(
+            super::printable_key_text(gtk::gdk::Key::a, gtk::gdk::ModifierType::empty()),
+            Some("a".to_string())
+        );
+        assert_eq!(
+            super::printable_key_text(gtk::gdk::Key::a, gtk::gdk::ModifierType::CONTROL_MASK),
+            None
+        );
+        assert_eq!(
+            super::printable_key_text(gtk::gdk::Key::space, gtk::gdk::ModifierType::empty()),
+            None
+        );
     }
 
     #[test]
