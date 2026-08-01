@@ -348,6 +348,17 @@ fn apply_view_settings(view: &webkit6::WebView) {
         // Render as intended: leave JS, media, canvas, webgl at defaults.
         settings.set_enable_page_cache(true); // bfcache
 
+        // Escape hatch for GStreamer wedges: some pages' background
+        // videos deadlock the web process main thread inside
+        // MediaPlayerPrivateGStreamer::changePipelineState (observed
+        // on scale.com mp4 buffering: the run loop never returns, so
+        // every eval/screenshot hangs and the WatchDogQueue SIGABRTs
+        // the process). HWATU_DISABLE_MEDIA=1 disables media playback
+        // entirely so automation against such pages stays responsive.
+        if std::env::var("HWATU_DISABLE_MEDIA").is_ok_and(|v| !v.is_empty() && v != "0") {
+            settings.set_enable_media(false);
+        }
+
         // Scrolling must hit the GPU compositor path. The default
         // ("on demand") drops simple pages to CPU raster, and CPU
         // raster is where scroll jank lives.
