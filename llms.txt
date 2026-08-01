@@ -22,7 +22,8 @@ credible primary browser for tiling WMs (Hyprland, sway, niri):
 mainstream rebindable keybinds, media-correct video (unmuted autoplay,
 focus-loss-proof playback, unified shortform controls for Reels,
 Shorts, and TikTok), Chromium-curve scrolling, and native ad blocking,
-while intentionally excluding tabs, sync, and password management.
+while intentionally excluding tabs, sync, an extension platform, and
+a password store of its own.
 
 ## Links
 

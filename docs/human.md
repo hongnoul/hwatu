@@ -22,7 +22,8 @@ comfortable reading width on 1080p-class monitors. The launcher deals a
 hanafuda card per window so windows are tellable apart at a glance.
 
 If you want history completion and password-manager integration,
-qutebrowser still does those better. What hwatu offers instead: one
+qutebrowser still does those better today (both are now on the
+[roadmap](roadmap.md)). What hwatu offers instead: one
 warm engine for all windows (~56 MB per extra window), native ad
 blocking with no extension process, and the agent hand-off loop no
 other browser has. Scope and non-goals: [roadmap.md](roadmap.md).
