@@ -14,7 +14,8 @@ design. Full data and every caveat in the
 
 Every number below was measured on a real run, not estimated. Rerun
 them yourself: the spawn benchmark is `scripts/bench-spawn.sh`, the
-head-to-head is `scripts/bench-vs-playwright.mjs`, the rest are a few
+head-to-head is `scripts/bench-vs-playwright.mjs`, the token/context
+budget check is `scripts/bench-tokens.mjs`, and the rest are a few
 lines of shell against the release binaries.
 
 **Test rig:** i7-12650H laptop, 15 GiB RAM, Wayland (niri),
@@ -162,6 +163,57 @@ Two measured cliffs shaped the implementation:
   remember their origin kind, and a check only adopts a matching
   park, so alternating render/check loops keep one warm window per
   kind instead of thrashing process swaps.
+
+## Tokens per verification
+
+Measured 2026-08-01 with `scripts/bench-tokens.mjs` against the same
+40-card local fixture used by the latency benchmarks. This benchmark
+measures the text a coding agent has to ingest from browser-verification
+tool output. It always reports tokenizer-independent UTF-8 bytes, then
+optionally reports one pinned tokenizer, `gpt-tokenizer`'s `cl100k_base`
+encoding, so readers can compare runs without pretending every model
+uses that tokenizer.
+
+| transcript | source | UTF-8 bytes | `gpt-tokenizer` `cl100k_base` tokens |
+|---|---:|---:|---:|
+| `hwatu-live-check-json` | live `hwatu check` output against the fixture | 306 | 103 |
+| `hwatu-check-json-fixture` | built-in representative hwatu fixture output | 342 | 127 |
+| `playwright-mcp-input-template` | local transcript input template, not a measurement | 256 | 55 |
+| `chrome-devtools-mcp-input-template` | local transcript input template, not a measurement | 266 | 58 |
+
+The two MCP competitor rows are deliberately **not** external
+measurements. The tools were not available in this run, so the script
+ships rerunnable input slots instead of fabricated numbers:
+
+```sh
+npm install --prefix /tmp/hwatu-tokenizer --no-save gpt-tokenizer
+NODE_PATH=/tmp/hwatu-tokenizer/node_modules PATH=$PWD/target/release:$PATH \
+  node scripts/bench-tokens.mjs \
+    --hwatu-live \
+    --input playwright-mcp=bench-inputs/playwright-mcp.txt \
+    --input chrome-devtools-mcp=bench-inputs/chrome-devtools-mcp.txt
+```
+
+Paste each competitor's actual tool transcript for the same fixture into
+the named input file before running that command. The script reports bytes
+and pinned-tokenizer counts for every transcript, but its failure gate
+applies **only** to hwatu rows (`HWATU_TOKEN_BENCH_MAX_BYTES`, default
+16,384, and `HWATU_TOKEN_BENCH_MAX_TOKENS`, default 4,096 when the
+optional tokenizer is installed). Competitor payloads are comparison
+inputs, not CI failure criteria for hwatu.
+
+Caveats:
+
+- Bytes are the stable, tokenizer-independent measurement. Token counts
+  vary by model vendor, chat wrapper, tool-call envelope, and tokenizer
+  revision.
+- The pinned tokenizer is an OpenAI-style `cl100k_base` proxy, not a
+  claim about Claude, Gemini, or any MCP host's exact billing tokenizer.
+- Screenshot bytes are not included; this measures the textual tool
+  output an agent must read after a verification pass.
+- The live hwatu row was produced after `cargo build --release` with
+  `PATH=$PWD/target/release:$PATH`; installed-release output can drift as
+  fields are added or removed.
 
 ## Memory
 
