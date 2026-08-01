@@ -48,6 +48,13 @@
 //! modifier chords, and `defaultPrevented` events, so pages that own
 //! their keys (players, games, editors) keep them.
 //!
+//! Instagram Reels gets two native-app shortcuts layered ahead of the
+//! generic horizontal arrow scrolling: holding ArrowRight sets the
+//! visible Reel's media to 2x and restores its prior rate on release;
+//! ArrowLeft clicks the visible Reel's Comment control once per press.
+//! The shortcut is scoped to Instagram Reel URLs and fails open when no
+//! visible media or Comment control can be found.
+//!
 //! Fail-open by design: the handler bails — leaving native scrolling
 //! intact — when the event is already `defaultPrevented`, not
 //! cancelable, ctrl/alt/meta-modified (zoom and friends), or when no
@@ -444,6 +451,103 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
       default: return null;
     }
   }
+
+  // Instagram's Reel controls are rendered as anonymous role=button
+  // wrappers around SVGs, so use the stable accessibility label rather
+  // than generated class names. Keep this entirely site/path scoped so
+  // ArrowLeft/ArrowRight retain their normal scrolling elsewhere.
+  function isInstagramReels() {
+    const host = location.hostname.toLowerCase();
+    return (host === 'instagram.com' || host.endsWith('.instagram.com'))
+      && /(^|\/)reels?(\/|$)/i.test(location.pathname);
+  }
+  function visibleRect(r) {
+    return r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0
+      && r.left < innerWidth && r.top < innerHeight;
+  }
+  function activeReelVideo() {
+    let best = null, bestArea = 0;
+    for (const v of document.querySelectorAll('video')) {
+      const r = v.getBoundingClientRect();
+      if (!visibleRect(r)) continue;
+      const w = Math.min(r.right, innerWidth) - Math.max(r.left, 0);
+      const h = Math.min(r.bottom, innerHeight) - Math.max(r.top, 0);
+      const area = Math.max(0, w) * Math.max(0, h);
+      if (area > bestArea) { best = v; bestArea = area; }
+    }
+    return best;
+  }
+  const reelSpeedRestore = new Map();
+  function releaseReelSpeed() {
+    for (const [v, rate] of reelSpeedRestore) {
+      try { v.playbackRate = rate; } catch (_) {}
+    }
+    reelSpeedRestore.clear();
+  }
+  function holdReelSpeed() {
+    const v = activeReelVideo();
+    if (!v) return false;
+    if (!reelSpeedRestore.has(v)) reelSpeedRestore.set(v, v.playbackRate);
+    v.playbackRate = 2;
+    return true;
+  }
+  function reelCommentButton() {
+    const selector = 'svg[aria-label="Comment" i],svg[aria-label*="comment" i]';
+    const buttons = [];
+    for (const b of document.querySelectorAll('button,[role="button"]')) {
+      const r = b.getBoundingClientRect();
+      if (visibleRect(r) && (b.matches('[aria-label*="comment" i]') || b.querySelector(selector))) {
+        buttons.push(b);
+      }
+    }
+    if (!buttons.length) return null;
+    const active = activeReelVideo();
+    const ar = active && active.getBoundingClientRect();
+    const ax = ar ? (ar.left + ar.right) / 2 : innerWidth / 2;
+    const ay = ar ? (ar.top + ar.bottom) / 2 : innerHeight / 2;
+    return buttons.reduce((best, b) => {
+      const r = b.getBoundingClientRect();
+      const score = Math.hypot((r.left + r.right) / 2 - ax,
+                               (r.top + r.bottom) / 2 - ay);
+      return !best || score < best.score ? { b, score } : best;
+    }, null).b;
+  }
+
+  // These listeners run before the generic keyboard scroller below. A
+  // handled shortcut prevents the generic ArrowRight/ArrowLeft path from
+  // horizontally scrolling the Reel feed as well.
+  addEventListener('keydown', e => {
+    try {
+      if (!isInstagramReels() || e.defaultPrevented || e.ctrlKey || e.altKey || e.metaKey
+          || ownsKeys(e.target)) return;
+      if (e.key === 'ArrowRight') {
+        if (holdReelSpeed()) e.preventDefault();
+      } else if (e.key === 'ArrowLeft' && !e.repeat) {
+        const b = reelCommentButton();
+        if (b) { b.click(); e.preventDefault(); }
+      } else if (e.key === 'ArrowLeft' && e.repeat) {
+        // A held left key must not click the toggle repeatedly.
+        if (reelCommentButton()) e.preventDefault();
+      }
+    } catch (_) {
+      // Fail open: native/page keyboard handling remains available.
+    }
+  }, { passive: false });
+  addEventListener('keyup', e => {
+    try {
+      if (e.key === 'ArrowRight' && reelSpeedRestore.size) {
+        releaseReelSpeed();
+        e.preventDefault();
+      }
+    } catch (_) {
+      releaseReelSpeed();
+    }
+  }, { passive: false });
+  addEventListener('blur', releaseReelSpeed);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState !== 'visible') releaseReelSpeed();
+  });
+
   // Targets that own their keys: never steal from text entry or
   // controls. Interactive-widget roles keep arrows too.
   function ownsKeys(t) {
@@ -586,20 +690,46 @@ mod tests {
     fn key_handler_shape() {
         let handler = SMOOTH_WHEEL_JS
             .split("addEventListener('keydown'")
-            .nth(1)
+            .nth(2)
             .expect("keydown handler present");
         let pd = handler.find("e.preventDefault()").unwrap();
         let owns = handler.find("ownsKeys").unwrap();
         let prevented = handler.find("e.defaultPrevented").unwrap();
         let snap = handler.find("pageSnap").unwrap();
         assert!(owns < pd, "ownsKeys guard must precede preventDefault");
-        assert!(prevented < pd, "defaultPrevented check must precede preventDefault");
+        assert!(
+            prevented < pd,
+            "defaultPrevented check must precede preventDefault"
+        );
         assert!(snap < pd, "pageSnap must run before glide preventDefault");
         // Bubble phase, not capture: page handlers keep priority.
         assert!(!handler.starts_with(", e => {}, { capture: true"));
         for key in ["ArrowDown", "ArrowUp", "PageDown", "PageUp"] {
             assert!(SMOOTH_WHEEL_JS.contains(key), "{key} handled");
         }
+    }
+
+    /// Instagram Reel shortcuts must be path-scoped, hold-sensitive for
+    /// playback speed, and use the accessible Comment control rather than
+    /// brittle generated class names.
+    #[test]
+    fn instagram_reel_shortcuts_shape() {
+        assert!(SMOOTH_WHEEL_JS.contains("isInstagramReels"));
+        assert!(SMOOTH_WHEEL_JS.contains("reelSpeedRestore"));
+        assert!(SMOOTH_WHEEL_JS.contains("v.playbackRate = 2"));
+        assert!(SMOOTH_WHEEL_JS.contains("v.playbackRate = rate"));
+        assert!(SMOOTH_WHEEL_JS.contains("svg[aria-label=\"Comment\" i]"));
+        assert!(SMOOTH_WHEEL_JS.contains("b.click()"));
+        assert!(SMOOTH_WHEEL_JS.contains("document.addEventListener('visibilitychange'"));
+
+        let shortcut = SMOOTH_WHEEL_JS
+            .split("function isInstagramReels")
+            .nth(1)
+            .and_then(|tail| tail.split("// Targets that own their keys").next())
+            .expect("Instagram shortcut block present");
+        assert!(shortcut.contains("ArrowRight"));
+        assert!(shortcut.contains("ArrowLeft"));
+        assert!(shortcut.contains("e.repeat"));
     }
 
     /// Snapless card feeds (Reels mobile web) must be caught by the
