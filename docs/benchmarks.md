@@ -178,12 +178,13 @@ uses that tokenizer.
 |---|---:|---:|---:|
 | `hwatu-live-check-json` | live `hwatu check` output against the fixture | 306 | 103 |
 | `hwatu-check-json-fixture` | built-in representative hwatu fixture output | 342 | 127 |
-| `playwright-mcp-input-template` | local transcript input template, not a measurement | 256 | 55 |
-| `chrome-devtools-mcp-input-template` | local transcript input template, not a measurement | 266 | 58 |
+| Playwright MCP | not measured in this run | — | — |
+| Chrome DevTools MCP | not measured in this run | — | — |
 
-The two MCP competitor rows are deliberately **not** external
-measurements. The tools were not available in this run, so the script
-ships rerunnable input slots instead of fabricated numbers:
+The competitor integrations were not available in this measurement
+environment, so their values are shown as unavailable rather than
+estimated. For maintainers who want to reproduce the comparison locally,
+the script accepts optional transcripts from the other tools:
 
 ```sh
 npm install --prefix /tmp/hwatu-tokenizer --no-save gpt-tokenizer
@@ -194,13 +195,13 @@ NODE_PATH=/tmp/hwatu-tokenizer/node_modules PATH=$PWD/target/release:$PATH \
     --input chrome-devtools-mcp=bench-inputs/chrome-devtools-mcp.txt
 ```
 
-Paste each competitor's actual tool transcript for the same fixture into
-the named input file before running that command. The script reports bytes
-and pinned-tokenizer counts for every transcript, but its failure gate
-applies **only** to hwatu rows (`HWATU_TOKEN_BENCH_MAX_BYTES`, default
-16,384, and `HWATU_TOKEN_BENCH_MAX_TOKENS`, default 4,096 when the
-optional tokenizer is installed). Competitor payloads are comparison
-inputs, not CI failure criteria for hwatu.
+Supply the exact output from each tool for the same fixture when running
+that optional comparison. The script reports bytes and pinned-tokenizer
+counts for every supplied transcript, but its failure gate applies
+**only** to hwatu rows (`HWATU_TOKEN_BENCH_MAX_BYTES`, default 16,384,
+and `HWATU_TOKEN_BENCH_MAX_TOKENS`, default 4,096 when the optional
+tokenizer is installed). Competitor payloads are comparison inputs, not
+CI failure criteria for hwatu.
 
 Caveats:
 
