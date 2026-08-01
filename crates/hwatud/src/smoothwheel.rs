@@ -48,12 +48,20 @@
 //! modifier chords, and `defaultPrevented` events, so pages that own
 //! their keys (players, games, editors) keep them.
 //!
-//! Instagram Reels gets two native-app shortcuts layered ahead of the
-//! generic horizontal arrow scrolling: holding ArrowRight sets the
-//! visible Reel's media to 2x and restores its prior rate on release;
-//! ArrowLeft clicks the visible Reel's Comment control once per press.
-//! The shortcut is scoped to Instagram Reel URLs and fails open when no
-//! visible media or Comment control can be found.
+//! Shortform feeds (Instagram Reels, YouTube Shorts, TikTok) share one
+//! unified control scheme layered ahead of the generic key scrolling,
+//! modeled on the Instagram Reels native app:
+//!   - ArrowUp/ArrowDown: snap-scroll one video (via the snap pager);
+//!   - ArrowRight held: the visible video plays at 2x, restoring its
+//!     prior rate on release;
+//!   - ArrowLeft: toggles the comment section — clicks the comment
+//!     control when the sheet is closed and the sheet's close control
+//!     when it is open, rather than assuming the comment control
+//!     itself is a toggle;
+//!   - Space: toggles play/pause on the visible video.
+//! The shortcuts are scoped to shortform URLs and fail open when no
+//! visible media or matching control can be found; sites that handle
+//! a key themselves (and preventDefault it) keep priority.
 //!
 //! Fail-open by design: the handler bails — leaving native scrolling
 //! intact — when the event is already `defaultPrevented`, not
@@ -61,11 +69,6 @@
 //! ancestor can scroll in the delta direction. Any exception inside
 //! the handler is swallowed before `preventDefault`, so a bug degrades
 //! to engine-native scrolling, never to a dead wheel.
-//!
-//! Instagram Reels also gets a site-scoped ArrowLeft comment toggle. The
-//! toggle clicks the comment control when the sheet is closed and the
-//! sheet's close control when it is open, rather than assuming that the
-//! comment control itself is a toggle.
 //!
 //! `HWATU_SMOOTH_WHEEL=0` disables the whole thing.
 
@@ -457,20 +460,27 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
     }
   }
 
-  // Instagram's Reel controls are rendered as anonymous role=button
-  // wrappers around SVGs, so use the stable accessibility label rather
-  // than generated class names. Keep this entirely site/path scoped so
-  // ArrowLeft/ArrowRight retain their normal scrolling elsewhere.
-  function isInstagramReels() {
-    const host = location.hostname.toLowerCase();
-    return (host === 'instagram.com' || host.endsWith('.instagram.com'))
-      && /(^|\/)reels?(\/|$)/i.test(location.pathname);
+  // Shortform feeds (Instagram Reels, YouTube Shorts, TikTok) share
+  // one unified control scheme. Controls are rendered as anonymous
+  // role=button wrappers around SVGs on these sites, so matching uses
+  // stable accessibility labels (plus TikTok's data-e2e hooks) rather
+  // than generated class names. The gate is URL-scoped so
+  // ArrowLeft/ArrowRight/Space retain their normal behavior elsewhere.
+  function shortformSite() {
+    const host = location.hostname.toLowerCase().replace(/^www\./, '');
+    const inHost = s => host === s || host.endsWith('.' + s);
+    const path = location.pathname;
+    if (inHost('instagram.com') && /(^|\/)reels?(\/|$)/i.test(path)) return 'instagram';
+    if (inHost('youtube.com') && /^\/shorts(\/|$)/i.test(path)) return 'youtube';
+    if (inHost('tiktok.com')
+        && /^\/(?:$|foryou|following|friends|explore|@[^/]+\/video\/)/i.test(path)) return 'tiktok';
+    return null;
   }
   function visibleRect(r) {
     return r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0
       && r.left < innerWidth && r.top < innerHeight;
   }
-  function activeReelVideo() {
+  function activeShortformVideo() {
     let best = null, bestArea = 0;
     for (const v of document.querySelectorAll('video')) {
       const r = v.getBoundingClientRect();
@@ -482,25 +492,34 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
     }
     return best;
   }
-  const reelSpeedRestore = new Map();
-  function releaseReelSpeed() {
-    for (const [v, rate] of reelSpeedRestore) {
+  const speedRestore = new Map();
+  function releaseShortformSpeed() {
+    for (const [v, rate] of speedRestore) {
       try { v.playbackRate = rate; } catch (_) {}
     }
-    reelSpeedRestore.clear();
+    speedRestore.clear();
   }
-  function holdReelSpeed() {
-    const v = activeReelVideo();
+  function holdShortformSpeed() {
+    const v = activeShortformVideo();
     if (!v) return false;
-    if (!reelSpeedRestore.has(v)) reelSpeedRestore.set(v, v.playbackRate);
+    if (!speedRestore.has(v)) speedRestore.set(v, v.playbackRate);
     v.playbackRate = 2;
     return true;
   }
-  // Of several matching controls (one per stacked reel card), pick the
+  // Space toggles play/pause on the visible video, like the native
+  // apps. The play() promise rejection (autoplay policy) is swallowed.
+  function toggleShortformPlayback() {
+    const v = activeShortformVideo();
+    if (!v) return false;
+    if (v.paused) { const p = v.play(); if (p && p.catch) p.catch(() => {}); }
+    else v.pause();
+    return true;
+  }
+  // Of several matching controls (one per stacked video card), pick the
   // one nearest the active video: that is the card the user is watching.
   function nearestButton(buttons) {
     if (!buttons.length) return null;
-    const active = activeReelVideo();
+    const active = activeShortformVideo();
     const ar = active && active.getBoundingClientRect();
     const ax = ar ? (ar.left + ar.right) / 2 : innerWidth / 2;
     const ay = ar ? (ar.top + ar.bottom) / 2 : innerHeight / 2;
@@ -511,26 +530,29 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
       return !best || score < best.score ? { b, score } : best;
     }, null).b;
   }
-  function reelCommentButton() {
+  function commentButton() {
     const selector = 'svg[aria-label="Comment" i],svg[aria-label*="comment" i]';
+    const match = '[aria-label*="comment" i],[data-e2e*="comment-icon"]';
     const buttons = [];
     for (const b of document.querySelectorAll('button,[role="button"]')) {
       const r = b.getBoundingClientRect();
-      if (visibleRect(r) && (b.matches('[aria-label*="comment" i]') || b.querySelector(selector))) {
+      if (visibleRect(r) && (b.matches(match) || b.querySelector(selector))) {
         buttons.push(b);
       }
     }
     return nearestButton(buttons);
   }
-  function reelCommentCloseButton() {
+  function commentCloseButton() {
     const buttons = [];
-    // The open comments sheet is a dialog on current Instagram mobile web.
-    // Search only inside modal roots so unrelated page close buttons cannot
-    // steal ArrowLeft.
-    for (const root of document.querySelectorAll('[role="dialog"],[aria-modal="true"]')) {
+    // Search only inside comment-sheet roots so unrelated page close
+    // buttons cannot steal ArrowLeft: the open sheet is a dialog on
+    // Instagram/TikTok mobile web, an engagement panel on YouTube.
+    const roots = '[role="dialog"],[aria-modal="true"],' +
+      'ytd-engagement-panel-section-list-renderer,[data-e2e="comment-panel"]';
+    for (const root of document.querySelectorAll(roots)) {
       for (const b of root.querySelectorAll('button,[role="button"]')) {
         const r = b.getBoundingClientRect();
-        if (visibleRect(r) && (b.matches('[aria-label*="close" i]')
+        if (visibleRect(r) && (b.matches('[aria-label*="close" i],[data-e2e*="close" i]')
             || b.querySelector('svg[aria-label*="close" i]'))) {
           buttons.push(b);
         }
@@ -540,44 +562,50 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
   }
   // ArrowLeft toggles: close the open sheet first, otherwise open it.
   // Without the close arm, pressing ArrowLeft twice only opens the sheet.
-  function reelCommentToggleButton() {
-    return reelCommentCloseButton() || reelCommentButton();
+  function commentToggleButton() {
+    return commentCloseButton() || commentButton();
   }
 
-  // These listeners run before the generic keyboard scroller below. A
-  // handled shortcut prevents the generic ArrowRight/ArrowLeft path from
-  // horizontally scrolling the Reel feed as well.
+  // Capture phase, ahead of the sites' own handlers: the point of the
+  // unified scheme is that these keys behave identically on every
+  // shortform feed, overriding per-site bindings (YouTube's seek on
+  // ArrowRight, for example). Still guarded by ownsKeys so text entry
+  // and native controls keep their keys, and still fail-open: a
+  // shortcut only consumes the key when its control was found.
   addEventListener('keydown', e => {
     try {
-      if (!isInstagramReels() || e.defaultPrevented || e.ctrlKey || e.altKey || e.metaKey
+      if (!shortformSite() || e.defaultPrevented || e.ctrlKey || e.altKey || e.metaKey
           || ownsKeys(e.target)) return;
       if (e.key === 'ArrowRight') {
-        if (holdReelSpeed()) e.preventDefault();
+        if (holdShortformSpeed()) { e.preventDefault(); e.stopPropagation(); }
       } else if (e.key === 'ArrowLeft' && !e.repeat) {
-        const b = reelCommentToggleButton();
-        if (b) { b.click(); e.preventDefault(); }
+        const b = commentToggleButton();
+        if (b) { b.click(); e.preventDefault(); e.stopPropagation(); }
       } else if (e.key === 'ArrowLeft' && e.repeat) {
         // A held left key must not click the toggle repeatedly. Still
         // consume it so the generic horizontal scroller cannot run.
-        if (reelCommentToggleButton()) e.preventDefault();
+        if (commentToggleButton()) { e.preventDefault(); e.stopPropagation(); }
+      } else if (e.key === ' ' && !e.repeat && !e.shiftKey) {
+        if (toggleShortformPlayback()) { e.preventDefault(); e.stopPropagation(); }
       }
     } catch (_) {
       // Fail open: native/page keyboard handling remains available.
     }
-  }, { passive: false });
+  }, { capture: true, passive: false });
   addEventListener('keyup', e => {
     try {
-      if (e.key === 'ArrowRight' && reelSpeedRestore.size) {
-        releaseReelSpeed();
+      if (e.key === 'ArrowRight' && speedRestore.size) {
+        releaseShortformSpeed();
         e.preventDefault();
+        e.stopPropagation();
       }
     } catch (_) {
-      releaseReelSpeed();
+      releaseShortformSpeed();
     }
-  }, { passive: false });
-  addEventListener('blur', releaseReelSpeed);
+  }, { capture: true, passive: false });
+  addEventListener('blur', releaseShortformSpeed);
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState !== 'visible') releaseReelSpeed();
+    if (document.visibilityState !== 'visible') releaseShortformSpeed();
   });
 
   // Targets that own their keys: never steal from text entry or
@@ -701,22 +729,21 @@ mod tests {
     /// ArrowLeft must select the close control before falling back to the
     /// comment opener, otherwise pressing it twice only opens the sheet.
     #[test]
-    fn instagram_comment_toggle_closes_open_sheet() {
-        assert!(SMOOTH_WHEEL_JS.contains("function reelCommentCloseButton"));
+    fn comment_toggle_closes_open_sheet() {
+        assert!(SMOOTH_WHEEL_JS.contains("function commentCloseButton"));
         assert!(SMOOTH_WHEEL_JS.contains("[role=\"dialog\"],[aria-modal=\"true\"]"));
         assert!(SMOOTH_WHEEL_JS.contains("[aria-label*=\"close\" i]"));
-        let close = SMOOTH_WHEEL_JS
-            .find("function reelCommentCloseButton")
-            .unwrap();
-        let opener = SMOOTH_WHEEL_JS.find("function reelCommentButton").unwrap();
+        let close = SMOOTH_WHEEL_JS.find("function commentCloseButton").unwrap();
+        let opener = SMOOTH_WHEEL_JS.find("function commentButton").unwrap();
         let toggle = SMOOTH_WHEEL_JS
-            .find("return reelCommentCloseButton() || reelCommentButton();")
+            .find("return commentCloseButton() || commentButton();")
             .unwrap();
         assert!(close < toggle && opener < toggle);
         // A held (repeating) ArrowLeft must not click the toggle again,
         // but still consume the key so the scroller cannot run.
         assert!(SMOOTH_WHEEL_JS.contains("e.key === 'ArrowLeft' && !e.repeat"));
-        assert!(SMOOTH_WHEEL_JS.contains("if (reelCommentToggleButton()) e.preventDefault();"));
+        assert!(SMOOTH_WHEEL_JS
+            .contains("if (commentToggleButton()) { e.preventDefault(); e.stopPropagation(); }"));
     }
 
     /// Snap paging must claim mandatory-snap feeds (Reels-style) and
@@ -762,27 +789,39 @@ mod tests {
         }
     }
 
-    /// Instagram Reel shortcuts must be path-scoped, hold-sensitive for
-    /// playback speed, and use the accessible Comment control rather than
-    /// brittle generated class names.
+    /// The unified shortform shortcuts must be site/path-scoped (IG
+    /// Reels, YT Shorts, TikTok), hold-sensitive for playback speed,
+    /// toggle playback with Space, and use accessible controls rather
+    /// than brittle generated class names.
     #[test]
-    fn instagram_reel_shortcuts_shape() {
-        assert!(SMOOTH_WHEEL_JS.contains("isInstagramReels"));
-        assert!(SMOOTH_WHEEL_JS.contains("reelSpeedRestore"));
+    fn shortform_shortcuts_shape() {
+        assert!(SMOOTH_WHEEL_JS.contains("function shortformSite"));
+        assert!(SMOOTH_WHEEL_JS.contains("instagram.com"));
+        assert!(SMOOTH_WHEEL_JS.contains("youtube.com"));
+        assert!(SMOOTH_WHEEL_JS.contains("tiktok.com"));
+        assert!(SMOOTH_WHEEL_JS.contains("speedRestore"));
         assert!(SMOOTH_WHEEL_JS.contains("v.playbackRate = 2"));
         assert!(SMOOTH_WHEEL_JS.contains("v.playbackRate = rate"));
         assert!(SMOOTH_WHEEL_JS.contains("svg[aria-label=\"Comment\" i]"));
         assert!(SMOOTH_WHEEL_JS.contains("b.click()"));
+        assert!(SMOOTH_WHEEL_JS.contains("toggleShortformPlayback"));
+        assert!(SMOOTH_WHEEL_JS.contains("v.pause()"));
         assert!(SMOOTH_WHEEL_JS.contains("document.addEventListener('visibilitychange'"));
 
         let shortcut = SMOOTH_WHEEL_JS
-            .split("function isInstagramReels")
+            .split("function shortformSite")
             .nth(1)
             .and_then(|tail| tail.split("// Targets that own their keys").next())
-            .expect("Instagram shortcut block present");
+            .expect("shortform shortcut block present");
         assert!(shortcut.contains("ArrowRight"));
         assert!(shortcut.contains("ArrowLeft"));
+        assert!(shortcut.contains("e.key === ' '"));
         assert!(shortcut.contains("e.repeat"));
+        // The shortcut listeners run in capture phase so per-site key
+        // bindings (YouTube seek, TikTok volume) cannot shadow the
+        // unified scheme; ownsKeys still protects text entry.
+        assert!(shortcut.contains("{ capture: true, passive: false }"));
+        assert!(shortcut.contains("ownsKeys(e.target)"));
     }
 
     /// Snapless card feeds (Reels mobile web) must be caught by the
