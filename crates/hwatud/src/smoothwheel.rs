@@ -371,22 +371,37 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
   // strips the click of an abrupt cut), and both actions are
   // idempotent with the site's own later observer work.
   const RAMP_OUT_MS = 40, RAMP_IN_MS = 80;
-  const ramping = new WeakSet();
+  // Ramps are cancellable, not skippable: a new ramp on the same
+  // video supersedes the in-flight one. The old skip-if-ramping guard
+  // leaked audio on fast paging — the outgoing reel was still mid
+  // ramp-IN from being the incoming a moment earlier, so its ramp-out
+  // (and the pause behind it) never ran and its audio played under
+  // the next reel indefinitely.
+  const ramps = new WeakMap();
+  function rampTarget(v) { const r = ramps.get(v); return r ? r.to : null; }
   function rampVolume(v, to, ms, then) {
-    if (ramping.has(v)) return;
-    ramping.add(v);
+    const r = { to };
+    ramps.set(v, r);
     const from = v.volume, t0 = performance.now();
     function step(now) {
+      if (ramps.get(v) !== r) return; // superseded
       const t = Math.min((now - t0) / ms, 1);
       try { v.volume = from + (to - from) * t; } catch (_) {}
       if (t < 1) requestAnimationFrame(step);
-      else { ramping.delete(v); if (then) then(); }
+      else { ramps.delete(v); if (then) then(); }
     }
     requestAnimationFrame(step);
   }
+  // A video's own volume, recorded the first time a handoff touches
+  // it and restored when the handoff lets go, so a restore never
+  // captures a mid-ramp partial value.
+  const ownVolume = new WeakMap();
+  function ownVol(v) {
+    if (!ownVolume.has(v)) ownVolume.set(v, v.volume);
+    return ownVolume.get(v);
+  }
   function handoffPlayback(dir) {
     if (!shortformSite()) return;
-    const out = activeShortformVideo();
     // The incoming card is still ~one viewport away in the paging
     // direction at commit time: nearest video at least 40% of a
     // viewport from center. None found (virtualized card not mounted
@@ -394,27 +409,36 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
     const mid = innerHeight / 2;
     let inc = null, best = Infinity;
     for (const v of document.querySelectorAll('video')) {
-      if (v === out) continue;
       const r = v.getBoundingClientRect();
       if (r.width < 1 || r.height < 1) continue;
       const d = ((r.top + r.bottom) / 2 - mid) * dir;
       if (d < innerHeight * 0.4) continue;
       if (d < best) { best = d; inc = v; }
     }
-    if (inc && inc.paused && !ramping.has(inc)) {
-      const iv = inc.volume;
-      try { inc.volume = 0; } catch (_) {}
-      const p = inc.play();
-      if (p && p.catch) p.catch(() => {});
-      rampVolume(inc, iv, RAMP_IN_MS);
+    if (inc) {
+      const iv = ownVol(inc);
+      if (inc.paused) {
+        try { inc.volume = 0; } catch (_) {}
+        const p = inc.play();
+        if (p && p.catch) p.catch(() => {});
+      }
+      // Also covers a scroll-back onto a reel that is mid ramp-out:
+      // the new ramp supersedes it and brings the audio back.
+      rampVolume(inc, iv, RAMP_IN_MS, () => ownVolume.delete(inc));
     }
-    if (out && !out.paused) {
-      const ov = out.volume;
-      rampVolume(out, 0, RAMP_OUT_MS, () => {
+    // Silence EVERY other playing video, not just the one the
+    // largest-visible heuristic picks: during a fast transition the
+    // heuristic can already point at the incoming card, and IG keeps
+    // neighbor cards mounted — any of them left playing is the
+    // "two reels' audio at once" bug.
+    for (const v of document.querySelectorAll('video')) {
+      if (v === inc || v.paused || rampTarget(v) === 0) continue;
+      const ov = ownVol(v);
+      rampVolume(v, 0, RAMP_OUT_MS, () => {
         // Restore the element's own volume after the pause so a
         // scroll-back (or the site recycling the element) never
         // inherits a silenced video.
-        try { out.pause(); out.volume = ov; } catch (_) {}
+        try { v.pause(); v.volume = ov; ownVolume.delete(v); } catch (_) {}
       });
     }
   }
@@ -1191,21 +1215,32 @@ mod tests {
     /// handoff (incoming video plays at gesture commit; outgoing audio
     /// ramps out then pauses), and must not crossfade: the pause and
     /// a volume restore both happen, and everything is guarded so a
-    /// missing video fails open to the site's own observer.
+    /// missing video fails open to the site's own observer. Ramps must
+    /// be supersedable (a skip-if-ramping guard leaked the outgoing
+    /// reel's audio under the next reel on fast paging) and the
+    /// ramp-out must cover every other playing video, not just the
+    /// largest-visible one.
     #[test]
     fn commit_time_playback_handoff_shape() {
         assert!(SMOOTH_WHEEL_JS.contains("function handoffPlayback"));
         assert!(SMOOTH_WHEEL_JS.contains("function rampVolume"));
+        // Ramps supersede instead of skipping: a stale ramp step
+        // notices it was replaced and stops.
+        let ramp = SMOOTH_WHEEL_JS.split("function rampVolume").nth(1).unwrap();
+        let ramp_body = ramp.split("function handoffPlayback").next().unwrap();
+        assert!(ramp_body.contains("if (ramps.get(v) !== r) return;"));
         // Gated to shortform sites: nothing happens on ordinary pages.
         let body = SMOOTH_WHEEL_JS
             .split("function handoffPlayback")
             .nth(1)
             .unwrap();
         assert!(body.contains("if (!shortformSite()) return;"));
-        // Outgoing: ramp to zero, pause, then restore the element's
-        // own volume so scroll-back never inherits a silenced video.
-        assert!(body.contains("rampVolume(out, 0, RAMP_OUT_MS"));
-        assert!(body.contains("out.pause(); out.volume = ov;"));
+        // Outgoing: every other playing video ramps to zero, pauses,
+        // then restores its own volume so scroll-back never inherits
+        // a silenced video.
+        assert!(body.contains("if (v === inc || v.paused || rampTarget(v) === 0) continue;"));
+        assert!(body.contains("rampVolume(v, 0, RAMP_OUT_MS"));
+        assert!(body.contains("v.pause(); v.volume = ov; ownVolume.delete(v);"));
         // Incoming: starts muted-by-volume and ramps in; the play()
         // rejection is swallowed (autoplay policy).
         assert!(body.contains("inc.volume = 0;"));
