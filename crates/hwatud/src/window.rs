@@ -1186,6 +1186,11 @@ impl BrowserWindow {
         }
     }
 
+    /// Current show mode (normal/background/headless).
+    pub fn mode(&self) -> OpenMode {
+        self.mode.get()
+    }
+
     /// Raise and focus, promoting background/headless windows to
     /// normal: an explicit focus request means "show me this window".
     /// The prior mode is remembered so `unfocus` (or the auto-demote

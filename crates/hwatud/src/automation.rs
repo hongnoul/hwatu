@@ -2510,109 +2510,61 @@ fn trusted_report(
 ) -> Response {
     Response::value(serde_json::json!({
         action: target.matched,
-        "trusted_backend_attempted": true,
+        "trusted": true,
         "frame": target.frame,
         "iframe": target.iframe,
         "url": url.unwrap_or_default(),
         "input": {
             "backend": input.backend,
-            "niri_window_id": input.niri_window_id,
-            "x": input.x,
-            "y": input.y,
-            "window_origin": [input.window_origin_x, input.window_origin_y],
-            "window_size": [input.window_width, input.window_height],
+            "surface_x": input.x,
+            "surface_y": input.y,
+            "surface_size": [input.extent_width, input.extent_height],
         }
     }))
 }
 
-#[allow(clippy::too_many_arguments)]
-fn trusted_click(
-    daemon: &Rc<Daemon>,
-    id: Option<u64>,
-    selector: Option<String>,
-    nth: Option<u32>,
-    contains: Option<String>,
-    ref_idx: Option<u32>,
-    timeout_ms: Option<u64>,
-    reply: Reply,
-) {
-    let reply = OnceReply::new(reply);
-    let win = match resolve(daemon, id) {
-        Ok(w) => w,
-        Err(resp) => return reply.send(*resp),
-    };
-    let view = match live_view(&win) {
-        Ok(v) => v,
-        Err(resp) => return reply.send(*resp),
-    };
-    let js = match trusted_target_source(selector.as_deref(), nth, contains.as_deref(), ref_idx) {
-        Ok(js) => js,
-        Err(resp) => return reply.send(*resp),
-    };
-    let source = match plan_eval_source(&js) {
-        Ok(source) => source,
-        Err(message) => {
-            return reply.send(Response::err(format!(
-                "trusted target eval failed: SyntaxError: {message}"
-            )))
-        }
-    };
-    let cancellable = gio::Cancellable::new();
-    arm_timeout(reply.clone(), timeout_ms, "trusted click");
-    let view_for_cb = view.clone();
-    view.call_async_javascript_function(
-        &source,
-        None,
-        None,
-        None,
-        Some(&cancellable),
-        move |result| {
-            if reply.is_spent() {
-                return;
-            }
-            let target = match result
-                .map(|value| jsc_to_json(&value))
-                .map_err(|e| e.to_string())
-                .and_then(|json| {
-                    serde_json::from_value::<crate::trusted_input::TargetPoint>(json)
-                        .map_err(|e| e.to_string())
-                }) {
-                Ok(target) => target,
-                Err(e) => {
-                    return reply.send(Response::err(format!("trusted click target failed: {e}")))
-                }
-            };
-            let input = match crate::trusted_input::inject_click(&win, &target) {
-                Ok(report) => report,
-                Err(e) => return reply.send(Response::err(format!("trusted click failed: {e}"))),
-            };
-            let url = view_for_cb.uri().map(|u| u.to_string());
-            glib::timeout_add_local_once(std::time::Duration::from_millis(75), move || {
-                reply.send(trusted_report("clicked", target, input, url));
-            });
-        },
-    );
+/// What a trusted injection does with the resolved target point.
+enum TrustedAction {
+    Click,
+    Type {
+        text: String,
+        clear: bool,
+        enter: bool,
+    },
 }
 
+/// Shared driver for trusted click/type. Sequence, all on the GTK main
+/// thread (the injection itself talks to the compositor over a private
+/// Wayland connection, which is fine to block on for a few ms):
+///
+/// 1. `prepare`: present + fullscreen the window. Fullscreen makes
+///    surface coords == output coords, sidestepping the "compositor
+///    won't tell us where the window is" problem entirely.
+/// 2. Wait until the surface actually covers the monitor (configure
+///    round-trip), plus a relayout settle.
+/// 3. Resolve the target element's viewport point in the page (the
+///    all-frames resolver pierces cross-origin iframes via postMessage
+///    from injected user scripts).
+/// 4. Map to surface coords and inject through zwlr-virtual-pointer /
+///    wtype. The events arrive from the compositor, so the page sees
+///    `isTrusted: true` in whatever frame owns the point.
+/// 5. Restore the window's previous fullscreen/visibility state.
 #[allow(clippy::too_many_arguments)]
-fn trusted_type_text(
+fn trusted_input_run(
     daemon: &Rc<Daemon>,
     id: Option<u64>,
     selector: Option<String>,
     nth: Option<u32>,
     contains: Option<String>,
     ref_idx: Option<u32>,
-    text: String,
-    clear: bool,
-    enter: bool,
+    action: TrustedAction,
     timeout_ms: Option<u64>,
     reply: Reply,
 ) {
-    if !text.is_ascii() {
-        return OnceReply::new(reply).send(Response::err(
-            "trusted type currently supports ASCII text only (wtype virtual-keyboard backend)",
-        ));
-    }
+    let what: &'static str = match action {
+        TrustedAction::Click => "trusted click",
+        TrustedAction::Type { .. } => "trusted type",
+    };
     let reply = OnceReply::new(reply);
     let win = match resolve(daemon, id) {
         Ok(w) => w,
@@ -2630,46 +2582,95 @@ fn trusted_type_text(
         Ok(source) => source,
         Err(message) => {
             return reply.send(Response::err(format!(
-                "trusted target eval failed: SyntaxError: {message}"
+                "{what} target eval failed: SyntaxError: {message}"
             )))
         }
     };
-    let cancellable = gio::Cancellable::new();
-    arm_timeout(reply.clone(), timeout_ms, "trusted type");
-    let view_for_cb = view.clone();
-    view.call_async_javascript_function(
-        &source,
-        None,
-        None,
-        None,
-        Some(&cancellable),
-        move |result| {
-            if reply.is_spent() {
-                return;
-            }
-            let target = match result
-                .map(|value| jsc_to_json(&value))
-                .map_err(|e| e.to_string())
-                .and_then(|json| {
-                    serde_json::from_value::<crate::trusted_input::TargetPoint>(json)
-                        .map_err(|e| e.to_string())
-                }) {
-                Ok(target) => target,
-                Err(e) => {
-                    return reply.send(Response::err(format!("trusted type target failed: {e}")))
+    arm_timeout(reply.clone(), timeout_ms, what);
+
+    let session = crate::trusted_input::prepare(&win);
+    // Any exit past this point must restore the window; wrap the reply
+    // so sending it always finishes the session first.
+    let reply = {
+        let session = session.clone();
+        let inner = reply;
+        OnceReply::new(Box::new(move |resp| {
+            session.finish();
+            inner.send(resp);
+        }))
+    };
+
+    let fullscreen_wait_ms = timeout_ms.unwrap_or(DEFAULT_TIMEOUT_MS).clamp(500, 5_000);
+    let win_for_wait = win.clone();
+    crate::trusted_input::when_fullscreen(&win_for_wait, fullscreen_wait_ms, move |ready| {
+        if let Err(e) = ready {
+            return reply.send(Response::err(format!("{what} failed: {e}")));
+        }
+        if reply.is_spent() {
+            session.finish();
+            return;
+        }
+        let view_for_cb = view.clone();
+        view.call_async_javascript_function(
+            &source,
+            None,
+            None,
+            None,
+            gio::Cancellable::NONE,
+            move |result| {
+                if reply.is_spent() {
+                    session.finish();
+                    return;
                 }
-            };
-            let input = match crate::trusted_input::inject_type(&win, &target, &text, clear, enter)
-            {
-                Ok(report) => report,
-                Err(e) => return reply.send(Response::err(format!("trusted type failed: {e}"))),
-            };
-            let url = view_for_cb.uri().map(|u| u.to_string());
-            glib::timeout_add_local_once(std::time::Duration::from_millis(100), move || {
-                reply.send(trusted_report("typed", target, input, url));
-            });
-        },
-    );
+                let target = match result
+                    .map(|value| jsc_to_json(&value))
+                    .map_err(|e| e.to_string())
+                    .and_then(|json| {
+                        serde_json::from_value::<crate::trusted_input::TargetPoint>(json)
+                            .map_err(|e| e.to_string())
+                    }) {
+                    Ok(target) => target,
+                    Err(e) => {
+                        return reply.send(Response::err(format!("{what} target failed: {e}")))
+                    }
+                };
+                // Injection is async: it interleaves virtual-pointer
+                // probes with page readbacks (calibration) on the GTK
+                // main loop.
+                glib::spawn_future_local(async move {
+                    let injected = match &action {
+                        TrustedAction::Click => {
+                            crate::trusted_input::inject_click(&win, &view_for_cb, &target).await
+                        }
+                        TrustedAction::Type { text, clear, enter } => {
+                            crate::trusted_input::inject_type(
+                                &win,
+                                &view_for_cb,
+                                &target,
+                                text,
+                                *clear,
+                                *enter,
+                            )
+                            .await
+                        }
+                    };
+                    let input = match injected {
+                        Ok(report) => report,
+                        Err(e) => return reply.send(Response::err(format!("{what} failed: {e}"))),
+                    };
+                    let url = view_for_cb.uri().map(|u| u.to_string());
+                    let done = match action {
+                        TrustedAction::Click => "clicked",
+                        TrustedAction::Type { .. } => "typed",
+                    };
+                    // Give the compositor round-trip + page handlers a
+                    // beat before restoring the window and reporting.
+                    glib::timeout_future(std::time::Duration::from_millis(120)).await;
+                    reply.send(trusted_report(done, target, input, url));
+                });
+            },
+        );
+    });
 }
 
 /// Click an element with a real pointer-event sequence at the
@@ -2692,8 +2693,16 @@ pub fn click(
         Err(resp) => return OnceReply::new(reply).send(*resp),
     };
     if trusted {
-        return trusted_click(
-            daemon, id, selector, nth, contains, ref_idx, timeout_ms, reply,
+        return trusted_input_run(
+            daemon,
+            id,
+            selector,
+            nth,
+            contains,
+            ref_idx,
+            TrustedAction::Click,
+            timeout_ms,
+            reply,
         );
     }
     let js = format!(
@@ -2744,8 +2753,16 @@ pub fn type_text(
         Err(resp) => return OnceReply::new(reply).send(*resp),
     };
     if trusted {
-        return trusted_type_text(
-            daemon, id, selector, nth, contains, ref_idx, text, clear, enter, timeout_ms, reply,
+        return trusted_input_run(
+            daemon,
+            id,
+            selector,
+            nth,
+            contains,
+            ref_idx,
+            TrustedAction::Type { text, clear, enter },
+            timeout_ms,
+            reply,
         );
     }
     let js = format!(

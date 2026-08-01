@@ -1,23 +1,52 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 Justin Hong
-//! Trusted native input support.
+//! Trusted native input support (issue #23).
 //!
-//! The page-side half is a tiny all-frames resolver. The top frame can ask
-//! same-origin or cross-origin child frames for a selector's viewport rect via
-//! `postMessage`; child frames answer from injected user-script code, not from
-//! page JS access. The daemon then converts the returned WebView-local CSS
-//! coordinates into compositor-global coordinates and injects real input.
+//! The page cannot mint `isTrusted: true` events and neither can
+//! WebKitGTK's public API, so trusted input must enter through the
+//! compositor like a real mouse. Two hard problems fall out of that:
+//! (1) where is the element in *global* coordinates, and (2) which
+//! surface will the compositor route the events to.
+//!
+//! Both are attacked with the same two moves:
+//!
+//! * **Fullscreen for the duration of the injection.** A fullscreen
+//!   surface coincides with its monitor, so surface-local coordinates
+//!   are (approximately) output-local coordinates and no
+//!   compositor-specific window-position query is needed. niri, for
+//!   one, does not expose window positions over IPC
+//!   (`tile_pos_in_workspace_view` may be null), and its view-scroll
+//!   animations mean any static origin guess can land input in a
+//!   neighboring column mid-animation.
+//!
+//! * **Closed-loop calibration before the button press.** The injected
+//!   all-frames resolver records trusted `mousemove` positions (child
+//!   frames forward theirs to the top frame translated into
+//!   top-viewport coordinates). The daemon probes with virtual-pointer
+//!   motion, reads back where the page *actually* saw the pointer,
+//!   corrects by the observed delta, and only clicks once intended and
+//!   observed positions agree twice in a row. This absorbs remaining
+//!   unknowns: fullscreen animations, window chrome, HiDPI scale, page
+//!   zoom.
+//!
+//! The page-side selector half is an all-frames resolver: the top
+//! frame asks same-origin or cross-origin child frames for a
+//! selector's viewport rect via `postMessage`; child frames answer
+//! from injected user-script code, not from page JS access.
 
 use crate::window::BrowserWindow;
+use gtk::glib;
 use gtk::prelude::*;
+use hwatu_ipc::OpenMode;
 use serde::Deserialize;
 use serde_json::Value;
+use std::cell::Cell;
 use std::process::Command;
 use std::rc::Rc;
 use std::time::Duration;
 use wayland_client::globals::{registry_queue_init, GlobalListContents};
 use wayland_client::protocol::{wl_output, wl_pointer, wl_registry, wl_seat};
-use wayland_client::{Connection, Dispatch, QueueHandle};
+use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
 use wayland_protocols_wlr::virtual_pointer::v1::client::{
     zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
     zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
@@ -28,6 +57,33 @@ pub const RESOLVER_JS: &str = r#"(() => {
   if (window.__hwatuTrustedResolveInstalled) return;
   window.__hwatuTrustedResolveInstalled = true;
 
+  // ---- trusted pointer observation (calibration channel) ----
+  // Every frame records trusted mousemoves. Child frames forward theirs
+  // to the parent, which translates into its own viewport coordinates
+  // and re-forwards, so the top frame stores a unified observation.
+  const isTop = (() => { try { return window === window.top; } catch (_) { return false; } })();
+  window.__hwatuMoveSeq = 0;
+  const recordMove = (x, y) => {
+    if (isTop) {
+      window.__hwatuLastTrustedMove = { x, y, seq: ++window.__hwatuMoveSeq };
+    } else {
+      try { parent.postMessage({ __hwatuTrustedMove: true, x, y }, '*'); } catch (_) {}
+    }
+  };
+  document.addEventListener('mousemove', (event) => {
+    if (event.isTrusted) recordMove(event.clientX, event.clientY);
+  }, { capture: true, passive: true });
+  window.addEventListener('message', (event) => {
+    const msg = event.data;
+    if (!msg || msg.__hwatuTrustedMove !== true) return;
+    const frame = [...document.querySelectorAll('iframe')]
+      .find(f => f.contentWindow === event.source);
+    if (!frame) return;
+    const r = frame.getBoundingClientRect();
+    recordMove(msg.x + r.left, msg.y + r.top);
+  }, true);
+
+  // ---- selector resolution across frames ----
   const ownText = (el) => ((el.textContent || '') + ' ' + (el.value || '')).trim();
   const select = (selector, nth, contains, refIdx) => {
     let el;
@@ -115,6 +171,10 @@ pub const RESOLVER_JS: &str = r#"(() => {
       const found = msg.found;
       found.x += fr.left;
       found.y += fr.top;
+      // x/y are now top-viewport coordinates; report the top viewport
+      // size too so range checks stay coherent.
+      found.viewportWidth = window.innerWidth;
+      found.viewportHeight = window.innerHeight;
       found.frame = 'iframe';
       found.iframe = { id: frame.id || '', src: frame.src || '', x: fr.left, y: fr.top, width: fr.width, height: fr.height };
       done(found, null);
@@ -156,47 +216,147 @@ pub struct TargetPoint {
     pub iframe: Value,
 }
 
-pub fn inject_click(win: &Rc<BrowserWindow>, target: &TargetPoint) -> Result<InputReport, String> {
-    let report = focus_and_map(win, target)?;
-    wayland_pointer_click(&report)?;
-    std::thread::sleep(Duration::from_millis(20));
-    Ok(report)
+#[derive(Debug, Clone)]
+pub struct InputReport {
+    pub backend: &'static str,
+    /// Final compositor-global coordinates the button was pressed at.
+    pub x: i64,
+    pub y: i64,
+    /// Extents the absolute motion was expressed against (monitor
+    /// logical size).
+    pub extent_width: u32,
+    pub extent_height: u32,
+    /// How many motion probes the calibration loop needed.
+    pub probes: u32,
 }
 
-pub fn inject_type(
+/// Window-state guard for a trusted-input run: promotes + fullscreens
+/// the window on `prepare`, restores the previous state on `finish`
+/// (idempotent, shared across the racing callbacks via `Clone`).
+#[derive(Clone)]
+pub struct TrustedSession {
+    win: Rc<BrowserWindow>,
+    was_fullscreen: bool,
+    promoted: bool,
+    finished: Rc<Cell<bool>>,
+}
+
+pub fn prepare(win: &Rc<BrowserWindow>) -> TrustedSession {
+    let was_fullscreen = win.window.is_fullscreen();
+    let promoted = win.mode() != OpenMode::Normal;
+    // Best-effort compositor-side focus first: on niri this also switches
+    // to the window's workspace, which fullscreen alone does not do.
+    if let Ok(id) = find_niri_window(win) {
+        let _ = Command::new("niri")
+            .args(["msg", "action", "focus-window", "--id", &id.to_string()])
+            .status();
+    }
+    win.present();
+    if !was_fullscreen {
+        win.window.fullscreen();
+    }
+    TrustedSession {
+        win: win.clone(),
+        was_fullscreen,
+        promoted,
+        finished: Rc::new(Cell::new(false)),
+    }
+}
+
+impl TrustedSession {
+    pub fn finish(&self) {
+        if self.finished.replace(true) {
+            return;
+        }
+        if !self.was_fullscreen {
+            self.win.window.unfullscreen();
+        }
+        if self.promoted {
+            self.win.unfocus();
+        }
+    }
+}
+
+/// Wait (polling, non-blocking for the main loop) until the window is
+/// actually fullscreen-sized, then give the page one relayout beat.
+pub fn when_fullscreen(
     win: &Rc<BrowserWindow>,
+    wait_ms: u64,
+    cb: impl FnOnce(Result<(), String>) + 'static,
+) {
+    let win = win.clone();
+    let deadline = std::time::Instant::now() + Duration::from_millis(wait_ms);
+    let cb = Cell::new(Some(cb));
+    glib::timeout_add_local(Duration::from_millis(30), move || {
+        let ready = win.window.is_fullscreen() && {
+            match monitor_logical_size(&win) {
+                Some((mw, _)) => win.window.width() >= mw - 2,
+                None => true,
+            }
+        };
+        if ready {
+            if let Some(cb) = cb.take() {
+                // One extra beat for the page relayout after resize.
+                glib::timeout_add_local_once(Duration::from_millis(120), move || cb(Ok(())));
+            }
+            return glib::ControlFlow::Break;
+        }
+        if std::time::Instant::now() >= deadline {
+            if let Some(cb) = cb.take() {
+                cb(Err(format!(
+                    "window did not reach fullscreen within {wait_ms} ms"
+                )));
+            }
+            return glib::ControlFlow::Break;
+        }
+        glib::ControlFlow::Continue
+    });
+}
+
+fn monitor_logical_size(win: &Rc<BrowserWindow>) -> Option<(i32, i32)> {
+    let surface = win.window.surface()?;
+    let display = gtk::prelude::WidgetExt::display(&win.window);
+    let monitor = display.monitor_at_surface(&surface)?;
+    let geo = monitor.geometry();
+    Some((geo.width(), geo.height()))
+}
+
+pub async fn inject_click(
+    win: &Rc<BrowserWindow>,
+    view: &webkit6::WebView,
+    target: &TargetPoint,
+) -> Result<InputReport, String> {
+    let mut pointer = calibrate(win, view, target).await?;
+    pointer.click()?;
+    glib::timeout_future(Duration::from_millis(30)).await;
+    Ok(pointer.report)
+}
+
+pub async fn inject_type(
+    win: &Rc<BrowserWindow>,
+    view: &webkit6::WebView,
     target: &TargetPoint,
     text: &str,
     clear: bool,
     enter: bool,
 ) -> Result<InputReport, String> {
-    let report = inject_click(win, target)?;
-    std::thread::sleep(Duration::from_millis(30));
+    // The click both proves delivery (calibration) and moves keyboard
+    // focus to the target's window + element.
+    let report = inject_click(win, view, target).await?;
+    glib::timeout_future(Duration::from_millis(60)).await;
     if clear {
-        // Linux evdev keycodes: leftctrl=29, a=30, backspace=14.
-        run_ydotool(&["key", "29:1", "30:1", "30:0", "29:0", "14:1", "14:0"])?;
+        run_wtype(&["-M", "ctrl", "a", "-m", "ctrl", "-k", "BackSpace"])?;
+        glib::timeout_future(Duration::from_millis(30)).await;
     }
     if !text.is_empty() {
-        run_wtype(text)?;
+        run_wtype(&["--", text])?;
     }
     if enter {
-        run_wtype("\n")?;
+        glib::timeout_future(Duration::from_millis(30)).await;
+        run_wtype(&["-k", "Return"])?;
     }
+    glib::timeout_future(Duration::from_millis(40)).await;
     Ok(report)
-}
-
-#[derive(Debug, Clone)]
-pub struct InputReport {
-    pub backend: &'static str,
-    pub niri_window_id: u64,
-    pub x: i64,
-    pub y: i64,
-    pub window_origin_x: f64,
-    pub window_origin_y: f64,
-    pub window_width: f64,
-    pub window_height: f64,
-    pub extent_width: u32,
-    pub extent_height: u32,
 }
 
 struct WlState;
@@ -261,7 +421,60 @@ impl Dispatch<ZwlrVirtualPointerV1, ()> for WlState {
     }
 }
 
-fn wayland_pointer_click(report: &InputReport) -> Result<(), String> {
+/// An open virtual-pointer session, positioned over the calibrated
+/// target and ready to press the button.
+struct CalibratedPointer {
+    conn: Connection,
+    queue: EventQueue<WlState>,
+    pointer: ZwlrVirtualPointerV1,
+    report: InputReport,
+}
+
+impl CalibratedPointer {
+    fn motion(&mut self, x: f64, y: f64) -> Result<(), String> {
+        let cx = x
+            .round()
+            .clamp(0.0, self.report.extent_width.saturating_sub(1) as f64) as u32;
+        let cy = y
+            .round()
+            .clamp(0.0, self.report.extent_height.saturating_sub(1) as f64) as u32;
+        self.pointer.motion_absolute(
+            monotonic_millis(),
+            cx,
+            cy,
+            self.report.extent_width,
+            self.report.extent_height,
+        );
+        self.pointer.frame();
+        self.flush()
+    }
+
+    fn click(&mut self) -> Result<(), String> {
+        let time = monotonic_millis();
+        // BTN_LEFT = 0x110 (input-event-codes.h).
+        self.pointer
+            .button(time, 0x110, wl_pointer::ButtonState::Pressed);
+        self.pointer.frame();
+        self.pointer.button(
+            time.wrapping_add(4),
+            0x110,
+            wl_pointer::ButtonState::Released,
+        );
+        self.pointer.frame();
+        self.flush()
+    }
+
+    fn flush(&mut self) -> Result<(), String> {
+        self.conn
+            .flush()
+            .map_err(|e| format!("failed to flush trusted pointer events: {e}"))?;
+        let mut state = WlState;
+        let _ = self.queue.roundtrip(&mut state);
+        Ok(())
+    }
+}
+
+fn open_pointer(extent_width: u32, extent_height: u32) -> Result<CalibratedPointer, String> {
     let conn = Connection::connect_to_env()
         .map_err(|e| format!("failed to connect to Wayland display for trusted pointer: {e}"))?;
     let (globals, mut queue) = registry_queue_init::<WlState>(&conn)
@@ -282,28 +495,141 @@ fn wayland_pointer_click(report: &InputReport) -> Result<(), String> {
     conn.flush()
         .map_err(|e| format!("failed to flush trusted pointer creation: {e}"))?;
     let _ = queue.roundtrip(&mut state);
+    Ok(CalibratedPointer {
+        conn,
+        queue,
+        pointer,
+        report: InputReport {
+            backend: "fullscreen+wlr-virtual-pointer(calibrated)+wtype",
+            x: 0,
+            y: 0,
+            extent_width,
+            extent_height,
+            probes: 0,
+        },
+    })
+}
 
-    let x = report.x.clamp(0, report.extent_width as i64) as u32;
-    let y = report.y.clamp(0, report.extent_height as i64) as u32;
-    let time = monotonic_millis();
-    pointer.motion_absolute(time, x, y, report.extent_width, report.extent_height);
-    pointer.frame();
-    pointer.button(
-        time.wrapping_add(1),
-        0x110,
-        wl_pointer::ButtonState::Pressed,
-    );
-    pointer.frame();
-    pointer.button(
-        time.wrapping_add(2),
-        0x110,
-        wl_pointer::ButtonState::Released,
-    );
-    pointer.frame();
-    conn.flush()
-        .map_err(|e| format!("failed to flush trusted pointer events: {e}"))?;
-    let _ = queue.roundtrip(&mut state);
-    Ok(())
+/// Read the top frame's last unified trusted-mousemove observation.
+async fn read_last_move(view: &webkit6::WebView) -> Result<Option<(f64, f64, u64)>, String> {
+    let value = view
+        .call_async_javascript_function_future(
+            "return window.__hwatuLastTrustedMove || null;",
+            None,
+            None,
+            None,
+        )
+        .await
+        .map_err(|e| format!("trusted pointer calibration readback failed: {e}"))?;
+    if value.is_null() || value.is_undefined() {
+        return Ok(None);
+    }
+    let json: Value = value
+        .to_json(0)
+        .and_then(|s| serde_json::from_str(s.as_str()).ok())
+        .ok_or("trusted pointer calibration readback returned non-JSON")?;
+    let x = json.get("x").and_then(Value::as_f64);
+    let y = json.get("y").and_then(Value::as_f64);
+    let seq = json.get("seq").and_then(Value::as_u64);
+    match (x, y, seq) {
+        (Some(x), Some(y), Some(seq)) => Ok(Some((x, y, seq))),
+        _ => Ok(None),
+    }
+}
+
+/// Iterate virtual-pointer probes until the page's observed pointer
+/// position matches the intended target, then return the open pointer
+/// session parked exactly over the target. The window is expected to
+/// already be fullscreen (see [`prepare`] / [`when_fullscreen`]).
+async fn calibrate(
+    win: &Rc<BrowserWindow>,
+    view: &webkit6::WebView,
+    target: &TargetPoint,
+) -> Result<CalibratedPointer, String> {
+    let (mon_w, mon_h) = monitor_logical_size(win)
+        .ok_or("could not determine the window's monitor geometry for trusted input")?;
+
+    if target.viewport_width > 0.0
+        && target.viewport_height > 0.0
+        && (target.x < 0.0
+            || target.y < 0.0
+            || target.x > target.viewport_width
+            || target.y > target.viewport_height)
+    {
+        return Err(format!(
+            "trusted target center ({:.0},{:.0}) is outside the {}x{} viewport; \
+             scroll it into view first",
+            target.x, target.y, target.viewport_width, target.viewport_height
+        ));
+    }
+
+    // Fullscreen surface == monitor, so start from origin (0,0) and let
+    // the probe loop absorb chrome offsets / animations / zoom.
+    let mut origin_x = 0.0f64;
+    let mut origin_y = 0.0f64;
+
+    let mut pointer = open_pointer(mon_w.max(1) as u32, mon_h.max(1) as u32)?;
+
+    let mut last_seq = read_last_move(view).await?.map(|(_, _, s)| s).unwrap_or(0);
+    let mut consecutive_hits = 0u32;
+    let mut last_error = String::from("no trusted mousemove was observed by the page");
+
+    for attempt in 0..14u32 {
+        let gx = (origin_x + target.x).round();
+        let gy = (origin_y + target.y).round();
+        // Approach from a nearby point so the compositor always has a
+        // fresh motion to deliver, even when the pointer already rests
+        // on the target position.
+        let wiggle = if attempt % 2 == 0 { 2.0 } else { 3.0 };
+        pointer.motion(gx, gy - wiggle)?;
+        glib::timeout_future(Duration::from_millis(15)).await;
+        pointer.motion(gx, gy)?;
+        glib::timeout_future(Duration::from_millis(70)).await;
+
+        pointer.report.probes = attempt + 1;
+        let observed = read_last_move(view).await?;
+        let Some((ox, oy, seq)) = observed else {
+            // Nothing seen yet: surface may still be animating into
+            // place, or another surface is under the pointer.
+            glib::timeout_future(Duration::from_millis(120)).await;
+            continue;
+        };
+        if seq == last_seq {
+            last_error = format!(
+                "page stopped observing pointer motion (last saw viewport {ox:.0},{oy:.0}); \
+                 the window may be occluded or on another workspace"
+            );
+            glib::timeout_future(Duration::from_millis(120)).await;
+            continue;
+        }
+        last_seq = seq;
+
+        let dvx = target.x - ox;
+        let dvy = target.y - oy;
+        if dvx.abs() <= 1.5 && dvy.abs() <= 1.5 {
+            consecutive_hits += 1;
+            if consecutive_hits >= 2 {
+                pointer.report.x = gx as i64;
+                pointer.report.y = gy as i64;
+                return Ok(pointer);
+            }
+            // Confirm stability with one more probe (the surface may
+            // still be moving underneath us).
+            glib::timeout_future(Duration::from_millis(60)).await;
+            continue;
+        }
+        consecutive_hits = 0;
+        last_error = format!(
+            "calibration delta {dvx:.1},{dvy:.1} viewport px after probe {}",
+            attempt + 1
+        );
+        origin_x += dvx;
+        origin_y += dvy;
+    }
+
+    Err(format!(
+        "trusted pointer calibration did not converge: {last_error}"
+    ))
 }
 
 fn monotonic_millis() -> u32 {
@@ -314,112 +640,21 @@ fn monotonic_millis() -> u32 {
         .unwrap_or(0)
 }
 
-fn run_wtype(text: &str) -> Result<(), String> {
+fn run_wtype(args: &[&str]) -> Result<(), String> {
     let status = Command::new("wtype")
-        .arg(text)
+        .args(args)
         .status()
         .map_err(|e| format!("failed to run wtype for trusted text input: {e}"))?;
     if status.success() {
         Ok(())
     } else {
-        Err(format!("wtype exited with {status}"))
+        Err(format!("wtype {} exited with {status}", args.join(" ")))
     }
 }
 
-fn run_ydotool(args: &[&str]) -> Result<(), String> {
-    let status = Command::new("ydotool")
-        .args(args)
-        .status()
-        .map_err(|e| format!("failed to run ydotool: {e}. Install/enable ydotoold or set up a Wayland virtual input backend"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("ydotool {} exited with {status}", args.join(" ")))
-    }
-}
-
-fn focus_and_map(win: &Rc<BrowserWindow>, target: &TargetPoint) -> Result<InputReport, String> {
-    let niri_id = find_niri_window(win)?;
-    let status = Command::new("niri")
-        .args([
-            "msg",
-            "action",
-            "focus-window",
-            "--id",
-            &niri_id.to_string(),
-        ])
-        .status()
-        .map_err(|e| format!("failed to focus niri window {niri_id}: {e}"))?;
-    if !status.success() {
-        return Err(format!("niri failed to focus window {niri_id}: {status}"));
-    }
-    std::thread::sleep(Duration::from_millis(80));
-
-    let focused = niri_window_by_id(niri_id)?;
-    let output_name = workspace_output(
-        focused
-            .get("workspace_id")
-            .and_then(Value::as_u64)
-            .ok_or("niri focused-window did not include workspace_id")?,
-    )?;
-    let output = output_geometry(&output_name)?;
-    let layout = focused
-        .get("layout")
-        .ok_or("niri focused-window did not include layout")?;
-    let (win_w, win_h) = pair_f64(
-        layout
-            .get("window_size")
-            .ok_or("niri focused-window layout did not include window_size")?,
-    )?;
-    let (off_x, off_y) = pair_f64(
-        layout
-            .get("window_offset_in_tile")
-            .unwrap_or(&Value::Array(vec![Value::from(0), Value::from(0)])),
-    )?;
-
-    // niri does not expose absolute window coordinates in `windows` today.
-    // After `focus-window`, the focused column is centered horizontally in the
-    // output view. Vertically, the window consumes the output's usable area
-    // below layer-shell bars plus the configured outer gap. Infer that top edge
-    // from output height and niri's reported window height. This is intentionally
-    // constrained to niri and returns an actionable error when the fields differ.
-    let horizontal_slack = (output.width - win_w).max(0.0);
-    let vertical_slack = (output.height - win_h).max(0.0);
-    let side_gap = if horizontal_slack <= 64.0 {
-        horizontal_slack / 2.0
-    } else {
-        8.0
-    };
-    let origin_x = output.x + horizontal_slack / 2.0 + off_x;
-    let origin_y = output.y + (vertical_slack - side_gap).max(0.0) + off_y;
-
-    let scale_x = if target.viewport_width > 0.0 {
-        win_w / target.viewport_width
-    } else {
-        1.0
-    };
-    let scale_y = if target.viewport_height > 0.0 {
-        win_h / target.viewport_height
-    } else {
-        1.0
-    };
-    let x = (origin_x + target.x * scale_x).round() as i64;
-    let y = (origin_y + target.y * scale_y).round() as i64;
-
-    Ok(InputReport {
-        backend: "niri+wlr-virtual-pointer+wtype",
-        niri_window_id: niri_id,
-        x,
-        y,
-        window_origin_x: origin_x,
-        window_origin_y: origin_y,
-        window_width: win_w,
-        window_height: win_h,
-        extent_width: output.width.round().max(1.0) as u32,
-        extent_height: output.height.round().max(1.0) as u32,
-    })
-}
-
+/// Best-effort niri window lookup (pid + title). Used only to ask niri
+/// to focus the window (which also switches to its workspace); all
+/// coordinate work is calibration-based and compositor-agnostic.
 fn find_niri_window(win: &Rc<BrowserWindow>) -> Result<u64, String> {
     let pid = std::process::id() as u64;
     let title = win
@@ -427,7 +662,15 @@ fn find_niri_window(win: &Rc<BrowserWindow>) -> Result<u64, String> {
         .title()
         .map(|s| s.to_string())
         .unwrap_or_default();
-    let windows = niri_json(&["msg", "--json", "windows"])?;
+    let out = Command::new("niri")
+        .args(["msg", "--json", "windows"])
+        .output()
+        .map_err(|e| format!("failed to run niri msg windows: {e}"))?;
+    if !out.status.success() {
+        return Err("niri msg windows failed".into());
+    }
+    let windows: Value = serde_json::from_slice(&out.stdout)
+        .map_err(|e| format!("niri msg windows returned invalid JSON: {e}"))?;
     let arr = windows
         .as_array()
         .ok_or("niri windows response was not an array")?;
@@ -452,96 +695,9 @@ fn find_niri_window(win: &Rc<BrowserWindow>) -> Result<u64, String> {
             .ok_or_else(|| "matching niri window had no id".to_string());
     }
     Err(format!(
-        "could not uniquely match hwatu window in niri IPC (pid={pid}, title={title:?}, candidates={})",
+        "could not uniquely match hwatu window in niri IPC (candidates={})",
         candidates.len()
     ))
-}
-
-fn niri_window_by_id(id: u64) -> Result<Value, String> {
-    let windows = niri_json(&["msg", "--json", "windows"])?;
-    for window in windows
-        .as_array()
-        .ok_or("niri windows response was not an array")?
-    {
-        if window.get("id").and_then(Value::as_u64) == Some(id) {
-            return Ok(window.clone());
-        }
-    }
-    Err(format!("niri window {id} disappeared after focus-window"))
-}
-
-fn workspace_output(workspace_id: u64) -> Result<String, String> {
-    let workspaces = niri_json(&["msg", "--json", "workspaces"])?;
-    for ws in workspaces
-        .as_array()
-        .ok_or("niri workspaces response was not an array")?
-    {
-        if ws.get("id").and_then(Value::as_u64) == Some(workspace_id) {
-            return ws
-                .get("output")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-                .ok_or_else(|| format!("workspace {workspace_id} had no output"));
-        }
-    }
-    Err(format!("workspace {workspace_id} not found in niri IPC"))
-}
-
-#[derive(Debug, Clone)]
-struct OutputGeometry {
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
-}
-
-fn output_geometry(name: &str) -> Result<OutputGeometry, String> {
-    let outputs = niri_json(&["msg", "--json", "outputs"])?;
-    let logical = outputs
-        .get(name)
-        .and_then(|o| o.get("logical"))
-        .ok_or_else(|| format!("niri output {name:?} had no logical geometry"))?;
-    Ok(OutputGeometry {
-        x: logical.get("x").and_then(Value::as_f64).unwrap_or(0.0),
-        y: logical.get("y").and_then(Value::as_f64).unwrap_or(0.0),
-        width: logical
-            .get("width")
-            .and_then(Value::as_f64)
-            .ok_or_else(|| format!("niri output {name:?} had no logical width"))?,
-        height: logical
-            .get("height")
-            .and_then(Value::as_f64)
-            .ok_or_else(|| format!("niri output {name:?} had no logical height"))?,
-    })
-}
-
-fn niri_json(args: &[&str]) -> Result<Value, String> {
-    let out = Command::new("niri")
-        .args(args)
-        .output()
-        .map_err(|e| format!("failed to run niri {}: {e}", args.join(" ")))?;
-    if !out.status.success() {
-        return Err(format!(
-            "niri {} failed: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&out.stderr).trim()
-        ));
-    }
-    serde_json::from_slice(&out.stdout)
-        .map_err(|e| format!("niri {} returned invalid JSON: {e}", args.join(" ")))
-}
-
-fn pair_f64(v: &Value) -> Result<(f64, f64), String> {
-    let arr = v.as_array().ok_or("expected JSON array pair")?;
-    let x = arr
-        .first()
-        .and_then(Value::as_f64)
-        .ok_or("expected pair[0] number")?;
-    let y = arr
-        .get(1)
-        .and_then(Value::as_f64)
-        .ok_or("expected pair[1] number")?;
-    Ok((x, y))
 }
 
 #[cfg(test)]
@@ -553,5 +709,12 @@ mod tests {
         assert!(RESOLVER_JS.contains("__hwatuTrustedResolve"));
         assert!(RESOLVER_JS.contains("postMessage"));
         assert!(RESOLVER_JS.contains("iframe"));
+    }
+
+    #[test]
+    fn resolver_records_trusted_moves_for_calibration() {
+        assert!(RESOLVER_JS.contains("__hwatuLastTrustedMove"));
+        assert!(RESOLVER_JS.contains("__hwatuTrustedMove"));
+        assert!(RESOLVER_JS.contains("mousemove"));
     }
 }
