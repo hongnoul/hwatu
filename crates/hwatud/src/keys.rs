@@ -439,6 +439,25 @@ mod tests {
     }
 
     #[test]
+    fn defaults_leave_vim_chords_unbound() {
+        let map = Keymap::default();
+        for (phase, key, state) in [
+            (Phase::Capture, Key::o, CTRL),
+            (Phase::Capture, Key::i, CTRL),
+            (Phase::Bubble, Key::o, NONE),
+            (Phase::Bubble, Key::O, SHIFT),
+            (Phase::Bubble, Key::slash, NONE),
+            (Phase::Bubble, Key::question, SHIFT),
+            (Phase::Bubble, Key::n, NONE),
+            (Phase::Bubble, Key::N, SHIFT),
+            (Phase::Capture, Key::J, CTRL | SHIFT),
+            (Phase::Capture, Key::K, CTRL | SHIFT),
+        ] {
+            assert_eq!(map.lookup(phase, key, state), None, "{phase:?} {key:?}");
+        }
+    }
+
+    #[test]
     fn defaults_resolve() {
         let map = Keymap::default();
         assert_eq!(
