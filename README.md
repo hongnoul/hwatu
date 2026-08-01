@@ -6,7 +6,7 @@
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![CI](https://github.com/hongnoul/hwatu/actions/workflows/ci.yml/badge.svg)](https://github.com/hongnoul/hwatu/actions/workflows/ci.yml)
 
-**Give your agent harness real eyes. Keep the browser for yourself. Native on Linux.**
+**Your agents are blind without hwatu**
 
 </div>
 
@@ -16,14 +16,11 @@ WebKit daemon. Instead of "looks right to me", your agent gets
 can climb**, **animations as numbers**, and **headless windows that
 never steal your focus**, at any parallelism.
 
-The same daemon has a second front door: it is a real browser for
-tiling WMs (Hyprland, sway, niri, i3), so while your agents loop you
-watch some reels. That is not a gimmick, it is the seam no other tool
-has: an agent's invisible session and your window are the same
-object. When the agent hits a CAPTCHA or wants human judgment,
-`hwatu focus <id>` materializes the live session, cookies and
-half-filled forms intact, into your tiler. You act, it takes back
-over.
+For human-in-the-loop tasks (e.g. Captcha), hwatu features a lightweight
+visual verification frontend renderer written in WebKit and a caller
+function. For tiling WMs (Hyprland, sway, **niri**, i3), hwatu is
+intended to replace your primary daily browser. Our current goal is to
+provide scrolling short-form content experience in mobile-level framerate.
 
 ## Documents
 
@@ -153,17 +150,6 @@ MCP clients can call `subscribe_events` for the same stream as
 `notifications/hwatu/event`. See the full [agent guide](docs/agents.md),
 including a larger copy-paste policy and verification loops.
 
-## The hand-off: where the two sides meet
-
-Your agent's windows don't exist on your desktop: no focus stolen, no
-WM pollution, at any parallelism. Every invisible session is a live
-window the WM simply hasn't been shown. When the agent hits a
-CAPTCHA, an OAuth consent, a 2FA prompt, or a plain "does this look
-right to you", it runs `hwatu focus <id>` and the session appears in
-your tiler: same cookies, same scroll position, same half-filled
-form. You act for ten seconds. It takes back over.
-
-**This is the adjective no other tool gets to claim: interruptible.**
 Everywhere else, headless is decided at launch and a human can never
 see the session at any price. In hwatu it's a window property,
 switchable live, in both directions. And because hwatu is also the
@@ -180,13 +166,18 @@ The hand-off works because hwatu is also a real browser, one built
 for tiling WMs. `hwatu <url>` opens a window like your terminal opens
 a shell (your WM is the tab bar, there is none in the window), with
 mainstream keybinds (`ctrl+l`, `ctrl+f`, `ctrl+k` palette, all
-rebindable via a dotfile), native ad blocking (~119k EasyList rules
+rebindable via dotfile), native ad blocking (~119k EasyList rules
 compiled into WebKit's content-extension engine, zero JS in the
-request path), Chromium-curve scrolling, and video that actually
-works: unmuted autoplay, a blur-shield that took Shorts from ~34 to
-~95 fps, and one shortform control scheme (arrows snap exactly one
-video, Space pauses, hold ArrowRight for 2x) across Reels, Shorts,
-and TikTok.
+request path), Chromium-curve scrolling, unmuted autoplay, a
+blur-shield that took Shorts from ~34 to ~95 fps, and one shortform
+control scheme (arrows snap exactly one video, Space pauses, hold
+ArrowRight for 2x) across Reels, Shorts, and TikTok. High framerates
+help oneshotting websites with complicated scroll-anchored animation
+logic (e.g. scale.com). Because of this reason, hwatu is optimized for
+consuming short-form content with much less resources than what you
+would have needed with Chromium or Firefox. The demo video below shows
+why hwatu is an excellent alternative browser option for your system,
+especially for tiling WMs:
 
 <a href="https://github.com/hongnoul/hwatu/releases/download/readme-assets/demo-shortform.mp4"><img src="https://github.com/hongnoul/hwatu/releases/download/readme-assets/demo-shortform.webp" alt="hwatu daily driving: quarter-width window spawns, buttery Chromium-curve scrolling, and one-keypress-one-reel shortform controls on Instagram Reels" width="800"></a>
 
