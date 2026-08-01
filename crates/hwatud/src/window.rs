@@ -104,10 +104,12 @@ fn config_autoplay() -> Option<String> {
 const DEFAULT_WINDOW_WIDTH: i32 = 1024;
 const DEFAULT_WINDOW_HEIGHT: i32 = 768;
 
-/// Request a third of the current monitor's width for a newly mapped
-/// window. Tiling WMs use this as the initial size hint when deciding how to
-/// place a new toplevel, while floating WMs still get a useful desktop-sized
-/// window instead of an arbitrary fixed width.
+/// Request the preferred fraction of the current monitor's width for a newly
+/// mapped window. Tiling WMs use this as the initial size hint when deciding
+/// how to place a new toplevel, while floating WMs still get a useful
+/// desktop-sized window instead of an arbitrary fixed width. The built-in
+/// default is one third; users can override it with `"preferred_width"` in
+/// `~/.config/hwatu/config.json`.
 fn default_window_width() -> i32 {
     let Some(display) = gtk::gdk::Display::default() else {
         return DEFAULT_WINDOW_WIDTH;
@@ -120,11 +122,27 @@ fn default_window_width() -> i32 {
         return DEFAULT_WINDOW_WIDTH;
     };
 
-    third_width(monitor.geometry().width())
+    preferred_width(monitor.geometry().width(), preferred_width_ratio())
 }
 
-fn third_width(viewport_width: i32) -> i32 {
-    (viewport_width / 3).max(1)
+const DEFAULT_PREFERRED_WIDTH: f64 = 1.0 / 3.0;
+
+fn preferred_width_ratio() -> f64 {
+    let raw = std::fs::read_to_string(
+        glib::user_config_dir().join("hwatu").join("config.json"),
+    )
+    .ok();
+    let config = raw
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(raw).ok())
+        .and_then(|value| value.get("preferred_width").and_then(|v| v.as_f64()));
+    config
+        .filter(|ratio| ratio.is_finite() && (0.0..=1.0).contains(ratio) && *ratio > 0.0)
+        .unwrap_or(DEFAULT_PREFERRED_WIDTH)
+}
+
+fn preferred_width(viewport_width: i32, ratio: f64) -> i32 {
+    ((viewport_width as f64) * ratio).floor().max(1.0) as i32
 }
 
 /// State saved across a discard. The session blob itself lives on disk
@@ -1954,14 +1972,18 @@ mod tests {
     }
 
     #[test]
-    fn third_width_uses_one_third_of_the_viewport() {
-        assert_eq!(super::third_width(1920), 640);
-        assert_eq!(super::third_width(1366), 455);
+    fn preferred_width_uses_the_configured_fraction_of_the_viewport() {
+        assert_eq!(super::preferred_width(1920, 1.0 / 3.0), 640);
+        assert_eq!(super::preferred_width(1366, 1.0 / 3.0), 455);
+        assert_eq!(super::preferred_width(1920, 0.25), 480);
     }
 
     #[test]
-    fn third_width_never_returns_zero() {
-        assert_eq!(super::third_width(0), 1);
-        assert_eq!(super::third_width(-1), 1);
+    fn preferred_width_never_returns_zero() {
+        assert_eq!(super::preferred_width(0, super::DEFAULT_PREFERRED_WIDTH), 1);
+        assert_eq!(
+            super::preferred_width(-1, super::DEFAULT_PREFERRED_WIDTH),
+            1
+        );
     }
 }
