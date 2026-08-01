@@ -122,7 +122,13 @@ mod tests {
             FOCUS_SHIELD_JS.contains("e.target === window || e.target === document"),
             "swallow must check the event target"
         );
-        for ev in ["visibilitychange", "'blur'", "'focus'", "'focusin'", "'focusout'"] {
+        for ev in [
+            "visibilitychange",
+            "'blur'",
+            "'focus'",
+            "'focusin'",
+            "'focusout'",
+        ] {
             assert!(FOCUS_SHIELD_JS.contains(ev), "missing event {ev}");
         }
     }
