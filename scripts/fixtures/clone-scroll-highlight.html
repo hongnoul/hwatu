@@ -1,0 +1,91 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>hwatu scroll highlight fixture</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0;
+      font-family: system-ui, sans-serif;
+      background: #06130f;
+      color: white;
+      min-height: 3200px;
+    }
+    header {
+      position: fixed;
+      inset: 0 0 auto 0;
+      z-index: 10;
+      display: flex;
+      gap: 24px;
+      padding: 20px 32px;
+      background: rgba(5, 20, 15, .82);
+      transition: opacity 120ms linear, transform 120ms linear;
+    }
+    header.hidden {
+      opacity: .1;
+      transform: translateY(-24px);
+    }
+    .hero, .tail {
+      height: 1050px;
+      display: grid;
+      place-items: center;
+      color: #8ad9b5;
+    }
+    .quote-section {
+      min-height: 900px;
+      display: grid;
+      place-items: center;
+    }
+    .quote {
+      max-width: 900px;
+      padding: 48px;
+      font-size: clamp(42px, 7vw, 86px);
+      line-height: 1.02;
+      letter-spacing: -.06em;
+    }
+    .quote span {
+      color: rgb(78, 104, 91);
+      opacity: .42;
+      transition: none;
+    }
+  </style>
+</head>
+<body>
+  <header role="navigation">
+    <a>Products</a>
+    <a>Customers</a>
+    <a>Docs</a>
+  </header>
+  <section class="hero">Scroll down to the quote</section>
+  <section class="quote-section" id="quote-section">
+    <p class="quote" id="quote">
+      <span>90%</span> <span>of</span> <span>the</span> <span>world's</span>
+      <span>leading</span> <span>generative</span> <span>AI</span> <span>model</span>
+      <span>builders</span> <span>are</span> <span>powered</span> <span>by</span> <span>Scale.</span>
+    </p>
+  </section>
+  <section class="tail">Done</section>
+  <script>
+    const header = document.querySelector('header');
+    const section = document.getElementById('quote-section');
+    const words = [...document.querySelectorAll('#quote span')];
+    function update() {
+      header.classList.toggle('hidden', scrollY > 120);
+      const rect = section.getBoundingClientRect();
+      const progress = Math.max(0, Math.min(1, (innerHeight * 0.72 - rect.top) / (rect.height * 0.7)));
+      words.forEach((word, index) => {
+        const threshold = index / Math.max(1, words.length - 1);
+        const lit = progress >= threshold;
+        word.style.color = lit ? 'rgb(255, 255, 255)' : 'rgb(78, 104, 91)';
+        word.style.opacity = lit ? '1' : '.42';
+      });
+    }
+    addEventListener('scroll', () => {
+      update();
+      requestAnimationFrame(update);
+    }, { passive: true, capture: true });
+    update();
+  </script>
+</body>
+</html>

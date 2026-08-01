@@ -16,4 +16,8 @@ fn main() {
     // Rebuild when HEAD moves so the hash never goes stale.
     println!("cargo:rerun-if-changed=../../.git/HEAD");
     println!("cargo:rerun-if-changed=../../.git/refs");
+    // `hwatu clone` embeds this script with include_str!; without an
+    // explicit trigger, JS-only capture fixes can leave an old binary in
+    // place during focused fixture runs.
+    println!("cargo:rerun-if-changed=assets/extract.js");
 }

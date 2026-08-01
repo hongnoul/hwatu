@@ -232,6 +232,14 @@ fn clone_with_window(opts: &Opts, live: u64) -> Result<String, String> {
         serde_json::to_vec_pretty(&cap).expect("serialize capture"),
     )
     .map_err(|e| format!("write capture.json: {e}"))?;
+    if let Some(effects) = cap.get("scrollEffects").and_then(|v| v.as_array()) {
+        if !effects.is_empty() {
+            eprintln!(
+                "clone: detected {} scroll-coupled text style region(s); see scroll-effects.json",
+                effects.len()
+            );
+        }
+    }
 
     crop_blank_canvases(&cap, live, &opts.out)?;
 
@@ -528,6 +536,23 @@ fn materialize(cap: &serde_json::Value, out: &Path) -> Result<MaterializeStats, 
         }
     }
 
+    // 6.5. Scroll-coupled text-style evidence. These effects come from
+    // JS scroll/rAF loops that mutate computed styles. Phase-0 static
+    // clones do not replay that dependency, so make it explicit and keep
+    // representative entry/midpoint/exit samples beside the capture.
+    if let Some(effects) = cap.get("scrollEffects").and_then(|v| v.as_array()) {
+        if !effects.is_empty() {
+            write_scroll_effects_report(out, effects)?;
+            if let Some(notice) = scroll_effect_notice(effects) {
+                if let Some(pos) = html.find("</body>") {
+                    html.insert_str(pos, &notice);
+                } else {
+                    html.push_str(&notice);
+                }
+            }
+        }
+    }
+
     // 7. Fonts are inline data URLs (decode is local and fast), so
     //    font-display:block is free and prevents any fallback first
     //    paint (WebKit keeps stale fallback paint inside blend-mode
@@ -798,6 +823,30 @@ fn scroll_restore_script(scrolls: &[serde_json::Value]) -> String {
     )
 }
 
+fn write_scroll_effects_report(out: &Path, effects: &[serde_json::Value]) -> Result<(), String> {
+    let report = serde_json::json!({
+        "envelope": "scroll-coupled text style mutation detected; static clone records representative states but does not replay the scroll listener",
+        "effects": effects,
+    });
+    std::fs::write(
+        out.join("scroll-effects.json"),
+        serde_json::to_vec_pretty(&report).expect("serialize scroll effects"),
+    )
+    .map_err(|e| format!("write scroll-effects.json: {e}"))
+}
+
+fn scroll_effect_notice(effects: &[serde_json::Value]) -> Option<String> {
+    if effects.is_empty() {
+        return None;
+    }
+    let count = effects.len();
+    Some(format!(
+        "\n<!-- hwatu: detected {count} scroll-coupled text style region(s); \
+         see scroll-effects.json for entry/midpoint/exit samples. The static clone \
+         records evidence but does not replay the page's scroll listener. -->\n"
+    ))
+}
+
 /// Replace swappable `font-display` values with `block` (fonts are
 /// inline data URLs, so blocking is free and never paints a fallback).
 fn pin_font_display(css: &str) -> String {
@@ -1052,5 +1101,60 @@ mod tests {
         assert!(block.contains("min-width: 779px"));
         assert!(block.contains("max-width: 859px"));
         assert!(block.contains(r#"[data-hwatu-pin="0"] { opacity: 1 !important }"#));
+    }
+
+    #[test]
+    fn scroll_effect_notice_names_static_dependency() {
+        let effects = vec![serde_json::json!({
+            "kind": "scroll-coupled-text-style",
+            "sampleOffsets": [
+                {"label": "entry", "y": 120},
+                {"label": "midpoint", "y": 240},
+                {"label": "exit", "y": 360}
+            ]
+        })];
+        let notice = scroll_effect_notice(&effects).unwrap();
+        assert!(notice.contains("scroll-coupled text style"), "{notice}");
+        assert!(notice.contains("scroll-effects.json"), "{notice}");
+        assert!(notice.contains("does not replay"), "{notice}");
+        assert!(scroll_effect_notice(&[]).is_none());
+    }
+
+    #[test]
+    fn materialize_writes_scroll_effect_report() {
+        let out =
+            std::env::temp_dir().join(format!("hwatu-scroll-effect-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&out);
+        std::fs::create_dir_all(out.join("assets")).unwrap();
+        let cap = serde_json::json!({
+            "base": "https://example.com/",
+            "html": "<!doctype html><html><head></head><body><main data-hwatu-scroll-effect=\"0\">quote</main></body></html>",
+            "sheets": [],
+            "assets": [],
+            "canvases": [],
+            "scrolls": [],
+            "pins": [],
+            "scrollEffects": [{
+                "kind": "scroll-coupled-text-style",
+                "selector": "[data-hwatu-scroll-effect=\"0\"]",
+                "changedTextNodes": 4,
+                "samples": [
+                    {"label": "entry", "scrollY": 100, "elements": []},
+                    {"label": "midpoint", "scrollY": 200, "elements": []},
+                    {"label": "exit", "scrollY": 300, "elements": []}
+                ]
+            }],
+            "viewport": {"w": 800, "h": 600, "dpr": 1}
+        });
+        materialize(&cap, &out).unwrap();
+        let report = std::fs::read_to_string(out.join("scroll-effects.json")).unwrap();
+        assert!(
+            report.contains("scroll-coupled text style mutation"),
+            "{report}"
+        );
+        assert!(report.contains("midpoint"), "{report}");
+        let html = std::fs::read_to_string(out.join("index.html")).unwrap();
+        assert!(html.contains("see scroll-effects.json"), "{html}");
+        let _ = std::fs::remove_dir_all(&out);
     }
 }
