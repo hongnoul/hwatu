@@ -16,6 +16,7 @@ mod compositor;
 mod console;
 mod downloads;
 mod events;
+mod focusshield;
 mod ipc_server;
 mod keys;
 mod launcher;
