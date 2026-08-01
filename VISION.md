@@ -27,6 +27,13 @@ These decisions are more durable than any backend.
 
 - **Agent-first.** Hwatu is a visual-verification browser for coding agents, not
   a general-purpose human browser.
+- **The human side earns its keep, then some.** Since v0.7.0 the human side is a
+  credible primary browser for tiling WMs: mainstream keybinds, media-correct
+  playback, unified shortform controls, Chromium-curve scrolling. This is not a
+  pivot. Human-side quality is in scope exactly where it shares machinery with
+  agent verification (the same engine that renders a page correctly for a
+  person is the one an agent measures) and where it serves hand-off. The
+  daily-driver feature list (tabs, sync, password fill, extensions) stays out.
 - **Warm by default.** The daemon, engine, rendering context, and one useful view
   remain warm between short-lived clients.
 - **Invisible until needed.** Headless and background work must not steal focus.

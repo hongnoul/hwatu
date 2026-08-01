@@ -21,7 +21,7 @@
 
 - [Vision](VISION.md): durable product principles, native platform strategy, swarm model
 - [Agent guide](docs/agents.md): protocol, primitives, verification loops
-- [Human guide](docs/human.md): the tiling-WM browser side
+- [Human guide](docs/human.md): a primary browser for tiling WMs, and the hand-off side
 - [Benchmarks](docs/benchmarks.md): every number, measured, with methodology
 - [Roadmap](docs/roadmap.md): plan of record, priorities, non-goals
 - [Continuous improvement](docs/continuous-improvement.md): activation metric, feedback loop, weekly cadence
@@ -120,7 +120,37 @@ larger copy-paste policy and verification loops.
 - [x] Human hand-off: `hwatu focus <id>` drops the live session into your tiling WM
 - [x] CAPTCHA / anti-bot detection with structured wait/resume (`challenge`)
 - [x] MCP server, plain CLI, and a 1-line JSON socket protocol
-- [x] A minimal WebKit browser for humans: native ad blocking, monochrome prompt surface, crash restore
+- [x] A real browser for humans: mainstream keybinds, media-correct video, native ad blocking, crash restore
+
+## A browser for your tiling WM
+
+hwatu is agent-first, but as of v0.7.0 the human side stopped being a
+viewer and became a browser you can actually live in on Hyprland,
+sway, or niri:
+
+- **Your WM is the tab bar.** No tabs, no chrome: `hwatu <url>` opens
+  a window like your terminal opens a shell, at a third of the
+  monitor width, and your tiler does the rest. Ready-made configs:
+  [hyprland](examples/hyprland.conf), [sway](examples/sway.config),
+  [niri](examples/niri.kdl).
+- **Mainstream keybinds, all rebindable.** `ctrl+l` edits the URL,
+  `ctrl+f` finds, `ctrl+k` opens a fuzzy command palette,
+  `~/.config/hwatu/keys.conf` overrides anything.
+- **Video actually works.** Unmuted autoplay, playback that survives
+  focus loss, and a blur-shield that took YouTube Shorts from ~34 to
+  ~95 fps. One shortform control scheme (arrows snap exactly one
+  video, Space pauses, hold ArrowRight for 2x) across Reels, Shorts,
+  and TikTok.
+- **Native ad blocking.** EasyList compiled into WebKit's
+  content-extension engine: ~119k rules, zero JS in the request path,
+  no extension process.
+- **Chromium-curve scrolling** for wheel and keys, replacing
+  WebKitGTK's isolated-pulse scroller.
+- **One warm engine.** Every window shares the daemon (~56 MB per
+  extra window), suspends when unfocused, and crash-restores at its
+  last URL.
+
+Details, keybind table, and setup: [docs/human.md](docs/human.md).
 
 ## Why not Playwright or chrome-devtools-mcp?
 
