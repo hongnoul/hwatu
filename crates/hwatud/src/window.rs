@@ -64,6 +64,32 @@ fn home_page() -> Option<String> {
         .filter(|v| !v.trim().is_empty())
 }
 
+const DEFAULT_WINDOW_WIDTH: i32 = 1024;
+const DEFAULT_WINDOW_HEIGHT: i32 = 768;
+
+/// Request a quarter of the current monitor's width for a newly mapped
+/// window. Tiling WMs use this as the initial size hint when deciding how to
+/// place a new toplevel, while floating WMs still get a useful desktop-sized
+/// window instead of an arbitrary fixed width.
+fn default_window_width() -> i32 {
+    let Some(display) = gtk::gdk::Display::default() else {
+        return DEFAULT_WINDOW_WIDTH;
+    };
+    let Some(monitor) = display
+        .monitors()
+        .item(0)
+        .and_then(|object| object.downcast::<gtk::gdk::Monitor>().ok())
+    else {
+        return DEFAULT_WINDOW_WIDTH;
+    };
+
+    quarter_width(monitor.geometry().width())
+}
+
+fn quarter_width(viewport_width: i32) -> i32 {
+    (viewport_width / 4).max(1)
+}
+
 /// State saved across a discard. The session blob itself lives on disk
 /// (see [`discard_dir`]): keeping it in RAM would leak per-window
 /// memory exactly when the point of discarding is to reclaim it, and
@@ -462,8 +488,8 @@ impl BrowserWindow {
 
         let window = gtk::Window::builder()
             .application(&daemon.app)
-            .default_width(1024)
-            .default_height(768)
+            .default_width(default_window_width())
+            .default_height(DEFAULT_WINDOW_HEIGHT)
             .title("hwatu")
             .build();
 
@@ -1763,5 +1789,17 @@ mod tests {
     #[test]
     fn empty_input_is_empty() {
         assert!(parse_feature_overrides("").is_empty());
+    }
+
+    #[test]
+    fn quarter_width_uses_one_fourth_of_the_viewport() {
+        assert_eq!(super::quarter_width(1920), 480);
+        assert_eq!(super::quarter_width(1366), 341);
+    }
+
+    #[test]
+    fn quarter_width_never_returns_zero() {
+        assert_eq!(super::quarter_width(0), 1);
+        assert_eq!(super::quarter_width(-1), 1);
     }
 }
