@@ -35,7 +35,11 @@
 //! pages on card boundaries the same way. A proportional glide on
 //! these feeds either fights the page's own snap resolution or
 //! strands the view between reels; paging is what the equivalent
-//! native apps do.
+//! native apps do. Instagram's feed goes one step further: its
+//! current-reel state advances only from touch gestures, so paging it
+//! by scrollTop freezes the URL and pagination (the feed "runs out"
+//! after the seeded batch); there each page tick dispatches a
+//! synthetic pointer swipe instead (see `swipeFeed` in the script).
 //!
 //! Keyboard scrolling (Arrow/Page/Space) goes through the same
 //! animator, because WebKit's keydown scroll has the identical
@@ -340,9 +344,98 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
     ensureRaf();
   }
 
+  // Instagram mobile-web Reels ignore programmatic scrolling: the
+  // current-reel index lives in gesture state (React pointer handlers
+  // on the feed element), so setting scrollTop moves pixels while the
+  // URL, active video, and next-batch pagination stay frozen — the
+  // feed "runs out" after the seeded ~6 reels. The one input the feed
+  // does advance on is a touch swipe, so page it with a synthetic
+  // pointer gesture. Verified live: each swipe updates the reel URL
+  // and the graphql pagination fetch fires (children grew 7 -> 21).
+  const SWIPE_ID = 0x5157, SWIPE_STEPS = 10, SWIPE_STEP_MS = 16;
+  const SWIPE_ABSORB_MS = 650; // gesture + the site's own snap animation
+  let swipeUntil = 0;
+  let capGuarded = false;
+  // Capturing a pointer that doesn't exist throws NotFoundError, which
+  // would abort the site's pointerdown handler mid-gesture. Swallow
+  // the failure for our synthetic pointer id only; real pointers keep
+  // real errors. Installed lazily so non-feed pages stay untouched.
+  function guardPointerCapture() {
+    if (capGuarded) return;
+    capGuarded = true;
+    const orig = Element.prototype.setPointerCapture;
+    Element.prototype.setPointerCapture = function (id) {
+      try { return orig.call(this, id); }
+      catch (err) { if (id !== SWIPE_ID) throw err; }
+    };
+  }
+  function swipeFeed(el, dir) {
+    const now = performance.now();
+    if (now < swipeUntil) return true; // absorb the rest of the flick
+    swipeUntil = now + SWIPE_STEPS * SWIPE_STEP_MS + SWIPE_ABSORB_MS;
+    guardPointerCapture();
+    const a = anims.get(el);
+    if (a) endAnim(el, a); // a stale glide must not fight the gesture
+    const r = el.getBoundingClientRect();
+    const cx = r.left + r.width / 2;
+    const [y0, y1] = dir > 0
+      ? [r.top + r.height * 0.80, r.top + r.height * 0.15]
+      : [r.top + r.height * 0.15, r.top + r.height * 0.80];
+    const mk = (type, y) => new PointerEvent(type, {
+      bubbles: true, cancelable: true, composed: true,
+      pointerId: SWIPE_ID, pointerType: 'touch', isPrimary: true,
+      clientX: cx, clientY: y,
+      buttons: type === 'pointerup' ? 0 : 1,
+      pressure: type === 'pointerup' ? 0 : 0.5, view: window,
+    });
+    el.dispatchEvent(mk('pointerdown', y0));
+    let i = 0;
+    const iv = setInterval(() => {
+      try {
+        i++;
+        el.dispatchEvent(mk('pointermove', y0 + (y1 - y0) * i / SWIPE_STEPS));
+        if (i >= SWIPE_STEPS) {
+          clearInterval(iv);
+          el.dispatchEvent(mk('pointerup', y1));
+        }
+      } catch (_) {
+        clearInterval(iv);
+      }
+    }, SWIPE_STEP_MS);
+    return true;
+  }
+
+  // The IG feed sometimes reports no scrollable extent at all (its
+  // virtualization positions cards purely with transforms, which don't
+  // grow scrollHeight), so the scrollTarget walk comes up empty while
+  // a swipeable feed fills the viewport. Find it by the card
+  // heuristic alone: walk up from the start element, then from the
+  // viewport center (keydown targets <body>, which is above the feed).
+  function gestureFeed(start) {
+    if (shortformSite() !== 'instagram') return null;
+    const roots = [start instanceof Element ? start : null,
+                   document.elementFromPoint(innerWidth / 2, innerHeight / 2)];
+    for (const root of roots) {
+      for (let el = root; el; el = el.parentElement) {
+        if (el !== document.scrollingElement && el.children.length >= 2
+            && feedOffsets(el, false)) return el;
+      }
+    }
+    return null;
+  }
+
   // Page a snap or card-feed scroller by one page. Returns true if
   // the tick was consumed (paged, absorbed mid-flight, or at extent).
   function pageSnap(el, horiz, dir) {
+    // Gesture-driven feeds first: scrollTop paging silently breaks
+    // them (see swipeFeed). The uniform-card check keeps the comments
+    // sheet and other ordinary scrollers on the normal path. When the
+    // walk latched onto a small wrapper scroller instead of the card
+    // feed itself, gestureFeed relocates the real feed.
+    if (!horiz && shortformSite() === 'instagram') {
+      const feed = feedOffsets(el, false) ? el : gestureFeed(el);
+      if (feed) return swipeFeed(feed, dir);
+    }
     // While our animation flies, the container's snap-type is
     // suspended, so check the live animation before computed style.
     const a = anims.get(el);
@@ -429,7 +522,13 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
       if (!delta) return;
 
       const el = scrollTarget(e.target, horiz, delta > 0 ? 1 : -1);
-      if (!el) return; // nothing scrollable: stay native
+      if (!el) {
+        // IG's transform-virtualized feed can be unscrollable by
+        // extent (see gestureFeed) while still swipeable.
+        const feed = !horiz && gestureFeed(e.target);
+        if (feed && swipeFeed(feed, delta > 0 ? 1 : -1)) e.preventDefault();
+        return; // nothing scrollable: stay native
+      }
 
       // Snap paging decides before preventDefault so an exception in
       // it degrades to native scrolling, not a dead wheel.
@@ -641,7 +740,13 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
         const mid = document.elementFromPoint(innerWidth / 2, innerHeight / 2);
         if (mid) el = scrollTarget(mid, k.h, k.dir);
       }
-      if (!el) return; // nothing scrollable: stay native
+      if (!el) {
+        // IG's transform-virtualized feed can be unscrollable by
+        // extent (see gestureFeed) while still swipeable.
+        const feed = !k.h && gestureFeed(e.target);
+        if (feed && swipeFeed(feed, k.dir)) e.preventDefault();
+        return; // nothing scrollable: stay native
+      }
 
       if (pageSnap(el, k.h, k.dir)) { e.preventDefault(); return; }
       const port = k.h ? el.clientWidth : el.clientHeight;
@@ -758,8 +863,15 @@ mod tests {
             .split("addEventListener('wheel'")
             .nth(1)
             .unwrap();
+        // The IG gestureFeed fallback consumes first, but its decision
+        // (swipeFeed) precedes its preventDefault; the generic glide's
+        // preventDefault must still come after pageSnap.
+        let fb = handler.find("gestureFeed(e.target)").unwrap();
+        let fb_pd = fb + handler[fb..].find("e.preventDefault()").unwrap();
+        let fb_swipe = fb + handler[fb..].find("swipeFeed").unwrap();
+        assert!(fb_swipe < fb_pd, "fallback must decide before preventDefault");
         let snap = handler.find("pageSnap").unwrap();
-        let pd = handler.find("e.preventDefault()").unwrap();
+        let pd = snap + handler[snap..].find("e.preventDefault()").unwrap();
         assert!(snap < pd, "pageSnap must run before preventDefault");
     }
 
@@ -772,6 +884,8 @@ mod tests {
             .split("addEventListener('keydown'")
             .nth(2)
             .expect("keydown handler present");
+        // First preventDefault is the IG gestureFeed fallback; the
+        // guards must precede even that one.
         let pd = handler.find("e.preventDefault()").unwrap();
         let owns = handler.find("ownsKeys").unwrap();
         let prevented = handler.find("e.defaultPrevented").unwrap();
@@ -781,7 +895,8 @@ mod tests {
             prevented < pd,
             "defaultPrevented check must precede preventDefault"
         );
-        assert!(snap < pd, "pageSnap must run before glide preventDefault");
+        let glide_pd = snap + handler[snap..].find("e.preventDefault()").unwrap();
+        assert!(snap < glide_pd, "pageSnap must run before glide preventDefault");
         // Bubble phase, not capture: page handlers keep priority.
         assert!(!handler.starts_with(", e => {}, { capture: true"));
         for key in ["ArrowDown", "ArrowUp", "PageDown", "PageUp"] {
@@ -832,10 +947,42 @@ mod tests {
         assert!(SMOOTH_WHEEL_JS.contains("feedOffsets"));
         // Uniformity gate present (>= 80% of measured children).
         assert!(SMOOTH_WHEEL_JS.contains("uniform / measured >= 0.8"));
-        // Fallback order inside pageSnap: CSS snap first, then feed.
+        // Fallback order inside pageSnap: CSS snap first, then feed
+        // (the IG gesture gate also calls feedOffsets earlier, so
+        // compare against the fallback occurrence specifically).
         let ps = SMOOTH_WHEEL_JS.split("function pageSnap").nth(1).unwrap();
         let css = ps.find("isMandatorySnap").unwrap();
-        let feed = ps.find("feedOffsets").unwrap();
+        let feed = ps[css..].find("feedOffsets").map(|i| css + i).unwrap();
         assert!(css < feed, "CSS snap must be preferred over the heuristic");
+    }
+
+    /// Instagram's reel feed advances only from touch gestures:
+    /// scrollTop paging freezes its URL/pagination state. Paging there
+    /// must dispatch a synthetic pointer swipe, gated to the IG
+    /// shortform URL + uniform-card feed so nothing else is touched,
+    /// and the setPointerCapture guard must rethrow for real pointers.
+    #[test]
+    fn instagram_swipe_paging_shape() {
+        assert!(SMOOTH_WHEEL_JS.contains("function swipeFeed"));
+        // Gate: vertical + instagram + card feed, checked inside pageSnap
+        // before any scrollTop-based paging.
+        let ps = SMOOTH_WHEEL_JS.split("function pageSnap").nth(1).unwrap();
+        let gate = ps
+            .find("shortformSite() === 'instagram'")
+            .expect("IG gesture gate present in pageSnap");
+        let css = ps.find("isMandatorySnap").unwrap();
+        assert!(gate < css, "gesture gate must precede scrollTop paging");
+        // The feed may report no scrollable extent at all (transform
+        // virtualization): both input paths must fall back to the
+        // gestureFeed locator instead of staying native.
+        assert!(SMOOTH_WHEEL_JS.contains("function gestureFeed"));
+        assert_eq!(SMOOTH_WHEEL_JS.matches("gestureFeed(e.target)").count(), 2);
+        // The gesture is a touch-typed primary pointer with a stable
+        // synthetic id, and repeated ticks are absorbed during flight.
+        assert!(SMOOTH_WHEEL_JS.contains("pointerType: 'touch'"));
+        assert!(SMOOTH_WHEEL_JS.contains("pointerId: SWIPE_ID"));
+        assert!(SMOOTH_WHEEL_JS.contains("now < swipeUntil"));
+        // Pointer-capture guard: swallow only our synthetic id.
+        assert!(SMOOTH_WHEEL_JS.contains("if (id !== SWIPE_ID) throw err;"));
     }
 }
