@@ -1174,7 +1174,10 @@ fn fit_scroll_effect(effect: &serde_json::Value) -> Option<ScrollEffectFit> {
         flips.push((k, (y_before + y_after) / 2.0));
         let first = &states[0];
         let last = &states[states.len() - 1];
-        entry_styles.push((first.get("color")?.as_str()?, first.get("opacity")?.as_str()?));
+        entry_styles.push((
+            first.get("color")?.as_str()?,
+            first.get("opacity")?.as_str()?,
+        ));
         exit_styles.push((last.get("color")?.as_str()?, last.get("opacity")?.as_str()?));
     }
     if flips.len() < 3 || flips.len() * 2 < n {
