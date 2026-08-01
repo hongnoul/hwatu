@@ -24,14 +24,18 @@
 //! touchpad deltas (non-integer, small) are left to the engine, which
 //! already handles them well (instant + kinetic).
 //!
-//! Mandatory `scroll-snap` containers (Instagram Reels, YouTube
-//! Shorts, TikTok-style feeds) get native-app paging instead of the
-//! delta glide: one discrete tick animates to exactly the next snap
-//! point, ticks landing mid-flight are absorbed so a fast wheel can't
-//! skip pages, and a late or reverse tick retargets one page further
-//! while preserving velocity. A proportional glide on these feeds
-//! either fights the engine's snap resolution or strands the view
-//! between reels; paging is what the equivalent native apps do.
+//! Mandatory `scroll-snap` containers (YouTube Shorts, TikTok-style
+//! feeds) get native-app paging instead of the delta glide: one
+//! discrete tick animates to exactly the next snap point, ticks
+//! landing mid-flight are absorbed so a fast wheel can't skip pages,
+//! and a late or reverse tick retargets one page further while
+//! preserving velocity. Feeds that page from JS without CSS snap
+//! (Instagram Reels mobile web) are caught by a card heuristic: a
+//! scroller whose direct children are uniform viewport-sized cards
+//! pages on card boundaries the same way. A proportional glide on
+//! these feeds either fights the page's own snap resolution or
+//! strands the view between reels; paging is what the equivalent
+//! native apps do.
 //!
 //! Keyboard scrolling (Arrow/Page/Space) goes through the same
 //! animator, because WebKit's keydown scroll has the identical
@@ -254,6 +258,48 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
     return offsets;
   }
 
+  // Feeds that page without CSS snap (Instagram Reels mobile web,
+  // TikTok-style feeds drive paging from touch JS instead): a large
+  // scroller whose direct children are uniform, viewport-sized cards.
+  // Card tops are the page boundaries. The uniformity requirement
+  // (>=80% of children sized ~= the port) keeps ordinary documents,
+  // whose child heights vary, out of the paging path.
+  const feedCache = new WeakMap();
+  function feedOffsets(el, h) {
+    const now = performance.now();
+    const c = feedCache.get(el);
+    if (c && c.h === h && now - c.t < SNAP_CACHE_MS) return c.offsets;
+    let offsets = null;
+    const port = h ? el.clientWidth : el.clientHeight;
+    const kids = el === document.scrollingElement ? [] : el.children;
+    if (port >= 300 && kids.length >= 2) {
+      const base = el.getBoundingClientRect();
+      const pos = getPos(el, h);
+      const max = maxScroll(el, h);
+      const raw = [];
+      let uniform = 0, measured = 0;
+      for (const ch of kids) {
+        if (measured >= 40) break;
+        const r = ch.getBoundingClientRect();
+        const size = h ? r.width : r.height;
+        if (size < 1) continue;
+        measured++;
+        if (Math.abs(size - port) <= Math.max(8, port * 0.02)) uniform++;
+        raw.push(Math.min(Math.max(pos + (h ? r.left - base.left : r.top - base.top), 0), max));
+      }
+      if (measured >= 2 && uniform / measured >= 0.8) {
+        raw.sort((a, b) => a - b);
+        offsets = [];
+        for (const v of raw) {
+          if (!offsets.length || v - offsets[offsets.length - 1] > 1) offsets.push(v);
+        }
+        if (offsets.length < 2) offsets = null;
+      }
+    }
+    feedCache.set(el, { t: now, h, offsets });
+    return offsets;
+  }
+
   // Animate to an absolute snap offset over a fixed duration,
   // preserving in-flight velocity on retarget.
   function animateTo(el, horiz, target) {
@@ -279,16 +325,13 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
     ensureRaf();
   }
 
-  // Page a mandatory-snap scroller by one snap point. Returns true if
+  // Page a snap or card-feed scroller by one page. Returns true if
   // the tick was consumed (paged, absorbed mid-flight, or at extent).
   function pageSnap(el, horiz, dir) {
     // While our animation flies, the container's snap-type is
     // suspended, so check the live animation before computed style.
     const a = anims.get(el);
     const snapInFlight = !!(a && a.snap && a.horiz === horiz);
-    if (!snapInFlight && !isMandatorySnap(el, horiz)) return false;
-    const offsets = snapOffsets(el, horiz);
-    if (offsets.length < 2) return false;
     if (snapInFlight) {
       const t = (performance.now() - a.start) / a.dur;
       const going = a.to > a.from ? 1 : -1;
@@ -296,6 +339,11 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
       // early in flight so one flick moves exactly one page.
       if (going === dir && t < SNAP_ABSORB) return true;
     }
+    // Mandatory CSS snap first; fall back to the uniform-card feed
+    // heuristic (Reels mobile web pages by JS, not CSS snap).
+    let offsets = isMandatorySnap(el, horiz) ? snapOffsets(el, horiz) : null;
+    if (!offsets || offsets.length < 2) offsets = feedOffsets(el, horiz);
+    if (!offsets || offsets.length < 2) return false;
     const eff = a && a.horiz === horiz ? a.to : getPos(el, horiz);
     let target = null;
     if (dir > 0) {
@@ -552,5 +600,20 @@ mod tests {
         for key in ["ArrowDown", "ArrowUp", "PageDown", "PageUp"] {
             assert!(SMOOTH_WHEEL_JS.contains(key), "{key} handled");
         }
+    }
+
+    /// Snapless card feeds (Reels mobile web) must be caught by the
+    /// uniform-card heuristic, and the heuristic must require uniform
+    /// viewport-sized children so ordinary documents never page.
+    #[test]
+    fn card_feed_heuristic_shape() {
+        assert!(SMOOTH_WHEEL_JS.contains("feedOffsets"));
+        // Uniformity gate present (>= 80% of measured children).
+        assert!(SMOOTH_WHEEL_JS.contains("uniform / measured >= 0.8"));
+        // Fallback order inside pageSnap: CSS snap first, then feed.
+        let ps = SMOOTH_WHEEL_JS.split("function pageSnap").nth(1).unwrap();
+        let css = ps.find("isMandatorySnap").unwrap();
+        let feed = ps.find("feedOffsets").unwrap();
+        assert!(css < feed, "CSS snap must be preferred over the heuristic");
     }
 }
