@@ -633,6 +633,13 @@ impl BrowserWindow {
             let this = this.clone();
             window.connect_close_request(move |_| {
                 this.cancel_discard_timer();
+                // The GTK toplevel dying does not kill the web process:
+                // WebKit caches it for reuse, and a cached process keeps
+                // running its page — an autoplaying video's audio audibly
+                // outlives the window (and the agent session that opened
+                // it). Kill it here, on the same shared-process guard as
+                // the discard path.
+                this.terminate_web_process_unless_shared();
                 // A discarded window closed for good: its blob is dead.
                 if let Some(saved) = this.saved.borrow_mut().take() {
                     if let Some(path) = saved.session_file {
@@ -1233,6 +1240,27 @@ impl BrowserWindow {
 
     pub fn close(&self) {
         self.window.close();
+    }
+
+    /// Kill this window's web process unless a related window (popup ↔
+    /// opener) still runs in it. Closing a window only destroys the GTK
+    /// toplevel; WebKit keeps the web process cached for reuse, and a
+    /// cached process keeps running its page — an autoplaying video's
+    /// audio audibly outlives the window (and the agent session that
+    /// opened it). Same rationale as the discard path in
+    /// [`Self::finish_discard`].
+    fn terminate_web_process_unless_shared(&self) {
+        let shared = self
+            .process_group
+            .borrow_mut()
+            .take()
+            .is_some_and(|group| Rc::strong_count(&group) > 1);
+        if shared {
+            return;
+        }
+        if let Some(webview) = self.webview.borrow().as_ref() {
+            webview.terminate_web_process();
+        }
     }
 
     /// Passive bar message (downloads etc.). No-op if the bar is busy
