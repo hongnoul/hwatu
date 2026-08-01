@@ -21,6 +21,7 @@ mod focusshield;
 mod ipc_server;
 mod keys;
 mod launcher;
+mod mediashim;
 mod net;
 mod observe;
 mod palette;
