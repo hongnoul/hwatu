@@ -74,16 +74,27 @@ pub fn html(deal: usize) -> String {
 <html><head><meta charset="utf-8"><title>hwatu</title><style>
   html, body {{ height: 100%; }}
   body {{
-    margin: 0; display: flex;
+    margin: 0; display: flex; overflow: hidden;
     align-items: center; justify-content: center;
     background: #181818;
   }}
-  /* Fill the pane minus a gutter; the SVG viewBox letterboxes
-     itself (xMidYMid meet), keeping the card's aspect ratio. */
+  /* Fill the pane edge to edge; the SVG viewBox letterboxes itself
+     (xMidYMid meet), keeping the card's aspect ratio. */
   .card svg {{
     display: block;
-    width: calc(100vw - 48px);
-    height: calc(100vh - 48px);
+    width: 100vw;
+    height: 100vh;
+  }}
+  /* The card art is portrait. In a landscape pane, lay it on its
+     side so it covers the pane instead of a thin centered strip.
+     Swap the box to the rotated frame; the layout-box overflow is
+     clipped, the visual box is exactly the pane. */
+  @media (orientation: landscape) {{
+    .card svg {{
+      width: 100vh;
+      height: 100vw;
+      transform: rotate(90deg);
+    }}
   }}
 </style></head><body>
   <div class="card">{card}</div>
