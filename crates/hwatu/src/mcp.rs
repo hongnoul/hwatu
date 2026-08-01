@@ -334,6 +334,7 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
         "snapshot" => Ok(Request::Snapshot {
             id,
             diff: opt_bool(args, "diff").unwrap_or(false),
+            rect: opt_bool(args, "rect").unwrap_or(false),
             timeout_ms,
         }),
         "expect" => Ok(Request::Expect {
@@ -648,6 +649,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
                 "id": prop("integer", ID_DESC),
                 "diff": prop("boolean", "Return only changes since the last diff \
                      snapshot of this window instead of the full page state."),
+                "rect": prop("boolean", "Include viewport CSS rectangles as [x, y, width, height] for interactables."),
             }),
             &[],
         ),

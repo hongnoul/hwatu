@@ -2297,12 +2297,14 @@ pub fn snapshot(
     daemon: &Rc<Daemon>,
     id: Option<u64>,
     diff: bool,
+    rect: bool,
     timeout_ms: Option<u64>,
     reply: Reply,
 ) {
     const JS: &str = r#"
 const MAX_TEXT = 4000;
 const MAX_ELS = 120;
+const INCLUDE_RECTS = __HWATU_INCLUDE_RECTS__;
 const clip = (s, n) => {
   s = (s || '').replace(/\s+/g, ' ').trim();
   return s.length > n ? s.slice(0, n - 1) + '…' : s;
@@ -2328,6 +2330,10 @@ const els = [...document.querySelectorAll(sel)].filter(visible).slice(0, MAX_ELS
 window.__hwatu_refs = els;
 const interactables = els.map((el, i) => {
   const out = { ref: i, tag: el.tagName.toLowerCase() };
+  if (INCLUDE_RECTS) {
+    const r = el.getBoundingClientRect();
+    out.rect = [r.x, r.y, r.width, r.height];
+  }
   const text = clip(label(el), 80);
   if (text) out.text = text;
   if (el.id) out.id = el.id;
@@ -2361,8 +2367,12 @@ return {
     max_y: Math.max(0, doc.scrollHeight - window.innerHeight),
   },
 };"#;
+    let js = JS.replace(
+        "__HWATU_INCLUDE_RECTS__",
+        if rect { "true" } else { "false" },
+    );
     if !diff {
-        return eval(daemon, id, JS.to_string(), timeout_ms, reply);
+        return eval(daemon, id, js, timeout_ms, reply);
     }
     // Diff mode: pin the target window now so the baseline read and
     // the post-eval write hit the same window even if focus moves
@@ -2378,7 +2388,7 @@ return {
     eval(
         daemon,
         Some(window_id),
-        JS.to_string(),
+        js,
         timeout_ms,
         Box::new(move |resp| {
             let Response::Ok {

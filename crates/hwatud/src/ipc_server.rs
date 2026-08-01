@@ -195,9 +195,10 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
         Request::Snapshot {
             id,
             diff,
+            rect,
             timeout_ms,
         } => {
-            return automation::snapshot(daemon, id, diff, timeout_ms, reply);
+            return automation::snapshot(daemon, id, diff, rect, timeout_ms, reply);
         }
         Request::Expect {
             id,

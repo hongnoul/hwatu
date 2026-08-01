@@ -272,6 +272,11 @@ pub enum Request {
         /// field and answers a new client with a full snapshot.
         #[serde(default, skip_serializing_if = "is_false")]
         diff: bool,
+        /// Include each interactable's viewport CSS rectangle as
+        /// `[x, y, width, height]`. Disabled by default to keep snapshots
+        /// token-cheap and preserve the original response shape.
+        #[serde(default, skip_serializing_if = "is_false")]
+        rect: bool,
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
@@ -1055,6 +1060,7 @@ mod tests {
         let plain = Request::Snapshot {
             id: Some(2),
             diff: false,
+            rect: false,
             timeout_ms: None,
         };
         let wire = serde_json::to_string(&plain).unwrap();
@@ -1062,14 +1068,17 @@ mod tests {
             !wire.contains("diff"),
             "non-diff snapshot must omit the field for old daemons: {wire}"
         );
+        assert!(!wire.contains("rect"));
 
         let diffing = Request::Snapshot {
             id: Some(2),
             diff: true,
+            rect: true,
             timeout_ms: None,
         };
         let wire = serde_json::to_string(&diffing).unwrap();
         assert!(wire.contains("\"diff\":true"));
+        assert!(wire.contains("\"rect\":true"));
         let Ok(Request::Snapshot { diff, .. }) = serde_json::from_str::<Request>(&wire) else {
             panic!("diff snapshot failed to roundtrip");
         };
