@@ -6,7 +6,7 @@
 [![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](LICENSE)
 [![CI](https://github.com/hongnoul/hwatu/actions/workflows/ci.yml/badge.svg)](https://github.com/hongnoul/hwatu/actions/workflows/ci.yml)
 
-**Real eyes for your coding agent: verified page checks it can't fake, in one warm browser you can also live in.**
+**Your agents loop with real eyes. You watch some reels. One warm browser, native on Linux.**
 
 </div>
 
