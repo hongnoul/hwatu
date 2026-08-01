@@ -54,8 +54,8 @@ impl Bar {
             .valign(gtk::Align::Start)
             .hexpand(true)
             .margin_top(24)
-            .margin_start(16)
-            .margin_end(16)
+            .margin_start(0)
+            .margin_end(0)
             .visible(false)
             .css_classes(["hwatu-bar"])
             .build();
