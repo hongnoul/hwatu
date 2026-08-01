@@ -234,6 +234,59 @@ fn persist_cookies() {
     );
 }
 
+/// Whitelist media directories in the web-process sandbox.
+///
+/// Page resources are proxied by the network process, but GStreamer
+/// media decode runs *inside* the sandboxed web process and opens
+/// `file://` URLs directly with GstFileSrc. The bwrap sandbox denies
+/// $HOME by default, so playing a local video (a downloaded file, a
+/// recording) fails with MEDIA_ERR_SRC_NOT_SUPPORTED even though the
+/// media document itself loads fine — the demuxer never gets to read
+/// a byte. Mount the XDG user content dirs read-only, plus any extra
+/// colon-separated paths from HWATU_SANDBOX_PATHS.
+///
+/// Must run before the first web process spawns (WebKit aborts on
+/// late additions), hence called from startup before the prewarm.
+fn open_sandbox_for_media() {
+    let Some(context) = webkit6::WebContext::default() else {
+        return;
+    };
+    let mut paths: Vec<std::path::PathBuf> = [
+        glib::UserDirectory::Downloads,
+        glib::UserDirectory::Videos,
+        glib::UserDirectory::Music,
+        glib::UserDirectory::Pictures,
+        glib::UserDirectory::Desktop,
+        glib::UserDirectory::Documents,
+    ]
+    .into_iter()
+    .filter_map(glib::user_special_dir)
+    .collect();
+    if let Ok(extra) = std::env::var("HWATU_SANDBOX_PATHS") {
+        paths.extend(
+            extra
+                .split(':')
+                .filter(|s| !s.is_empty())
+                .map(std::path::PathBuf::from),
+        );
+    }
+    let home = glib::home_dir();
+    let runtime = glib::user_runtime_dir();
+    paths.sort();
+    paths.dedup();
+    for path in paths {
+        // WebKit hard-rejects $HOME itself (2.40+) and nonexistent
+        // paths; both happen with unconfigured xdg-user-dirs, where
+        // special dirs fall back to $HOME. A read-only mount over an
+        // ancestor of XDG_RUNTIME_DIR shadows WebKit's own IPC bus
+        // mount and kills every web process at spawn, so refuse it.
+        if path == home || !path.is_dir() || runtime.starts_with(&path) {
+            continue;
+        }
+        context.add_path_to_sandbox(&path, true);
+    }
+}
+
 fn main() -> glib::ExitCode {
     // Keep RAM predictable: cap glibc arena explosion under GTK threads.
     std::env::set_var("MALLOC_ARENA_MAX", "2");
@@ -305,6 +358,9 @@ fn main() -> glib::ExitCode {
         // fresh jar with their strictest anti-bot login path (device
         // verification, captcha). Must run before any WebView exists.
         persist_cookies();
+        // Local media playback needs the web-process sandbox to see
+        // the files. Before any web process exists (hard requirement).
+        open_sandbox_for_media();
         // Internal pages (hwatu://launcher) before any WebView exists.
         launcher::register_scheme();
         adblock::Adblock::init(&daemon);

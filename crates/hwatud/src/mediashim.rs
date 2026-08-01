@@ -43,6 +43,11 @@
 const MEDIA_SHIM_JS: &str = r#"(() => {
   'use strict';
   if (window.__hwatuMediaShim) return;
+  // Top-level media documents (navigating straight to a .mp4/.mp3)
+  // are WebKit's own <video> wrapper page: the media element IS the
+  // content. Faking playback there breaks the only thing the page
+  // does, so the shim must not apply.
+  if (/^(video|audio)\//.test(document.contentType || '')) return;
   window.__hwatuMediaShim = true;
 
   const proto = HTMLMediaElement.prototype;
@@ -155,10 +160,8 @@ fn enabled() -> bool {
 
 /// Read `"media_shim"` from ~/.config/hwatu/config.json.
 fn config_media_shim() -> Option<bool> {
-    let raw = std::fs::read_to_string(
-        glib::user_config_dir().join("hwatu").join("config.json"),
-    )
-    .ok()?;
+    let raw =
+        std::fs::read_to_string(glib::user_config_dir().join("hwatu").join("config.json")).ok()?;
     let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
     v.get("media_shim")?.as_bool()
 }
@@ -245,5 +248,14 @@ mod tests {
     #[test]
     fn script_is_idempotent() {
         assert!(MEDIA_SHIM_JS.contains("__hwatuMediaShim"));
+    }
+
+    /// Top-level media documents (direct .mp4/.mp3 navigation) must be
+    /// exempt: there the media element IS the page, and faking its
+    /// playback breaks the only content.
+    #[test]
+    fn script_skips_media_documents() {
+        assert!(MEDIA_SHIM_JS.contains("document.contentType"));
+        assert!(MEDIA_SHIM_JS.contains("(video|audio)"));
     }
 }
