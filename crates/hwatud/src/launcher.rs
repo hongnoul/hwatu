@@ -72,15 +72,18 @@ pub fn html(deal: usize) -> String {
     format!(
         r#"<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>hwatu</title><style>
-  html {{ height: 100%; }}
+  html, body {{ height: 100%; }}
   body {{
-    margin: 0; min-height: 100%; display: flex;
+    margin: 0; display: flex;
     align-items: center; justify-content: center;
     background: #181818;
   }}
+  /* Fill the pane minus a gutter; the SVG viewBox letterboxes
+     itself (xMidYMid meet), keeping the card's aspect ratio. */
   .card svg {{
-    display: block; height: min(50vh, 420px); width: auto;
-    border-radius: 6px;
+    display: block;
+    width: calc(100vw - 48px);
+    height: calc(100vh - 48px);
   }}
 </style></head><body>
   <div class="card">{card}</div>

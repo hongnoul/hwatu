@@ -50,12 +50,12 @@ impl Bar {
     pub fn new() -> Self {
         let root = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .halign(gtk::Align::Center)
+            .halign(gtk::Align::Fill)
             .valign(gtk::Align::Start)
+            .hexpand(true)
             .margin_top(24)
-            .margin_start(24)
-            .margin_end(24)
-            .width_request(560)
+            .margin_start(16)
+            .margin_end(16)
             .visible(false)
             .css_classes(["hwatu-bar"])
             .build();
@@ -72,7 +72,11 @@ impl Bar {
             .build();
 
         let prefix = gtk::Label::builder().css_classes(["prefix"]).build();
-        let entry = gtk::Entry::builder().has_frame(false).hexpand(true).build();
+        let entry = gtk::Entry::builder()
+            .has_frame(false)
+            .hexpand(true)
+            .xalign(0.5)
+            .build();
         let status = gtk::Label::builder().css_classes(["status"]).build();
 
         row.append(&prefix);
@@ -261,14 +265,14 @@ impl Bar {
 pub fn install_css() {
     let css = r#"
         .hwatu-bar {
-            background-color: #ffffff;
-            color: #111111;
+            background-color: rgba(24, 24, 24, 0.62);
+            color: #ffffff;
             font-family: monospace;
             font-size: 13px;
-            padding: 12px 16px;
-            border: 1px solid #cccccc;
-            border-radius: 8px;
-            box-shadow: 0 6px 22px rgba(0, 0, 0, 0.14);
+            padding: 10px 16px;
+            border: none;
+            border-radius: 14px;
+            box-shadow: 0 4px 18px rgba(0, 0, 0, 0.25);
         }
         .hwatu-bar entry, .hwatu-bar entry text {
             background: none;
@@ -276,13 +280,13 @@ pub fn install_css() {
             box-shadow: none;
             outline: none;
             color: inherit;
-            caret-color: #111111;
+            caret-color: #ffffff;
             padding: 0;
             margin: 0;
             min-height: 0;
         }
         .hwatu-bar label.prefix, .hwatu-bar label.status {
-            color: #666666;
+            color: rgba(255, 255, 255, 0.65);
         }
         .hwatu-bar .palette-list {
             padding: 4px 0 8px;
@@ -292,8 +296,8 @@ pub fn install_css() {
             border-radius: 4px;
         }
         .hwatu-bar .palette-row.selected {
-            background-color: #f4f4f4;
-            color: #111111;
+            background-color: rgba(255, 255, 255, 0.16);
+            color: #ffffff;
         }
         .hwatu-recovery {
             background-color: rgba(18, 18, 18, 0.88);
