@@ -267,11 +267,11 @@ pub fn install_css() {
         .hwatu-bar {
             background-color: rgba(24, 24, 24, 0.62);
             color: #ffffff;
-            font-family: monospace;
+            font-family: "Inter", "Roboto", "Noto Sans", "Cantarell", sans-serif;
             font-size: 13px;
             padding: 10px 16px;
             border: none;
-            border-radius: 14px;
+            border-radius: 0;
             box-shadow: 0 4px 18px rgba(0, 0, 0, 0.25);
         }
         .hwatu-bar entry, .hwatu-bar entry text {
@@ -293,7 +293,7 @@ pub fn install_css() {
         }
         .hwatu-bar .palette-row {
             padding: 5px 8px;
-            border-radius: 4px;
+            border-radius: 0;
         }
         .hwatu-bar .palette-row.selected {
             background-color: rgba(255, 255, 255, 0.16);
