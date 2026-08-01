@@ -900,8 +900,10 @@ impl BrowserWindow {
         let Some(webview) = self.webview.borrow().clone() else {
             return;
         };
-        if webview.is_loading() {
-            // Try again later rather than losing an in-flight load.
+        if webview.is_loading() || webview.is_playing_audio() {
+            // Try again later rather than losing an in-flight load or
+            // cutting off media playing in the background (music, a
+            // reel left running in another window).
             self.schedule_discard();
             return;
         }
@@ -924,7 +926,7 @@ impl BrowserWindow {
         let Some(webview) = self.webview.borrow_mut().take() else {
             return;
         };
-        if webview.is_loading() {
+        if webview.is_loading() || webview.is_playing_audio() {
             self.webview.replace(Some(webview));
             self.schedule_discard();
             return;
