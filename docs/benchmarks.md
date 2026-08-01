@@ -14,7 +14,8 @@ design. Full data and every caveat in the
 
 Every number below was measured on a real run, not estimated. Rerun
 them yourself: the spawn benchmark is `scripts/bench-spawn.sh`, the
-head-to-head is `scripts/bench-vs-playwright.mjs`, the rest are a few
+head-to-head is `scripts/bench-vs-playwright.mjs`, the token/context
+budget check is `scripts/bench-tokens.mjs`, and the rest are a few
 lines of shell against the release binaries.
 
 **Test rig:** i7-12650H laptop, 15 GiB RAM, Wayland (niri),
@@ -162,6 +163,72 @@ Two measured cliffs shaped the implementation:
   remember their origin kind, and a check only adopts a matching
   park, so alternating render/check loops keep one warm window per
   kind instead of thrashing process swaps.
+
+## Tokens per verification
+
+### Purpose and scope
+
+This section documents a public, reproducible baseline for the amount of
+text hwatu emits during browser verification. It supports the project-level
+question of how much agent context a verification pass consumes, and gives
+maintainers a regression check when output formats change. It is not a
+required user workflow or setup guide.
+
+The current run measures hwatu output only. A head-to-head comparison with
+other browser tools is intentionally deferred until those tools can be run
+against the same fixture. The optional transcript inputs below are for a
+future reproducible comparison, not evidence that one has already been
+performed.
+
+Measured 2026-08-01 with `scripts/bench-tokens.mjs` against the same
+40-card local fixture used by the latency benchmarks. This benchmark
+measures the text a coding agent has to ingest from browser-verification
+tool output. It always reports tokenizer-independent UTF-8 bytes, then
+optionally reports one pinned tokenizer, `gpt-tokenizer`'s `cl100k_base`
+encoding, so readers can compare runs without pretending every model
+uses that tokenizer.
+
+| transcript | source | UTF-8 bytes | `gpt-tokenizer` `cl100k_base` tokens |
+|---|---:|---:|---:|
+| `hwatu-live-check-json` | live `hwatu check` output against the fixture | 306 | 103 |
+| `hwatu-check-json-fixture` | built-in representative hwatu fixture output | 342 | 127 |
+| Playwright MCP | not measured in this run | — | — |
+| Chrome DevTools MCP | not measured in this run | — | — |
+
+The competitor integrations were not available in this measurement
+environment, so their values are shown as unavailable rather than
+estimated. For maintainers who want to reproduce the comparison locally,
+the script accepts optional transcripts from the other tools:
+
+```sh
+npm install --prefix /tmp/hwatu-tokenizer --no-save gpt-tokenizer
+NODE_PATH=/tmp/hwatu-tokenizer/node_modules PATH=$PWD/target/release:$PATH \
+  node scripts/bench-tokens.mjs \
+    --hwatu-live \
+    --input playwright-mcp=bench-inputs/playwright-mcp.txt \
+    --input chrome-devtools-mcp=bench-inputs/chrome-devtools-mcp.txt
+```
+
+Supply the exact output from each tool for the same fixture when running
+that optional comparison. The script reports bytes and pinned-tokenizer
+counts for every supplied transcript, but its failure gate applies
+**only** to hwatu rows (`HWATU_TOKEN_BENCH_MAX_BYTES`, default 16,384,
+and `HWATU_TOKEN_BENCH_MAX_TOKENS`, default 4,096 when the optional
+tokenizer is installed). Competitor payloads are comparison inputs, not
+CI failure criteria for hwatu.
+
+Caveats:
+
+- Bytes are the stable, tokenizer-independent measurement. Token counts
+  vary by model vendor, chat wrapper, tool-call envelope, and tokenizer
+  revision.
+- The pinned tokenizer is an OpenAI-style `cl100k_base` proxy, not a
+  claim about Claude, Gemini, or any MCP host's exact billing tokenizer.
+- Screenshot bytes are not included; this measures the textual tool
+  output an agent must read after a verification pass.
+- The live hwatu row was produced after `cargo build --release` with
+  `PATH=$PWD/target/release:$PATH`; installed-release output can drift as
+  fields are added or removed.
 
 ## Memory
 
