@@ -166,6 +166,20 @@ Two measured cliffs shaped the implementation:
 
 ## Tokens per verification
 
+### Purpose and scope
+
+This section documents a public, reproducible baseline for the amount of
+text hwatu emits during browser verification. It supports the project-level
+question of how much agent context a verification pass consumes, and gives
+maintainers a regression check when output formats change. It is not a
+required user workflow or setup guide.
+
+The current run measures hwatu output only. A head-to-head comparison with
+other browser tools is intentionally deferred until those tools can be run
+against the same fixture. The optional transcript inputs below are for a
+future reproducible comparison, not evidence that one has already been
+performed.
+
 Measured 2026-08-01 with `scripts/bench-tokens.mjs` against the same
 40-card local fixture used by the latency benchmarks. This benchmark
 measures the text a coding agent has to ingest from browser-verification
