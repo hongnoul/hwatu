@@ -8,6 +8,8 @@
 
 **Your agents are blind without hwatu**
 
+<a href="https://github.com/hongnoul/hwatu/releases/download/readme-assets/demo-aiuc.mp4"><img src="https://github.com/hongnoul/hwatu/releases/download/readme-assets/demo-aiuc.webp" alt="An agent verifies aiuc.com with hwatu: one command returns pixel-match scores for four responsive viewports, then the live page pops into view for human hand-off" width="800"></a>
+
 </div>
 
 hwatu is a visual verification harness for coding agents, built as a
