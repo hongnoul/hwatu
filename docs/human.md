@@ -18,7 +18,9 @@ one-line y/n bar prompts.
 
 New windows open at a third of the monitor width, matching the first
 stop of niri's default 1/3, 1/2, 2/3 preset-width cycle and a
-comfortable reading width on 1080p-class monitors. The launcher deals a
+comfortable reading width on 1080p-class monitors. Prefer a different
+fraction? Set `"preferred_width"` in `~/.config/hwatu/config.json`
+(see [Configuration](#configuration)). The launcher deals a
 hanafuda card per window so windows are tellable apart at a glance.
 
 If you want history completion and password-manager integration,
@@ -109,9 +111,11 @@ hwatu quit                 # stop the daemon
 ## Configuration
 
 - `~/.config/hwatu/keys.conf`: keybindings (above).
-- `~/.config/hwatu/config.json`: persistent policy. Today that is
-  `{"autoplay": "muted"|"deny"}`; the env var wins for a single run
-  but vanishes on daemon restart.
+- `~/.config/hwatu/config.json`: persistent policy.
+  - `"autoplay": "muted"|"deny"`: the env var wins for a single run
+    but vanishes on daemon restart.
+  - `"preferred_width": 0.25`: initial window width as a fraction of
+    the monitor width, between 0 and 1. Default is one third.
 - Env-only gates, read at window creation: `HWATU_FOCUS_SHIELD=0`,
   `HWATU_BLUR_SHIELD=0`, `HWATU_DISABLE_MEDIA=1`.
 
