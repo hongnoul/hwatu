@@ -76,7 +76,7 @@ pub fn html(deal: usize) -> String {
   body {{
     margin: 0; display: flex; overflow: hidden;
     align-items: center; justify-content: center;
-    background: #181818;
+    background: rgba(0, 0, 0, 0.9);
   }}
   /* Fill the pane edge to edge; the SVG viewBox letterboxes itself
      (xMidYMid meet), keeping the card's aspect ratio. */
@@ -173,6 +173,13 @@ mod tests {
         assert_ne!(html(0), html(1));
         assert_eq!(html(0), html(DECK_SIZE));
         assert_eq!(html(12), html(12 + DECK_SIZE));
+    }
+
+    #[test]
+    fn pane_background_is_translucent_without_card_opacity() {
+        let page = html(0);
+        assert!(page.contains("background: rgba(0, 0, 0, 0.9);"));
+        assert!(!page.contains("opacity:"));
     }
 
     #[test]
