@@ -22,7 +22,8 @@
 //! modes), calls `preventDefault()`, and drives the scroller from
 //! `requestAnimationFrame` with Chromium's exact constants. Precise
 //! touchpad deltas (non-integer, small) are left to the engine, which
-//! already handles them well (instant + kinetic).
+//! already handles them well (instant + kinetic) — except on the
+//! Instagram gesture feed, see below.
 //!
 //! Mandatory `scroll-snap` containers (YouTube Shorts, TikTok-style
 //! feeds) get native-app paging instead of the delta glide: one
@@ -40,6 +41,20 @@
 //! by scrollTop freezes the URL and pagination (the feed "runs out"
 //! after the seeded batch); there each page tick dispatches a
 //! synthetic pointer swipe instead (see `swipeFeed` in the script).
+//! Precise touchpad deltas on that feed are claimed for the same
+//! reason: the engine's native precise scroll moves pixels without
+//! advancing IG's gesture state, so accumulated two-finger flicks
+//! are translated into the same synthetic swipe (`preciseFeedScroll`).
+//!
+//! Paging also performs the native clients' commit-time playback
+//! handoff: the moment a page tick commits, the incoming card's video
+//! starts and the outgoing video's audio ramps out over ~40ms and
+//! pauses. Web feeds otherwise wait for their IntersectionObserver
+//! after the scroll settles, which reads as a dead gap between reels
+//! (or, on the synthetic-swipe path, as the old reel's audio playing
+//! over the transition). Deliberately no crossfade: the native apps
+//! hard-cut audio at gesture commit too, and overlapping reel audio
+//! is universally perceived as a bug.
 //!
 //! Keyboard scrolling (Arrow/Page/Space) goes through the same
 //! animator, because WebKit's keydown scroll has the identical
@@ -345,6 +360,65 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
     ensureRaf();
   }
 
+  // Commit-time playback handoff, the native clients' trick: the
+  // incoming reel starts playing the moment the page gesture commits
+  // (under the still-running transition), and the outgoing reel's
+  // audio ramps out and pauses. Web feeds only play/pause from an
+  // IntersectionObserver after the scroll settles, which reads as a
+  // dead gap — or, through the synthetic-swipe path, as the old
+  // reel's audio running over the whole transition. Deliberately no
+  // crossfade: native hard-cuts at commit too (the ~40ms ramp only
+  // strips the click of an abrupt cut), and both actions are
+  // idempotent with the site's own later observer work.
+  const RAMP_OUT_MS = 40, RAMP_IN_MS = 80;
+  const ramping = new WeakSet();
+  function rampVolume(v, to, ms, then) {
+    if (ramping.has(v)) return;
+    ramping.add(v);
+    const from = v.volume, t0 = performance.now();
+    function step(now) {
+      const t = Math.min((now - t0) / ms, 1);
+      try { v.volume = from + (to - from) * t; } catch (_) {}
+      if (t < 1) requestAnimationFrame(step);
+      else { ramping.delete(v); if (then) then(); }
+    }
+    requestAnimationFrame(step);
+  }
+  function handoffPlayback(dir) {
+    if (!shortformSite()) return;
+    const out = activeShortformVideo();
+    // The incoming card is still ~one viewport away in the paging
+    // direction at commit time: nearest video at least 40% of a
+    // viewport from center. None found (virtualized card not mounted
+    // yet) fails open — the site's observer handles it as before.
+    const mid = innerHeight / 2;
+    let inc = null, best = Infinity;
+    for (const v of document.querySelectorAll('video')) {
+      if (v === out) continue;
+      const r = v.getBoundingClientRect();
+      if (r.width < 1 || r.height < 1) continue;
+      const d = ((r.top + r.bottom) / 2 - mid) * dir;
+      if (d < innerHeight * 0.4) continue;
+      if (d < best) { best = d; inc = v; }
+    }
+    if (inc && inc.paused && !ramping.has(inc)) {
+      const iv = inc.volume;
+      try { inc.volume = 0; } catch (_) {}
+      const p = inc.play();
+      if (p && p.catch) p.catch(() => {});
+      rampVolume(inc, iv, RAMP_IN_MS);
+    }
+    if (out && !out.paused) {
+      const ov = out.volume;
+      rampVolume(out, 0, RAMP_OUT_MS, () => {
+        // Restore the element's own volume after the pause so a
+        // scroll-back (or the site recycling the element) never
+        // inherits a silenced video.
+        try { out.pause(); out.volume = ov; } catch (_) {}
+      });
+    }
+  }
+
   // Instagram mobile-web Reels ignore programmatic scrolling: the
   // current-reel index lives in gesture state (React pointer handlers
   // on the feed element), so setting scrollTop moves pixels while the
@@ -398,6 +472,9 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
         if (i >= SWIPE_STEPS) {
           clearInterval(iv);
           el.dispatchEvent(mk('pointerup', y1));
+          // Gesture commit: start the incoming reel's playback now
+          // instead of waiting out IG's settle + observer.
+          handoffPlayback(dir);
         }
       } catch (_) {
         clearInterval(iv);
@@ -423,6 +500,33 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
       }
     }
     return null;
+  }
+
+  // Precise touchpad deltas on the IG feed must be claimed too: the
+  // engine's native precise scroll moves pixels without advancing
+  // IG's gesture-held reel index, silently desyncing the feed (URL,
+  // active video, and pagination freeze — the same failure scrollTop
+  // paging has). Accumulate the fine deltas and page via the same
+  // synthetic swipe once a flick's worth arrives. Returns true when
+  // the event belongs to the feed (caller preventDefaults even while
+  // accumulating: leaked pixels are the desync).
+  const PRECISE_TRIGGER = 120, PRECISE_IDLE_MS = 300;
+  let preciseAcc = 0, preciseLast = 0;
+  function preciseFeedScroll(target, dy) {
+    if (shortformSite() !== 'instagram') return false;
+    const feed = gestureFeed(target);
+    if (!feed) return false;
+    const now = performance.now();
+    if (now - preciseLast > PRECISE_IDLE_MS) preciseAcc = 0;
+    preciseLast = now;
+    if (now < swipeUntil) return true; // mid-swipe: absorb the flick
+    preciseAcc += dy;
+    if (Math.abs(preciseAcc) >= PRECISE_TRIGGER) {
+      const dir = preciseAcc > 0 ? 1 : -1;
+      preciseAcc = 0;
+      swipeFeed(feed, dir);
+    }
+    return true;
   }
 
   // Page a snap or card-feed scroller by one page. Returns true if
@@ -466,6 +570,9 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
     // glide into an ancestor mid-feed.
     if (target == null) return true;
     animateTo(el, horiz, target);
+    // Page commit on a snap/card feed: same handoff as the swipe
+    // path. handoffPlayback gates itself to shortform sites.
+    if (!horiz) handoffPlayback(dir);
     return true;
   }
 
@@ -511,7 +618,14 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
     try {
       if (e.defaultPrevented || !e.cancelable) return;
       if (e.ctrlKey || e.altKey || e.metaKey) return; // zoom & friends
-      if (!isDiscrete(e)) return;
+      if (!isDiscrete(e)) {
+        // Precise touchpad deltas normally stay native, but on the
+        // IG gesture feed native pixels desync the reel state: claim
+        // and translate them into synthetic swipes.
+        if (!e.shiftKey && e.deltaY
+            && preciseFeedScroll(e.target, e.deltaY)) e.preventDefault();
+        return;
+      }
 
       let dx = e.deltaX, dy = e.deltaY;
       if (e.deltaMode === 1) { dx *= 40; dy *= 40; }
@@ -864,16 +978,20 @@ mod tests {
     #[test]
     fn script_fails_open() {
         assert!(SMOOTH_WHEEL_JS.contains("e.defaultPrevented || !e.cancelable"));
-        // preventDefault must appear after the discrete/scrollable
-        // guards in the handler body.
+        // Every preventDefault must follow its deciding guard. The
+        // precise-touchpad arm decides via preciseFeedScroll; the
+        // generic path decides via isDiscrete + scrollTarget.
         let handler = SMOOTH_WHEEL_JS
             .split("addEventListener('wheel'")
             .nth(1)
             .unwrap();
-        let pd = handler.find("e.preventDefault()").unwrap();
         let discrete = handler.find("isDiscrete").unwrap();
+        let precise = handler.find("preciseFeedScroll").unwrap();
+        let precise_pd = precise + handler[precise..].find("e.preventDefault()").unwrap();
+        assert!(discrete < precise && precise < precise_pd);
         let target = handler.find("scrollTarget").unwrap();
-        assert!(discrete < pd && target < pd);
+        let pd = target + handler[target..].find("e.preventDefault()").unwrap();
+        assert!(target < pd);
     }
 
     /// ArrowLeft must select the close control before falling back to the
@@ -1067,5 +1185,66 @@ mod tests {
         assert!(SMOOTH_WHEEL_JS.contains("now < swipeUntil"));
         // Pointer-capture guard: swallow only our synthetic id.
         assert!(SMOOTH_WHEEL_JS.contains("if (id !== SWIPE_ID) throw err;"));
+    }
+
+    /// Paging a shortform feed must perform the commit-time playback
+    /// handoff (incoming video plays at gesture commit; outgoing audio
+    /// ramps out then pauses), and must not crossfade: the pause and
+    /// a volume restore both happen, and everything is guarded so a
+    /// missing video fails open to the site's own observer.
+    #[test]
+    fn commit_time_playback_handoff_shape() {
+        assert!(SMOOTH_WHEEL_JS.contains("function handoffPlayback"));
+        assert!(SMOOTH_WHEEL_JS.contains("function rampVolume"));
+        // Gated to shortform sites: nothing happens on ordinary pages.
+        let body = SMOOTH_WHEEL_JS
+            .split("function handoffPlayback")
+            .nth(1)
+            .unwrap();
+        assert!(body.contains("if (!shortformSite()) return;"));
+        // Outgoing: ramp to zero, pause, then restore the element's
+        // own volume so scroll-back never inherits a silenced video.
+        assert!(body.contains("rampVolume(out, 0, RAMP_OUT_MS"));
+        assert!(body.contains("out.pause(); out.volume = ov;"));
+        // Incoming: starts muted-by-volume and ramps in; the play()
+        // rejection is swallowed (autoplay policy).
+        assert!(body.contains("inc.volume = 0;"));
+        assert!(body.contains("p.catch(() => {})"));
+        // Both commit paths fire it: the synthetic IG swipe at
+        // pointerup, and snap/card-feed paging at animation start.
+        let swipe = SMOOTH_WHEEL_JS.split("function swipeFeed").nth(1).unwrap();
+        let sw_body = swipe.split("function gestureFeed").next().unwrap();
+        assert!(sw_body.contains("handoffPlayback(dir)"));
+        let ps = SMOOTH_WHEEL_JS.split("function pageSnap").nth(1).unwrap();
+        let ps_body = ps.split("function animateBy").next().unwrap();
+        assert!(ps_body.contains("handoffPlayback(dir)"));
+    }
+
+    /// Precise touchpad deltas on the Instagram gesture feed must be
+    /// claimed (native precise scroll desyncs IG's gesture-held reel
+    /// state) and accumulated into the same synthetic swipe; precise
+    /// deltas everywhere else must stay engine-native.
+    #[test]
+    fn precise_touchpad_guard_shape() {
+        assert!(SMOOTH_WHEEL_JS.contains("function preciseFeedScroll"));
+        let body = SMOOTH_WHEEL_JS
+            .split("function preciseFeedScroll")
+            .nth(1)
+            .unwrap();
+        // Instagram-only: everything else returns false -> native.
+        assert!(body.contains("shortformSite() !== 'instagram'"));
+        // Pages via the synthetic swipe, never scrollTop.
+        assert!(body.contains("swipeFeed(feed, dir)"));
+        // Mid-swipe flicks are absorbed like discrete ticks.
+        assert!(body.contains("now < swipeUntil"));
+        // The wheel handler consults it inside the !isDiscrete arm and
+        // preventDefaults claimed events so no pixels leak to the feed.
+        let handler = SMOOTH_WHEEL_JS
+            .split("addEventListener('wheel'")
+            .nth(1)
+            .unwrap();
+        let arm = handler.split("let dx = e.deltaX").next().unwrap();
+        assert!(arm.contains("!isDiscrete(e)"));
+        assert!(arm.contains("preciseFeedScroll(e.target, e.deltaY)) e.preventDefault()"));
     }
 }
