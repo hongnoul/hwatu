@@ -51,9 +51,9 @@ impl Bar {
         let root = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
             .halign(gtk::Align::Fill)
-            .valign(gtk::Align::Start)
+            .valign(gtk::Align::Center)
             .hexpand(true)
-            .margin_top(24)
+            .margin_top(0)
             .margin_start(0)
             .margin_end(0)
             .visible(false)
@@ -71,7 +71,10 @@ impl Bar {
             .spacing(4)
             .build();
 
-        let prefix = gtk::Label::builder().css_classes(["prefix"]).build();
+        let prefix = gtk::Label::builder()
+            .css_classes(["prefix"])
+            .halign(gtk::Align::Center)
+            .build();
         let entry = gtk::Entry::builder()
             .has_frame(false)
             .hexpand(true)
@@ -104,6 +107,15 @@ impl Bar {
         *self.mode.borrow() != BarMode::Hidden
     }
 
+    /// Show or hide the entry. With the entry hidden (toasts,
+    /// confirms) the prefix is the row's only flexible child; letting
+    /// it expand centers the text, caption style. With the entry
+    /// visible the prefix shrinks back to a compact leading label.
+    fn set_entry_visible(&self, visible: bool) {
+        self.entry.set_visible(visible);
+        self.prefix.set_hexpand(!visible);
+    }
+
     /// Open interactive find. Focuses the entry.
     pub fn open_find(&self, backwards: bool) {
         self.cancel_hide_timer();
@@ -112,7 +124,7 @@ impl Bar {
         self.prefix
             .set_label(if backwards { "Find backwards" } else { "Find" });
         self.entry.set_text("");
-        self.entry.set_visible(true);
+        self.set_entry_visible(true);
         self.status.set_label("");
         self.root.set_visible(true);
         self.entry.grab_focus();
@@ -126,7 +138,7 @@ impl Bar {
         self.mode.replace(BarMode::Url);
         self.prefix.set_label("Open");
         self.entry.set_text(current);
-        self.entry.set_visible(true);
+        self.set_entry_visible(true);
         self.status.set_label("");
         self.root.set_visible(true);
         self.entry.grab_focus();
@@ -140,7 +152,7 @@ impl Bar {
         self.mode.replace(BarMode::Palette);
         self.prefix.set_label("Command");
         self.entry.set_text("");
-        self.entry.set_visible(true);
+        self.set_entry_visible(true);
         self.status.set_label("");
         self.list.set_visible(true);
         self.root.set_visible(true);
@@ -202,7 +214,7 @@ impl Bar {
         self.hide_list();
         self.mode.replace(BarMode::Confirm { tag: tag.into() });
         self.prefix.set_label(question);
-        self.entry.set_visible(false);
+        self.set_entry_visible(false);
         self.status.set_label("yes / no");
         self.root.set_visible(true);
     }
@@ -220,7 +232,7 @@ impl Bar {
         self.hide_list();
         self.mode.replace(BarMode::Status);
         self.prefix.set_label(message);
-        self.entry.set_visible(false);
+        self.set_entry_visible(false);
         self.status.set_label("");
         self.root.set_visible(true);
 
