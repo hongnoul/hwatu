@@ -78,6 +78,20 @@ fn minimal_subscription_remains_valid() {
 }
 
 #[test]
+fn persistent_connections_are_newline_delimited_request_sequences() {
+    let wire = "{\"cmd\":\"ping\"}\n{\"cmd\":\"list\"}\n";
+    let requests: Vec<Request> = wire
+        .lines()
+        .map(|line| serde_json::from_str(line).expect("each line is one request"))
+        .collect();
+
+    assert!(matches!(
+        requests.as_slice(),
+        [Request::Ping, Request::List]
+    ));
+}
+
+#[test]
 fn canonical_responses_match_the_wire() {
     assert_golden_roundtrip::<Response>(include_str!("fixtures/responses/window.json"));
     assert_golden_roundtrip::<Response>(include_str!("fixtures/responses/value.json"));

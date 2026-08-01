@@ -2,9 +2,12 @@
 // Copyright (c) 2026 Justin Hong
 //! Wire protocol between the `hana` client and the `hwatud` daemon.
 //!
-//! Newline-delimited JSON over a Unix domain socket. One request per
-//! connection for the MVP: connect, send a [`Request`], read a
-//! [`Response`], disconnect.
+//! Newline-delimited JSON over a Unix domain socket. A connection may
+//! carry multiple [`Request`] lines and receives one [`Response`] line
+//! per request, strictly in request order. Legacy one-shot clients still
+//! work: connect, send one request, read one response, disconnect. A
+//! [`Request::Subscribe`] hands the connection to the event stream and
+//! does not accept further request lines.
 
 use serde::{Deserialize, Serialize};
 #[cfg(unix)]

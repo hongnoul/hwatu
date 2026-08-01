@@ -43,6 +43,10 @@ fn accept_next(listener: gio::SocketListener, daemon: Rc<Daemon>) {
 
 fn handle_conn(conn: gio::SocketConnection, daemon: Rc<Daemon>) {
     let input = gio::DataInputStream::new(&conn.input_stream());
+    read_next_request(conn, input, daemon);
+}
+
+fn read_next_request(conn: gio::SocketConnection, input: gio::DataInputStream, daemon: Rc<Daemon>) {
     // read_line_utf8_async, not read_line_async: the byte-slice
     // variant's gio-rs trampoline reads an *uninitialized* length when
     // the stream ends with no line (client connected and closed), and
@@ -59,32 +63,46 @@ fn handle_conn(conn: gio::SocketConnection, daemon: Rc<Daemon>) {
         move |res| {
             let line = match res {
                 Ok(Some(l)) => l.to_string(),
-                // EOF before any line (port scan, dead client) or read
-                // error: nothing to answer.
+                // EOF before the next line (port scan, one-shot client
+                // disconnect, dead persistent client) or read error:
+                // nothing to answer.
                 Ok(None) | Err(_) => return,
             };
             let request = serde_json::from_str::<Request>(line.trim());
-            // Subscriptions keep the connection: hand it to the event
-            // broker instead of the one-shot reply path. Everything
-            // else (including parse errors) keeps the exact one-shot
-            // behavior old clients were built against.
+            // Subscriptions keep the connection as an event stream: hand it
+            // to the broker instead of the request/response loop. Everything
+            // else (including parse errors) gets one response line, then the
+            // loop waits for the next request or EOF.
             let request = match request {
                 Ok(Request::Subscribe { kinds, window }) => {
                     return crate::events::subscribe(&daemon, conn, input, kinds, window);
                 }
                 other => other,
             };
+            let conn_for_reply = conn.clone();
+            let input_for_reply = input.clone();
+            let daemon_for_reply = daemon.clone();
             let reply: automation::Reply = Box::new(move |response: Response| {
                 let mut out = serde_json::to_vec(&response).unwrap_or_default();
                 out.push(b'\n');
-                let stream = conn.output_stream();
+                let stream = conn_for_reply.output_stream();
+                let conn_for_next = conn_for_reply.clone();
+                let input_for_next = input_for_reply.clone();
+                let daemon_for_next = daemon_for_reply.clone();
                 stream.write_all_async(
                     out,
                     glib::Priority::DEFAULT,
                     gio::Cancellable::NONE,
-                    move |_| {
-                        // conn dropped here; client sees EOF after response.
-                        let _ = conn.close(gio::Cancellable::NONE);
+                    move |res| {
+                        // Keep the connection strictly sequential: the next request
+                        // is not read until this response has finished writing. That
+                        // preserves correlation for clients that pipeline by order,
+                        // including deferred automation replies.
+                        if res.is_ok() {
+                            read_next_request(conn_for_next, input_for_next, daemon_for_next);
+                        } else {
+                            let _ = conn_for_next.close(gio::Cancellable::NONE);
+                        }
                     },
                 );
             });
