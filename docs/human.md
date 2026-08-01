@@ -6,8 +6,8 @@ This page covers using hwatu as a person.
 
 ## The browser
 
-No tabs (your WM tiles are the tabs), no chrome (a vim-style bottom
-bar summoned on demand), remappable keybinds
+No tabs (your WM tiles are the tabs), no chrome (a monochrome prompt
+surface summoned on demand), mainstream browser keybinds
 (`~/.config/hwatu/keys.conf`), built-in native ad blocking (EasyList
 compiled into WebKit's content-extension engine, zero JS in the
 request path), sane downloads, crash-restore sessions, TLS and

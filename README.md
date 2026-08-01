@@ -120,7 +120,7 @@ larger copy-paste policy and verification loops.
 - [x] Human hand-off: `hwatu focus <id>` drops the live session into your tiling WM
 - [x] CAPTCHA / anti-bot detection with structured wait/resume (`challenge`)
 - [x] MCP server, plain CLI, and a 1-line JSON socket protocol
-- [x] A minimal WebKit browser for humans: native ad blocking, vim-style bar, crash restore
+- [x] A minimal WebKit browser for humans: native ad blocking, monochrome prompt surface, crash restore
 
 ## Why not Playwright or chrome-devtools-mcp?
 

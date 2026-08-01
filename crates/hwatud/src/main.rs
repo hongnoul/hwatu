@@ -16,6 +16,7 @@ mod compositor;
 mod console;
 mod downloads;
 mod events;
+mod focusshield;
 mod ipc_server;
 mod keys;
 mod launcher;
@@ -25,6 +26,7 @@ mod palette;
 mod prompts;
 mod search;
 mod session;
+mod siteua;
 mod smoothwheel;
 mod snapdiff;
 mod verify;
@@ -88,6 +90,9 @@ pub struct Daemon {
     session_save_timer: RefCell<Option<glib::SourceId>>,
     /// Push-IPC subscribers (`subscribe` on a held-open connection).
     pub events: events::Broker,
+    /// Next hanafuda card to deal on a launcher window (see
+    /// [`launcher::deal_uri`]). Wraps modulo the deck size.
+    pub next_deal: RefCell<usize>,
 }
 
 impl Daemon {
@@ -105,7 +110,17 @@ impl Daemon {
             prefetch_pool: RefCell::new(Vec::new()),
             session_save_timer: RefCell::new(None),
             events: events::Broker::default(),
+            next_deal: RefCell::new(0),
         })
+    }
+
+    /// Deal the next hanafuda card index and advance the counter,
+    /// wrapping after the whole deck.
+    pub fn take_deal(&self) -> usize {
+        let mut n = self.next_deal.borrow_mut();
+        let deal = *n;
+        *n = (deal + 1) % launcher::DECK_SIZE;
+        deal
     }
 
     /// Take the warm WebView (or build one) and immediately warm the next.
@@ -289,7 +304,7 @@ fn main() -> glib::ExitCode {
         // verification, captcha). Must run before any WebView exists.
         persist_cookies();
         // Internal pages (hwatu://launcher) before any WebView exists.
-        launcher::register_scheme(&daemon);
+        launcher::register_scheme();
         adblock::Adblock::init(&daemon);
         daemon.schedule_prewarm();
         if let Err(e) = ipc_server::start(daemon.clone()) {

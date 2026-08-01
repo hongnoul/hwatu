@@ -64,6 +64,53 @@ fn home_page() -> Option<String> {
         .filter(|v| !v.trim().is_empty())
 }
 
+/// Media autoplay policy for every WebView. WebKit's own default is
+/// ALLOW_WITHOUT_SOUND, which is why video sites autoplay muted: their
+/// unmuted-play probe is rejected, so they fall back to a muted player.
+/// hwatu defaults to full allow — sound is expected of a browser one
+/// actually watches things in. Override with HWATU_AUTOPLAY=muted (the
+/// WebKit default) or =deny (no autoplay at all).
+fn autoplay_policy() -> webkit6::AutoplayPolicy {
+    // HWATU_BLOCK_AUTOPLAY=1 is the older escape hatch for a
+    // WebKitGTK+GStreamer wedge (gst 1.28.5: pages with several
+    // lazy-initialized autoplay videos deadlock the web process);
+    // scripts still set it, so it stays as an alias for deny.
+    if std::env::var_os("HWATU_BLOCK_AUTOPLAY").is_some_and(|v| v == "1") {
+        return webkit6::AutoplayPolicy::Deny;
+    }
+    match std::env::var("HWATU_AUTOPLAY").as_deref() {
+        Ok("muted") | Ok("without-sound") => webkit6::AutoplayPolicy::AllowWithoutSound,
+        Ok("deny") | Ok("off") => webkit6::AutoplayPolicy::Deny,
+        _ => webkit6::AutoplayPolicy::Allow,
+    }
+}
+
+const DEFAULT_WINDOW_WIDTH: i32 = 1024;
+const DEFAULT_WINDOW_HEIGHT: i32 = 768;
+
+/// Request a quarter of the current monitor's width for a newly mapped
+/// window. Tiling WMs use this as the initial size hint when deciding how to
+/// place a new toplevel, while floating WMs still get a useful desktop-sized
+/// window instead of an arbitrary fixed width.
+fn default_window_width() -> i32 {
+    let Some(display) = gtk::gdk::Display::default() else {
+        return DEFAULT_WINDOW_WIDTH;
+    };
+    let Some(monitor) = display
+        .monitors()
+        .item(0)
+        .and_then(|object| object.downcast::<gtk::gdk::Monitor>().ok())
+    else {
+        return DEFAULT_WINDOW_WIDTH;
+    };
+
+    quarter_width(monitor.geometry().width())
+}
+
+fn quarter_width(viewport_width: i32) -> i32 {
+    (viewport_width / 4).max(1)
+}
+
 /// State saved across a discard. The session blob itself lives on disk
 /// (see [`discard_dir`]): keeping it in RAM would leak per-window
 /// memory exactly when the point of discarding is to reclaim it, and
@@ -257,29 +304,19 @@ fn set_wayland_app_id(window: &gtk::Window, app_id: &str) {
 /// Build a fully configured WebView. Called for the prewarm pool and as
 /// a fallback; all engine knobs live here, never on the spawn path.
 pub fn build_webview() -> webkit6::WebView {
-    // HWATU_BLOCK_AUTOPLAY=1: deny media autoplay engine-wide (muted
-    // videos included — the user-gesture setting exempts those).
-    // Escape hatch for a WebKitGTK+GStreamer wedge observed with gst
-    // 1.28.5: pages with several lazy-initialized autoplay videos
-    // (scale.com) deadlock the web process main thread in a futex
-    // inside the gst pipeline seconds after load, killing every
-    // subsequent eval. Still-capture flows (`hwatu clone`) don't need
-    // playback — poster frames render without it. Must be set at
-    // construction: website-policies is a construct-only property.
-    let view = if std::env::var_os("HWATU_BLOCK_AUTOPLAY").is_some_and(|v| v == "1") {
-        let policies = webkit6::WebsitePolicies::builder()
-            .autoplay(webkit6::AutoplayPolicy::Deny)
-            .build();
-        webkit6::WebView::builder()
-            .website_policies(&policies)
-            .build()
-    } else {
-        webkit6::WebView::new()
-    };
+    // website-policies is construct-only, hence the builder. Autoplay
+    // defaults to full allow (with sound); see autoplay_policy().
+    let policies = webkit6::WebsitePolicies::builder()
+        .autoplay(autoplay_policy())
+        .build();
+    let view = webkit6::WebView::builder()
+        .website_policies(&policies)
+        .build();
     apply_view_settings(&view);
     crate::console::wire_view(&view);
     crate::clock::wire_view(&view);
     crate::smoothwheel::wire_view(&view);
+    crate::focusshield::wire_view(&view);
     view
 }
 
@@ -349,12 +386,13 @@ impl BrowserWindow {
                 url
             }
             None => {
-                this.mark_nav_pending(launcher::URI);
-                webview.load_uri(launcher::URI);
+                let uri = launcher::deal_uri(daemon.take_deal());
+                this.mark_nav_pending(&uri);
+                webview.load_uri(&uri);
                 if mode == OpenMode::Normal {
                     this.bar.open_url("");
                 }
-                launcher::URI.to_string()
+                uri
             }
         };
         this.show();
@@ -440,11 +478,18 @@ impl BrowserWindow {
     /// would break the popup contract. The window is presented on
     /// ready-to-show, once the engine has applied window features.
     fn open_popup(self: &Rc<Self>, related: &webkit6::WebView) -> webkit6::WebView {
-        let webview = webkit6::WebView::builder().related_view(related).build();
+        let popup_policies = webkit6::WebsitePolicies::builder()
+            .autoplay(autoplay_policy())
+            .build();
+        let webview = webkit6::WebView::builder()
+            .related_view(related)
+            .website_policies(&popup_policies)
+            .build();
         apply_view_settings(&webview);
         crate::console::wire_view(&webview);
         crate::clock::wire_view(&webview);
         crate::smoothwheel::wire_view(&webview);
+        crate::focusshield::wire_view(&webview);
         self.daemon.adblock.apply_to(&webview);
         let popup = Self::build(
             &self.daemon,
@@ -480,8 +525,8 @@ impl BrowserWindow {
 
         let window = gtk::Window::builder()
             .application(&daemon.app)
-            .default_width(1024)
-            .default_height(768)
+            .default_width(default_window_width())
+            .default_height(DEFAULT_WINDOW_HEIGHT)
             .title("hwatu")
             .build();
 
@@ -832,8 +877,10 @@ impl BrowserWindow {
         }
         // Non-displayable responses (Content-Disposition: attachment,
         // MIME types WebKit can't render) become downloads instead of
-        // dead ends.
-        webview.connect_decide_policy(|_, decision, decision_type| {
+        // dead ends. Main-document responses also pass through the
+        // per-site UA switcher (mobile UI for reels-style sites),
+        // which may restart the load under the right user-agent.
+        webview.connect_decide_policy(|wv, decision, decision_type| {
             if decision_type != webkit6::PolicyDecisionType::Response {
                 return false; // default handling
             }
@@ -841,6 +888,9 @@ impl BrowserWindow {
             else {
                 return false;
             };
+            if crate::siteua::handle_response_decision(wv, response) {
+                return true;
+            }
             if response.is_mime_type_supported() {
                 return false;
             }
@@ -893,8 +943,10 @@ impl BrowserWindow {
         let Some(webview) = self.webview.borrow().clone() else {
             return;
         };
-        if webview.is_loading() {
-            // Try again later rather than losing an in-flight load.
+        if webview.is_loading() || webview.is_playing_audio() {
+            // Try again later rather than losing an in-flight load or
+            // cutting off media playing in the background (music, a
+            // reel left running in another window).
             self.schedule_discard();
             return;
         }
@@ -917,7 +969,7 @@ impl BrowserWindow {
         let Some(webview) = self.webview.borrow_mut().take() else {
             return;
         };
-        if webview.is_loading() {
+        if webview.is_loading() || webview.is_playing_audio() {
             self.webview.replace(Some(webview));
             self.schedule_discard();
             return;
@@ -1374,7 +1426,7 @@ impl BrowserWindow {
     // ---- bar & keyboard UX ----------------------------------------
 
     /// Run one keymap action. Returns Proceed only for actions that
-    /// decline (n/N with no committed search fall through to the page).
+    /// decline (repeat-search keys with no committed search fall through to the page).
     fn run_action(self: &Rc<Self>, action: keys::Action) -> glib::Propagation {
         use keys::Action;
         match action {
@@ -1503,7 +1555,7 @@ impl BrowserWindow {
     }
 
     /// Hook the bar's entry: incremental find while typing, Enter
-    /// commits (focus returns to page, n/N work), Escape cancels.
+    /// commits (focus returns to page, repeat-search keys work), Escape cancels.
     fn wire_bar(self: &Rc<Self>) {
         // Incremental search on every keystroke; palette re-ranks on
         // every keystroke the same way.
@@ -1646,7 +1698,7 @@ impl BrowserWindow {
         let Some(webview) = self.live_webview() else {
             return false;
         };
-        let on_launcher = webview.uri().is_some_and(|u| u == launcher::URI);
+        let on_launcher = webview.uri().is_some_and(|u| launcher::is_launcher(&u));
         if on_launcher && !webview.can_go_back() {
             self.window.close();
             return true;
@@ -1729,7 +1781,7 @@ impl BrowserWindow {
         let Some(fc) = self.find_controller() else {
             return glib::Propagation::Proceed;
         };
-        // No committed search: let n/N through to the page.
+        // No committed search: let the repeat-search key through to the page.
         if fc.search_text().is_none_or(|t| t.is_empty()) {
             return glib::Propagation::Proceed;
         }
@@ -1809,5 +1861,17 @@ mod tests {
     #[test]
     fn empty_input_is_empty() {
         assert!(parse_feature_overrides("").is_empty());
+    }
+
+    #[test]
+    fn quarter_width_uses_one_fourth_of_the_viewport() {
+        assert_eq!(super::quarter_width(1920), 480);
+        assert_eq!(super::quarter_width(1366), 341);
+    }
+
+    #[test]
+    fn quarter_width_never_returns_zero() {
+        assert_eq!(super::quarter_width(0), 1);
+        assert_eq!(super::quarter_width(-1), 1);
     }
 }

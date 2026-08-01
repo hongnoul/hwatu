@@ -1,0 +1,90 @@
+<!doctype html>
+<!-- Reels-style mandatory-snap feed fixture.
+     A vertical scroll-snap feed of full-viewport "reels" with a cheap
+     animated layer per card (to keep the compositor honest), plus the
+     same trace recorder as smoothness.html: every wheel/keydown event
+     and per-rAF scrollTop of the feed. Read back via
+     `hwatu eval` (window.__scrollTrace) and feed it to
+     analyze-smoothness.py to measure input latency, pulse gaps, and
+     whether one tick/keypress lands exactly one card. -->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  #feed {
+    height: 100vh; overflow-y: scroll;
+    scroll-snap-type: y mandatory;
+  }
+  .reel {
+    height: 100vh; scroll-snap-align: start;
+    display: flex; align-items: center; justify-content: center;
+    font: bold 96px system-ui; color: #fff;
+    position: relative; overflow: hidden;
+  }
+  .reel .spin {
+    position: absolute; width: 40vmin; height: 40vmin; border-radius: 8px;
+    opacity: .25; animation: spin 3s linear infinite;
+    background: conic-gradient(#fff, transparent);
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  #hud { position: fixed; top: 8px; left: 8px; color: #fff; z-index: 9;
+         font: 14px monospace; background: rgba(0,0,0,.6); padding: 6px; }
+</style>
+</head>
+<body>
+<div id="hud">waiting for input…</div>
+<div id="feed"></div>
+<script>
+(() => {
+  const feed = document.getElementById('feed');
+  const hues = [210, 340, 120, 30, 270, 180, 0, 60];
+  for (let i = 0; i < 40; i++) {
+    const d = document.createElement('div');
+    d.className = 'reel';
+    d.style.background = `hsl(${hues[i % hues.length]} 60% 35%)`;
+    d.innerHTML = `<div class="spin"></div>${i + 1}`;
+    feed.appendChild(d);
+  }
+
+  const wheel = [];
+  const keys = [];
+  const frames = [];
+  let lastActivity = 0;
+  const hud = document.getElementById('hud');
+
+  addEventListener('wheel', e => {
+    wheel.push({ t: performance.now(), dy: e.deltaY, dx: e.deltaX, mode: e.deltaMode });
+    lastActivity = performance.now();
+  }, { passive: true, capture: true });
+
+  addEventListener('keydown', e => {
+    keys.push({ t: performance.now(), key: e.key, repeat: e.repeat });
+    lastActivity = performance.now();
+  }, { passive: true, capture: true });
+
+  function tick(t) {
+    frames.push({ t, y: feed.scrollTop });
+    if (frames.length > 40000) frames.splice(0, 20000);
+    const card = Math.round(feed.scrollTop / innerHeight) + 1;
+    hud.textContent = `reel ${card}/40  y=${feed.scrollTop.toFixed(1)}  ` +
+      `wheel=${wheel.length} keys=${keys.length}`;
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+
+  window.__scrollTrace = () => JSON.stringify({ wheel, keys, frames });
+
+  // Optional POST-back, same contract as smoothness.html.
+  const post = new URLSearchParams(location.search).get('post');
+  if (post) {
+    setInterval(() => {
+      if (!lastActivity || performance.now() - lastActivity < 1500) return;
+      lastActivity = 0;
+      fetch(post, { method: 'POST', body: window.__scrollTrace() }).catch(() => {});
+    }, 500);
+  }
+})();
+</script>
+</body>
+</html>
