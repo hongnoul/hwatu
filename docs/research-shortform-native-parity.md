@@ -11,6 +11,11 @@ grounded in the current code (`smoothwheel.rs`, `mediashim.rs`,
 Feeds referenced: instagram.com Reels (mobile-UA spoof per
 `siteua.rs`), m.youtube.com Shorts, tiktok.com.
 
+> Status note: this is a point-in-time snapshot. A1/A2 (commit-time
+> handoff, roadmap H20) and B1 (IG touchpad guard, H21) shipped on
+> main the same day (`handoffPlayback` / `preciseFeedScroll` in
+> smoothwheel); the "today" columns below describe the pre-fix state.
+
 ## The headline finding
 
 Native apps do **not** crossfade video or audio between reels. Audio

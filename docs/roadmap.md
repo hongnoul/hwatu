@@ -583,18 +583,17 @@ H20. **Commit-time playback handoff.** Native clients start the
     running transition, and hard-cut the outgoing audio (tens-of-ms
     ramp against clicks). Web feeds wait for IntersectionObserver
     after settle; hwatu's IG swipe path adds a 650ms absorb on top,
-    so audio audibly overlaps. Fix in smoothwheel's shortform layer:
-    at synthetic pointerup / snap-animation start, `play()` the
-    incoming card's video and ramp-out+pause the outgoing one
-    (volume 1→0 over ~40ms). Idempotent with the site's own observer;
-    fail-open; coalesce play/pause per frame per element (GStreamer
-    pipeline-state wedge, see mediashim.rs). ~50 lines, biggest
-    perceived win.
+    so audio audibly overlaps. **Shipped 2026-08-01** (smoothwheel
+    `handoffPlayback`): at synthetic pointerup / snap-animation
+    start, `play()` the incoming card's video and ramp-out+pause the
+    outgoing one (volume 1→0 over ~40ms). Idempotent with the site's
+    own observer; fail-open. No crossfade: native hard-cuts too.
 H21. **Touchpad guard on Instagram Reels.** Precise two-finger
-    deltas bypass the swipeFeed protection (only discrete wheel is
-    claimed) and silently desync IG's gesture-state feed — the one
-    currently *broken* path. Claim precise deltas on the IG feed:
-    accumulate and translate to synthetic swipes.
+    deltas bypassed the swipeFeed protection (only discrete wheel
+    was claimed) and silently desynced IG's gesture-state feed.
+    **Shipped 2026-08-01** (smoothwheel `preciseFeedScroll`): precise
+    deltas on the IG feed are claimed, accumulated to a flick's worth
+    (120px within 300ms), and paged via the same synthetic swipe.
 H22. **reelwarm adjacent prefetch.** Native keeps N±1 in memory
     (Media3 PreloadManager). Browser equivalent: user script Range-
     fetches ~1MB (moov + first GOP) of the N±1 cards' video URLs
