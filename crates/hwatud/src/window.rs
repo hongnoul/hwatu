@@ -1436,6 +1436,7 @@ impl BrowserWindow {
             }
             Action::UrlOpen => self.bar.open_url(""),
             Action::UrlEdit => self.open_url_bar(),
+            Action::YankUrl => self.yank_url(),
             Action::Find => self.bar.open_find(false),
             Action::FindBack => self.bar.open_find(true),
             Action::FindNext => return self.find_next(true),
@@ -1459,6 +1460,26 @@ impl BrowserWindow {
             Action::CommandPalette => self.open_palette(),
         }
         glib::Propagation::Stop
+    }
+
+    /// Copy the current page URL to the desktop clipboard.
+    fn yank_url(self: &Rc<Self>) {
+        self.restore();
+        let Some(url) = self
+            .live_webview()
+            .and_then(|webview| webview.uri())
+            .map(|uri| uri.to_string())
+            .filter(|url| !url.is_empty())
+        else {
+            self.flash_bar("no page URL to copy", 2);
+            return;
+        };
+        let Some(display) = gtk::gdk::Display::default() else {
+            self.flash_bar("clipboard unavailable", 2);
+            return;
+        };
+        display.clipboard().set_text(&url);
+        self.flash_bar("URL copied", 2);
     }
 
     /// Reload the current page, optionally bypassing the cache

@@ -37,6 +37,7 @@ pub enum Action {
     NewWindow,
     UrlOpen,
     UrlEdit,
+    YankUrl,
     Find,
     FindBack,
     FindNext,
@@ -61,6 +62,7 @@ impl Action {
         Action::NewWindow,
         Action::UrlOpen,
         Action::UrlEdit,
+        Action::YankUrl,
         Action::Find,
         Action::FindBack,
         Action::FindNext,
@@ -84,6 +86,7 @@ impl Action {
             Action::NewWindow => "new_window",
             Action::UrlOpen => "url_open",
             Action::UrlEdit => "url_edit",
+            Action::YankUrl => "yank_url",
             Action::Find => "find",
             Action::FindBack => "find_back",
             Action::FindNext => "find_next",
@@ -109,6 +112,7 @@ impl Action {
             Action::NewWindow => "new window",
             Action::UrlOpen => "open URL / search",
             Action::UrlEdit => "edit current URL",
+            Action::YankUrl => "copy current URL",
             Action::Find => "find in page",
             Action::FindBack => "find backwards",
             Action::FindNext => "next match",
@@ -140,6 +144,7 @@ impl Action {
             // address prompt without borrowing a Vim-style bare key.
             Action::UrlOpen => "ctrl+shift+l",
             Action::UrlEdit => "ctrl+l",
+            Action::YankUrl => "ctrl+y",
             Action::Find => "ctrl+f",
             Action::FindBack => "ctrl+shift+f",
             Action::FindNext => "ctrl+g",
@@ -463,6 +468,10 @@ mod tests {
         assert_eq!(
             map.lookup(Phase::Capture, Key::l, CTRL),
             Some(Action::UrlEdit)
+        );
+        assert_eq!(
+            map.lookup(Phase::Capture, Key::y, CTRL),
+            Some(Action::YankUrl)
         );
         assert_eq!(
             map.lookup(Phase::Capture, Key::L, CTRL | SHIFT),
