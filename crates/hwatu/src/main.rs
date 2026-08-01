@@ -15,6 +15,50 @@ use std::os::unix::net::UnixStream;
 use std::process::Command;
 use std::time::{Duration, Instant};
 
+/// Resolve daemon-facing filesystem paths against the client's working
+/// directory. The daemon may be long-lived and have been spawned from a
+/// different directory, so a relative path would put artifacts somewhere
+/// other than where the caller expects them.
+pub(crate) fn resolve_path(path: Option<String>) -> Option<String> {
+    path.map(|path| {
+        let path_buf = std::path::PathBuf::from(path);
+        if path_buf.is_absolute() {
+            return path_buf.to_string_lossy().into_owned();
+        }
+        std::env::current_dir()
+            .map(|cwd| cwd.join(&path_buf).to_string_lossy().into_owned())
+            .unwrap_or_else(|_| path_buf.to_string_lossy().into_owned())
+    })
+}
+
+pub(crate) fn normalize_request_paths(request: &mut Request) {
+    match request {
+        Request::Screenshot { path, .. } => *path = resolve_path(path.take()),
+        Request::Check {
+            shot_path,
+            baseline,
+            heatmap,
+            baseline_dir,
+            ..
+        } => {
+            *shot_path = resolve_path(shot_path.take());
+            *baseline = resolve_path(baseline.take());
+            *heatmap = resolve_path(heatmap.take());
+            *baseline_dir = resolve_path(baseline_dir.take());
+        }
+        Request::Upload { path, .. } => {
+            *path = resolve_path(Some(std::mem::take(path))).expect("path is present");
+        }
+        Request::Diff {
+            baseline, heatmap, ..
+        } => {
+            *baseline = resolve_path(baseline.take());
+            *heatmap = resolve_path(heatmap.take());
+        }
+        _ => {}
+    }
+}
+
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("update") {
@@ -168,7 +212,9 @@ fn is_onboarding_command(command: Option<&str>) -> bool {
 }
 
 fn parse(args: &[String]) -> Result<Request, String> {
-    parse_with_default_mode(args, default_open_mode())
+    let mut request = parse_with_default_mode(args, default_open_mode())?;
+    normalize_request_paths(&mut request);
+    Ok(request)
 }
 
 /// Coding agents mark their subprocess environment; a human's shell or
@@ -1143,7 +1189,9 @@ pub(crate) fn connect_or_spawn() -> std::io::Result<UnixStream> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_onboarding_command, parse_with_default_mode, OpenMode};
+    use super::{
+        is_onboarding_command, normalize_request_paths, parse_with_default_mode, OpenMode,
+    };
     use hwatu_ipc::Request;
 
     #[test]
@@ -1158,7 +1206,9 @@ mod tests {
     /// Env-independent parse: tests themselves often run under a
     /// coding agent, which would flip `default_open_mode()`.
     fn parse(args: &[String]) -> Result<Request, String> {
-        parse_with_default_mode(args, OpenMode::Normal)
+        let mut request = parse_with_default_mode(args, OpenMode::Normal)?;
+        normalize_request_paths(&mut request);
+        Ok(request)
     }
 
     fn args(list: &[&str]) -> Vec<String> {
@@ -1193,6 +1243,85 @@ mod tests {
         assert_eq!(shot_path.as_deref(), Some("/tmp/x.png"));
         assert_eq!(until, hwatu_ipc::LoadStage::Dom);
         assert!(!keep);
+    }
+
+    #[test]
+    fn daemon_paths_are_resolved_against_client_cwd() {
+        let cwd = std::env::current_dir().unwrap();
+        let expected = |path: &str| cwd.join(path).to_string_lossy().into_owned();
+
+        let Ok(Request::Check {
+            shot_path,
+            baseline,
+            heatmap,
+            ..
+        }) = parse(&args(&[
+            "check",
+            "example.com",
+            "--shot=artifacts/after.png",
+            "--baseline",
+            "baselines/before.png",
+            "--heatmap",
+            "artifacts/diff.png",
+        ]))
+        else {
+            panic!("expected Check");
+        };
+        assert_eq!(
+            shot_path.as_deref(),
+            Some(expected("artifacts/after.png").as_str())
+        );
+        assert_eq!(
+            baseline.as_deref(),
+            Some(expected("baselines/before.png").as_str())
+        );
+        assert_eq!(
+            heatmap.as_deref(),
+            Some(expected("artifacts/diff.png").as_str())
+        );
+
+        let Ok(Request::Check { baseline_dir, .. }) = parse(&args(&[
+            "check",
+            "example.com",
+            "--viewports",
+            "360x640",
+            "--baseline-dir",
+            "baselines",
+        ])) else {
+            panic!("expected viewport Check");
+        };
+        assert_eq!(
+            baseline_dir.as_deref(),
+            Some(expected("baselines").as_str())
+        );
+
+        let Ok(Request::Screenshot { path, .. }) = parse(&args(&["shot", "shot.png"])) else {
+            panic!("expected Screenshot");
+        };
+        assert_eq!(path.as_deref(), Some(expected("shot.png").as_str()));
+
+        let Ok(Request::Upload { path, .. }) = parse(&args(&["upload", "input", "file.txt"]))
+        else {
+            panic!("expected Upload");
+        };
+        assert_eq!(path, expected("file.txt"));
+
+        let Ok(Request::Diff {
+            baseline, heatmap, ..
+        }) = parse(&args(&[
+            "diff",
+            "--id",
+            "1",
+            "--baseline",
+            "before.png",
+            "--heatmap",
+            "diff.png",
+        ]))
+        else {
+            panic!("expected Diff");
+        };
+        assert_eq!(baseline.as_deref(), Some(expected("before.png").as_str()));
+        assert_eq!(heatmap.as_deref(), Some(expected("diff.png").as_str()));
     }
 
     #[test]
