@@ -131,7 +131,7 @@ impl Action {
             Action::ZoomOut => "zoom out",
             Action::ZoomReset => "reset zoom",
             Action::Fullscreen => "toggle fullscreen",
-            Action::Mute => "toggle mute",
+            Action::Mute => "toggle video mute",
             Action::CommandPalette => "command palette",
         }
     }

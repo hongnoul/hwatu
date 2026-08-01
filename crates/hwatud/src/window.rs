@@ -88,7 +88,10 @@ fn printable_key_text(key: gtk::gdk::Key, state: gtk::gdk::ModifierType) -> Opti
 /// unmuted-play probe is rejected, so they fall back to a muted player.
 /// hwatu defaults to full allow — sound is expected of a browser one
 /// actually watches things in. Override with HWATU_AUTOPLAY=muted (the
-/// WebKit default) or =deny (no autoplay at all).
+/// WebKit default) or =deny (no autoplay at all), or persistently with
+/// `"autoplay": "muted"|"deny"` in ~/.config/hwatu/config.json — env
+/// vars silently vanish on daemon restarts, which repeatedly re-wedged
+/// agents relying on deny to dodge the GStreamer deadlock below.
 fn autoplay_policy() -> webkit6::AutoplayPolicy {
     // HWATU_BLOCK_AUTOPLAY=1 is the older escape hatch for a
     // WebKitGTK+GStreamer wedge (gst 1.28.5: pages with several
@@ -97,11 +100,24 @@ fn autoplay_policy() -> webkit6::AutoplayPolicy {
     if std::env::var_os("HWATU_BLOCK_AUTOPLAY").is_some_and(|v| v == "1") {
         return webkit6::AutoplayPolicy::Deny;
     }
-    match std::env::var("HWATU_AUTOPLAY").as_deref() {
-        Ok("muted") | Ok("without-sound") => webkit6::AutoplayPolicy::AllowWithoutSound,
-        Ok("deny") | Ok("off") => webkit6::AutoplayPolicy::Deny,
+    let env = std::env::var("HWATU_AUTOPLAY").ok();
+    let choice = env.or_else(config_autoplay);
+    match choice.as_deref() {
+        Some("muted") | Some("without-sound") => webkit6::AutoplayPolicy::AllowWithoutSound,
+        Some("deny") | Some("off") => webkit6::AutoplayPolicy::Deny,
         _ => webkit6::AutoplayPolicy::Allow,
     }
+}
+
+/// Read `"autoplay"` from ~/.config/hwatu/config.json (the same file
+/// adblock persists its toggle in). Returns None when absent/invalid.
+fn config_autoplay() -> Option<String> {
+    let raw = std::fs::read_to_string(
+        glib::user_config_dir().join("hwatu").join("config.json"),
+    )
+    .ok()?;
+    let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    Some(v.get("autoplay")?.as_str()?.to_string())
 }
 
 const DEFAULT_WINDOW_WIDTH: i32 = 1024;
@@ -1494,15 +1510,43 @@ impl BrowserWindow {
         glib::Propagation::Stop
     }
 
-    /// Toggle the WebView's audio mute state and flash the result in
-    /// the bar. A discarded window has no page audio; this is a no-op.
+    /// Toggle the page's own video mute — the same state a reels/player
+    /// UI shows — not the WebView-level audio kill switch, which page
+    /// mute buttons don't reflect. Picks the most prominent visible
+    /// video (playing first, then largest on screen), flips `.muted`,
+    /// and flashes the result. Flashes "no video" when the page has
+    /// none; a discarded window has no page and this is a no-op.
     fn toggle_mute(self: &Rc<Self>) {
         let Some(webview) = self.live_webview() else {
             return;
         };
-        let muted = !webview.is_muted();
-        webview.set_is_muted(muted);
-        self.flash_bar(if muted { "muted" } else { "unmuted" }, 2);
+        let js = r#"(() => {
+            const inView = (v) => {
+                const r = v.getBoundingClientRect();
+                return r.width > 0 && r.height > 0 && r.bottom > 0 &&
+                    r.right > 0 && r.top < innerHeight && r.left < innerWidth;
+            };
+            const visArea = (v) => {
+                const r = v.getBoundingClientRect();
+                return Math.max(0, Math.min(r.right, innerWidth) - Math.max(r.left, 0)) *
+                    Math.max(0, Math.min(r.bottom, innerHeight) - Math.max(r.top, 0));
+            };
+            const vids = [...document.querySelectorAll('video')].filter(inView);
+            vids.sort((a, b) => (a.paused - b.paused) || (visArea(b) - visArea(a)));
+            const v = vids[0];
+            if (!v) return 'no video';
+            v.muted = !v.muted;
+            if (!v.muted && v.volume === 0) v.volume = 1;
+            return v.muted ? 'muted' : 'unmuted';
+        })()"#;
+        let this = self.clone();
+        webview.evaluate_javascript(js, None, None, gtk::gio::Cancellable::NONE, move |result| {
+            let msg = result
+                .ok()
+                .map(|v| v.to_str().to_string())
+                .unwrap_or_else(|| "mute toggle failed".into());
+            this.flash_bar(&msg, 2);
+        });
     }
 
     /// Copy the current page URL to the desktop clipboard.
