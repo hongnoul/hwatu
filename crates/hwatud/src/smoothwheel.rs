@@ -63,6 +63,7 @@
 //!     when it is open, rather than assuming the comment control
 //!     itself is a toggle;
 //!   - Space: toggles play/pause on the visible video.
+//!
 //! The shortcuts are scoped to shortform URLs and fail open when no
 //! visible media or matching control can be found; sites that handle
 //! a key themselves (and preventDefault it) keep priority.
@@ -869,7 +870,10 @@ mod tests {
         let fb = handler.find("gestureFeed(e.target)").unwrap();
         let fb_pd = fb + handler[fb..].find("e.preventDefault()").unwrap();
         let fb_swipe = fb + handler[fb..].find("swipeFeed").unwrap();
-        assert!(fb_swipe < fb_pd, "fallback must decide before preventDefault");
+        assert!(
+            fb_swipe < fb_pd,
+            "fallback must decide before preventDefault"
+        );
         let snap = handler.find("pageSnap").unwrap();
         let pd = snap + handler[snap..].find("e.preventDefault()").unwrap();
         assert!(snap < pd, "pageSnap must run before preventDefault");
@@ -896,7 +900,10 @@ mod tests {
             "defaultPrevented check must precede preventDefault"
         );
         let glide_pd = snap + handler[snap..].find("e.preventDefault()").unwrap();
-        assert!(snap < glide_pd, "pageSnap must run before glide preventDefault");
+        assert!(
+            snap < glide_pd,
+            "pageSnap must run before glide preventDefault"
+        );
         // Bubble phase, not capture: page handlers keep priority.
         assert!(!handler.starts_with(", e => {}, { capture: true"));
         for key in ["ArrowDown", "ArrowUp", "PageDown", "PageUp"] {

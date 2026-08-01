@@ -65,6 +65,15 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
+      - name: Reject trailing whitespace
+        shell: bash
+        run: |
+          # Markdown is exempt: two trailing spaces are a hard line break.
+          if git grep -I -n -E '[[:blank:]]+$' -- . ':!*.md'; then
+            echo "Error: tracked text files contain trailing whitespace."
+            exit 1
+          fi
+
   msrv:
     name: MSRV (1.85)
     runs-on: ubuntu-latest

@@ -72,7 +72,7 @@ fn mobile_ua() -> String {
 }
 
 /// Host of `uri`, lowercased, `www.`-stripped. Avoids a URL-parsing
-/// dependency: scheme://[userinfo@]host[:port]/...
+/// dependency: `scheme://[userinfo@]host[:port]/...`
 fn host_of(uri: &str) -> Option<String> {
     let rest = uri.split("://").nth(1)?;
     let authority = rest.split(['/', '?', '#']).next()?;
