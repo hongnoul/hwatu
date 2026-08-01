@@ -122,7 +122,8 @@ fn handle_tool_call(params: &Value) -> Result<String, String> {
     if name == "subscribe_events" {
         return subscribe_events(&args);
     }
-    let request = build_request(name, &args)?;
+    let mut request = build_request(name, &args)?;
+    crate::normalize_request_paths(&mut request);
     let response = transact(&request)?;
     match response {
         Response::Err { message } => Err(message),
