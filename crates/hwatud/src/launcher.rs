@@ -119,11 +119,10 @@ mod tests {
     #[test]
     fn default_keymap_renders_all_rows() {
         let page = html(&Keymap::default());
-        assert!(page.contains("<kbd>o</kbd>"));
+        assert!(page.contains("<kbd>ctrl+l</kbd>"));
         assert!(page.contains("open URL / search"));
-        assert!(page.contains("<kbd>ctrl+l</kbd> <kbd>O</kbd>"));
-        assert!(page.contains("<kbd>ctrl+J</kbd>")); // ctrl+shift+j, shift folded into case
-        assert!(page.contains("<kbd>/</kbd>"));
+        assert!(page.contains("<kbd>ctrl+f</kbd>"));
+        assert!(page.contains("<kbd>alt+Left</kbd>"));
         assert!(page.contains("close window"));
     }
 

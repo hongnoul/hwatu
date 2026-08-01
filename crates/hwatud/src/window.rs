@@ -1354,7 +1354,7 @@ impl BrowserWindow {
     // ---- bar & keyboard UX ----------------------------------------
 
     /// Run one keymap action. Returns Proceed only for actions that
-    /// decline (n/N with no committed search fall through to the page).
+    /// decline (repeat-search keys with no committed search fall through to the page).
     fn run_action(self: &Rc<Self>, action: keys::Action) -> glib::Propagation {
         use keys::Action;
         match action {
@@ -1483,7 +1483,7 @@ impl BrowserWindow {
     }
 
     /// Hook the bar's entry: incremental find while typing, Enter
-    /// commits (focus returns to page, n/N work), Escape cancels.
+    /// commits (focus returns to page, repeat-search keys work), Escape cancels.
     fn wire_bar(self: &Rc<Self>) {
         // Incremental search on every keystroke; palette re-ranks on
         // every keystroke the same way.
@@ -1709,7 +1709,7 @@ impl BrowserWindow {
         let Some(fc) = self.find_controller() else {
             return glib::Propagation::Proceed;
         };
-        // No committed search: let n/N through to the page.
+        // No committed search: let the repeat-search key through to the page.
         if fc.search_text().is_none_or(|t| t.is_empty()) {
             return glib::Propagation::Proceed;
         }

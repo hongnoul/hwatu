@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 Justin Hong
-//! The bar: hwatu's single piece of chrome, a one-line vim-style
-//! command bar overlaid at the bottom of the window, hidden until
-//! summoned.
+//! The prompt surface: hwatu's single piece of chrome, a small
+//! monochrome command surface overlaid near the top of the window,
+//! hidden until summoned.
 //!
 //! It is a generic prompt widget with modes, not a find widget:
-//! find-in-page (`/`, `?`) is the first mode; y/n permission prompts,
+//! find-in-page is the first mode; yes/no permission prompts,
 //! TLS interstitials, and download status reuse it.
 
 use gtk::prelude::*;
@@ -15,7 +15,7 @@ use gtk::prelude::*;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BarMode {
     Hidden,
-    /// Incremental find. `backwards` mirrors vim's `?`.
+    /// Incremental find, optionally searching backwards.
     Find {
         backwards: bool,
     },
@@ -50,8 +50,12 @@ impl Bar {
     pub fn new() -> Self {
         let root = gtk::Box::builder()
             .orientation(gtk::Orientation::Vertical)
-            .halign(gtk::Align::Fill)
-            .valign(gtk::Align::End)
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Start)
+            .margin_top(24)
+            .margin_start(24)
+            .margin_end(24)
+            .width_request(560)
             .visible(false)
             .css_classes(["hwatu-bar"])
             .build();
@@ -101,7 +105,8 @@ impl Bar {
         self.cancel_hide_timer();
         self.hide_list();
         self.mode.replace(BarMode::Find { backwards });
-        self.prefix.set_label(if backwards { "?" } else { "/" });
+        self.prefix
+            .set_label(if backwards { "Find backwards" } else { "Find" });
         self.entry.set_text("");
         self.entry.set_visible(true);
         self.status.set_label("");
@@ -115,7 +120,7 @@ impl Bar {
         self.cancel_hide_timer();
         self.hide_list();
         self.mode.replace(BarMode::Url);
-        self.prefix.set_label("open");
+        self.prefix.set_label("Open");
         self.entry.set_text(current);
         self.entry.set_visible(true);
         self.status.set_label("");
@@ -129,7 +134,7 @@ impl Bar {
     pub fn open_palette(&self) {
         self.cancel_hide_timer();
         self.mode.replace(BarMode::Palette);
-        self.prefix.set_label(">");
+        self.prefix.set_label("Command");
         self.entry.set_text("");
         self.entry.set_visible(true);
         self.status.set_label("");
@@ -194,7 +199,7 @@ impl Bar {
         self.mode.replace(BarMode::Confirm { tag: tag.into() });
         self.prefix.set_label(question);
         self.entry.set_visible(false);
-        self.status.set_label("[y/n]");
+        self.status.set_label("yes / no");
         self.root.set_visible(true);
     }
 
@@ -252,15 +257,18 @@ impl Bar {
     }
 }
 
-/// One-time CSS for the bar; call at daemon startup.
+/// One-time CSS for the prompt surface; call at daemon startup.
 pub fn install_css() {
     let css = r#"
         .hwatu-bar {
-            background-color: rgba(24, 24, 24, 0.92);
-            color: #d8d8d8;
+            background-color: #ffffff;
+            color: #111111;
             font-family: monospace;
             font-size: 13px;
-            padding: 3px 8px;
+            padding: 12px 16px;
+            border: 1px solid #cccccc;
+            border-radius: 8px;
+            box-shadow: 0 6px 22px rgba(0, 0, 0, 0.14);
         }
         .hwatu-bar entry, .hwatu-bar entry text {
             background: none;
@@ -268,24 +276,24 @@ pub fn install_css() {
             box-shadow: none;
             outline: none;
             color: inherit;
-            caret-color: #d8d8d8;
+            caret-color: #111111;
             padding: 0;
             margin: 0;
             min-height: 0;
         }
         .hwatu-bar label.prefix, .hwatu-bar label.status {
-            color: #9a9a9a;
+            color: #666666;
         }
         .hwatu-bar .palette-list {
-            padding: 2px 0 4px;
+            padding: 4px 0 8px;
         }
         .hwatu-bar .palette-row {
-            padding: 2px 6px;
-            border-radius: 3px;
+            padding: 5px 8px;
+            border-radius: 4px;
         }
         .hwatu-bar .palette-row.selected {
-            background-color: rgba(255, 255, 255, 0.12);
-            color: #ffffff;
+            background-color: #f4f4f4;
+            color: #111111;
         }
         .hwatu-recovery {
             background-color: rgba(18, 18, 18, 0.88);

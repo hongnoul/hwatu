@@ -3,16 +3,16 @@
 //! Keybindings: every global key in hwatu maps to a named [`Action`]
 //! through a [`Keymap`], so users can rebind anything.
 //!
-//! Defaults are vim-flavored (see [`Keymap::default`]); overrides live
+//! Defaults follow mainstream browser conventions (see [`Keymap::default`]); overrides live
 //! in `~/.config/hwatu/keys.conf`, one `action = chord[, chord...]`
 //! per line:
 //!
 //! ```text
 //! # ~/.config/hwatu/keys.conf
-//! back     = ctrl+o
-//! forward  = ctrl+i
-//! url_edit = ctrl+l, O
-//! find     = slash
+//! back     = alt+Left
+//! forward  = alt+Right
+//! url_edit = ctrl+l
+//! find     = ctrl+f
 //! close    = none          # unbind an action entirely
 //! ```
 //!
@@ -136,16 +136,21 @@ impl Action {
         match self {
             Action::Close => "ctrl+w, ctrl+q",
             Action::NewWindow => "ctrl+t, ctrl+n",
-            Action::UrlOpen => "o",
-            Action::UrlEdit => "ctrl+l, O",
-            Action::Find => "slash, ctrl+f",
-            Action::FindBack => "question",
-            Action::FindNext => "n",
-            Action::FindPrev => "N",
-            Action::ScrollDown => "ctrl+shift+j",
-            Action::ScrollUp => "ctrl+shift+k",
-            Action::Back => "ctrl+o, alt+Left",
-            Action::Forward => "ctrl+i, alt+Right",
+            // Ctrl+L edits the current address. Ctrl+Shift+L opens a blank
+            // address prompt without borrowing a Vim-style bare key.
+            Action::UrlOpen => "ctrl+shift+l",
+            Action::UrlEdit => "ctrl+l",
+            Action::Find => "ctrl+f",
+            Action::FindBack => "ctrl+shift+f",
+            Action::FindNext => "ctrl+g",
+            Action::FindPrev => "ctrl+shift+g",
+            // PageUp/PageDown are handled naturally by the WebView. Keeping
+            // the actions unbound preserves palette access without stealing
+            // those standard browser keys from page content.
+            Action::ScrollDown => "",
+            Action::ScrollUp => "",
+            Action::Back => "alt+Left",
+            Action::Forward => "alt+Right",
             Action::Reload => "ctrl+r, F5",
             Action::HardReload => "ctrl+shift+r, ctrl+F5",
             Action::ZoomIn => "ctrl+plus, ctrl+equal",
@@ -379,6 +384,9 @@ impl Default for Keymap {
         let mut bindings = Vec::new();
         for action in Action::ALL {
             for spec in action.default_chords().split(',') {
+                if spec.trim().is_empty() {
+                    continue;
+                }
                 let chord = Chord::parse(spec.trim())
                     .unwrap_or_else(|e| panic!("bad built-in chord for {action:?}: {e}"));
                 bindings.push((chord, *action));
@@ -417,7 +425,7 @@ mod tests {
         assert_eq!(show("o"), "o");
         assert_eq!(show("O"), "O");
         assert_eq!(show("ctrl+l"), "ctrl+l");
-        assert_eq!(show("ctrl+shift+j"), "ctrl+J");
+        assert_eq!(show("ctrl+shift+x"), "ctrl+X");
         assert_eq!(show("slash"), "/");
         assert_eq!(show("question"), "?");
         assert_eq!(show("Page_Down"), "Page_Down");
@@ -426,47 +434,33 @@ mod tests {
     #[test]
     fn chords_for_lists_bindings_in_order() {
         let map = Keymap::default();
-        assert_eq!(map.chords_for(Action::UrlEdit), vec!["ctrl+l", "O"]);
-        assert!(map.chords_for(Action::Find).contains(&"/".to_string()));
+        assert_eq!(map.chords_for(Action::UrlEdit), vec!["ctrl+l"]);
+        assert_eq!(map.chords_for(Action::Find), vec!["ctrl+f"]);
     }
 
     #[test]
     fn defaults_resolve() {
         let map = Keymap::default();
-        assert_eq!(map.lookup(Phase::Capture, Key::o, CTRL), Some(Action::Back));
-        assert_eq!(
-            map.lookup(Phase::Capture, Key::i, CTRL),
-            Some(Action::Forward)
-        );
         assert_eq!(
             map.lookup(Phase::Capture, Key::l, CTRL),
             Some(Action::UrlEdit)
         );
         assert_eq!(
-            map.lookup(Phase::Bubble, Key::o, NONE),
+            map.lookup(Phase::Capture, Key::L, CTRL | SHIFT),
             Some(Action::UrlOpen)
         );
-        // With Shift held GTK reports the uppercased keyval.
+        assert_eq!(map.lookup(Phase::Capture, Key::f, CTRL), Some(Action::Find));
         assert_eq!(
-            map.lookup(Phase::Bubble, Key::O, SHIFT),
-            Some(Action::UrlEdit)
-        );
-        assert_eq!(
-            map.lookup(Phase::Bubble, Key::n, NONE),
+            map.lookup(Phase::Capture, Key::g, CTRL),
             Some(Action::FindNext)
         );
         assert_eq!(
-            map.lookup(Phase::Bubble, Key::N, SHIFT),
+            map.lookup(Phase::Capture, Key::G, CTRL | SHIFT),
             Some(Action::FindPrev)
         );
-        // `?` arrives with shift set on most layouts; it matches anyway.
         assert_eq!(
-            map.lookup(Phase::Bubble, Key::question, SHIFT),
+            map.lookup(Phase::Capture, Key::F, CTRL | SHIFT),
             Some(Action::FindBack)
-        );
-        assert_eq!(
-            map.lookup(Phase::Capture, Key::J, CTRL | SHIFT),
-            Some(Action::ScrollDown)
         );
         assert_eq!(
             map.lookup(Phase::Capture, Key::w, CTRL),
@@ -537,10 +531,10 @@ mod tests {
 
     #[test]
     fn phases_are_derived_from_modifiers() {
-        // ctrl+o is capture-only; bare o is bubble-only.
+        // ctrl+l is capture-only; bare l is bubble-only.
         let map = Keymap::default();
-        assert_eq!(map.lookup(Phase::Bubble, Key::o, CTRL), None);
-        assert_eq!(map.lookup(Phase::Capture, Key::o, NONE), None);
+        assert_eq!(map.lookup(Phase::Bubble, Key::l, CTRL), None);
+        assert_eq!(map.lookup(Phase::Capture, Key::l, NONE), None);
     }
 
     #[test]
@@ -579,11 +573,14 @@ mod tests {
     fn bad_lines_error_and_leave_map_alone() {
         let mut map = Keymap::default();
         assert!(map.apply_line("nonsense = ctrl+x").is_err());
-        assert!(map.apply_line("back ctrl+o").is_err());
+        assert!(map.apply_line("back alt+Left").is_err());
         assert!(map.apply_line("back = hyper+o").is_err());
         assert!(map.apply_line("back = notakeyname").is_err());
         // back still bound after all the failures
-        assert_eq!(map.lookup(Phase::Capture, Key::o, CTRL), Some(Action::Back));
+        assert_eq!(
+            map.lookup(Phase::Capture, Key::Left, ModifierType::ALT_MASK),
+            Some(Action::Back)
+        );
     }
 
     #[test]
@@ -591,7 +588,7 @@ mod tests {
         let chord = Chord::parse("O").unwrap();
         assert!(chord.shift);
         assert_eq!(chord.phase(), Phase::Bubble);
-        let chord = Chord::parse("ctrl+shift+j").unwrap();
+        let chord = Chord::parse("ctrl+shift+x").unwrap();
         assert!(chord.ctrl && chord.shift);
         assert_eq!(chord.phase(), Phase::Capture);
     }
