@@ -2480,6 +2480,15 @@ matched.text = (el.textContent || el.value || '').trim().slice(0, 120);
     ))
 }
 
+fn trusted_input_unavailable(kind: &str) -> Response {
+    Response::err(format!(
+        "trusted {kind} is not implemented in this GTK4 build: GTK4/GDK exposes \
+         gdk_display_put_event but no public button/key event constructors or \
+         gtk_widget_event-style propagation API, so hwatud cannot synthesize \
+         event.isTrusted input through Path A without a compositor/backend injector"
+    ))
+}
+
 /// Click an element with a real pointer-event sequence at the
 /// element's center (pages listening on pointerdown/mousedown see the
 /// same shape as a human click). Reports what was hit.
@@ -2491,6 +2500,7 @@ pub fn click(
     nth: Option<u32>,
     contains: Option<String>,
     ref_idx: Option<u32>,
+    trusted: bool,
     timeout_ms: Option<u64>,
     reply: Reply,
 ) {
@@ -2498,6 +2508,9 @@ pub fn click(
         Ok(p) => p,
         Err(resp) => return OnceReply::new(reply).send(*resp),
     };
+    if trusted {
+        return OnceReply::new(reply).send(trusted_input_unavailable("click"));
+    }
     let js = format!(
         r#"{native}{prelude}
 el.scrollIntoView({{ block: 'center', behavior: 'instant' }});
@@ -2535,6 +2548,7 @@ pub fn type_text(
     contains: Option<String>,
     ref_idx: Option<u32>,
     text: String,
+    trusted: bool,
     clear: bool,
     enter: bool,
     timeout_ms: Option<u64>,
@@ -2544,6 +2558,9 @@ pub fn type_text(
         Ok(p) => p,
         Err(resp) => return OnceReply::new(reply).send(*resp),
     };
+    if trusted {
+        return OnceReply::new(reply).send(trusted_input_unavailable("type"));
+    }
     let js = format!(
         r#"{native}{prelude}
 const text = {text};

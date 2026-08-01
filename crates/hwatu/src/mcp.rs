@@ -380,6 +380,7 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
                 nth: opt_u32(args, "nth"),
                 contains: opt_str(args, "contains"),
                 r#ref,
+                trusted: opt_bool(args, "trusted").unwrap_or(false),
                 timeout_ms,
             })
         }
@@ -396,6 +397,7 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
                 contains: opt_str(args, "contains"),
                 r#ref,
                 text: req_str(args, "text")?,
+                trusted: opt_bool(args, "trusted").unwrap_or(false),
                 clear: opt_bool(args, "clear").unwrap_or(true),
                 enter: opt_bool(args, "enter").unwrap_or(false),
                 timeout_ms,
@@ -676,22 +678,23 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         tool(
             "click",
             "Click an element by CSS selector (disambiguate with nth/contains) or \
-             by `ref` from the last snapshot. Dispatches real pointer events and \
-             reports what was hit.",
+             by `ref` from the last snapshot. Dispatches JS pointer events by \
+             default; trusted=true requests native trusted input synthesis.",
             json!({
                 "id": prop("integer", ID_DESC),
                 "selector": prop("string", "CSS selector."),
                 "nth": prop("integer", "0-based index among selector matches."),
                 "contains": prop("string", "Keep only matches whose text contains this."),
                 "ref": prop("integer", "Interactable index from the last snapshot."),
+                "trusted": prop("boolean", "Request native trusted input synthesis instead of JS events."),
             }),
             &[],
         ),
         tool(
             "type_text",
             "Type into an input/textarea/select/contenteditable, targeted like \
-             click. Uses native setters + input/change events so React-style \
-             controlled inputs see it.",
+             click. Uses native setters + input/change events by default; \
+             trusted=true requests native trusted key input synthesis.",
             json!({
                 "id": prop("integer", ID_DESC),
                 "selector": prop("string", "CSS selector."),
@@ -699,6 +702,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
                 "contains": prop("string", "Keep only matches whose text contains this."),
                 "ref": prop("integer", "Interactable index from the last snapshot."),
                 "text": prop("string", "Text to type. For <select>, the option to pick."),
+                "trusted": prop("boolean", "Request native trusted key input synthesis instead of JS events."),
                 "clear": prop("boolean", "Replace the current value (default true; false appends)."),
                 "enter": prop("boolean", "Press Enter afterwards (submits the form if unhandled)."),
             }),
@@ -1042,10 +1046,11 @@ mod tests {
             selector,
             nth,
             contains,
+            trusted,
             ..
         } = build_request(
             "click",
-            &json!({ "selector": "a", "nth": 2, "contains": "Docs" }),
+            &json!({ "selector": "a", "nth": 2, "contains": "Docs", "trusted": true }),
         )
         .unwrap()
         else {
@@ -1054,17 +1059,23 @@ mod tests {
         assert_eq!(selector.as_deref(), Some("a"));
         assert_eq!(nth, Some(2));
         assert_eq!(contains.as_deref(), Some("Docs"));
+        assert!(trusted);
     }
 
     #[test]
     fn type_text_defaults_clear_true() {
         let Request::Type {
-            text, clear, enter, ..
+            text,
+            trusted,
+            clear,
+            enter,
+            ..
         } = build_request("type_text", &json!({ "ref": 1, "text": "hello" })).unwrap()
         else {
             panic!("expected Type");
         };
         assert_eq!(text, "hello");
+        assert!(!trusted);
         assert!(clear);
         assert!(!enter);
         // Needs a target and text.

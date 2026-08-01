@@ -342,6 +342,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
     let mut rect = false;
     let mut expect_watch = false;
     let mut mode = default_mode;
+    let mut trusted = false;
     let mut rest: Vec<&String> = Vec::new();
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -377,6 +378,8 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             no_wait = true;
         } else if arg == "--wait" {
             wait = true;
+        } else if arg == "--trusted" {
+            trusted = true;
         } else if arg == "--full" {
             full = true;
         } else if arg == "--nth" {
@@ -900,7 +903,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             let selector = rest.get(1).map(|s| s.to_string());
             if selector.is_none() && r#ref.is_none() {
                 return Err(
-                    "usage: hwatu click [--id <id>] <selector> [--nth <n>] [--contains <text>] \
+                    "usage: hwatu click [--id <id>] [--trusted] <selector> [--nth <n>] [--contains <text>] \
                      | --ref <n>"
                         .into(),
                 );
@@ -911,6 +914,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 nth: rest.get(2).and_then(|s| s.parse().ok()).or(nth),
                 contains,
                 r#ref,
+                trusted,
                 timeout_ms,
             })
         }
@@ -923,7 +927,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                     Some(
                         rest.get(1)
                             .ok_or(
-                                "usage: hwatu type [--id <id>] (<selector> | --ref <n>) <text> \
+                                "usage: hwatu type [--id <id>] [--trusted] (<selector> | --ref <n>) <text> \
                                  [--enter] [--no-clear]",
                             )?
                             .to_string(),
@@ -938,7 +942,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 .join(" ");
             if text.is_empty() {
                 return Err(
-                    "usage: hwatu type [--id <id>] (<selector> | --ref <n>) <text> [--enter] \
+                    "usage: hwatu type [--id <id>] [--trusted] (<selector> | --ref <n>) <text> [--enter] \
                      [--no-clear]"
                         .into(),
                 );
@@ -950,6 +954,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 contains,
                 r#ref,
                 text,
+                trusted,
                 clear: !no_clear,
                 enter,
                 timeout_ms,
@@ -1019,8 +1024,8 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--foc
 | scroll [--id <id>] [<selector> [nth]] [--contains <text>] [--to-y <px>] [--by <pages>] \
 | snapshot [--id <id>] [--diff] [--rect] \
 | expect [--id <id>] <selector> [--contains <filter>] [--text <substring>] [--absent] [--visible] [--nth <n>] [--timeout-ms <ms>] [--watch] \
-| click [--id <id>] (<selector> [nth] [--contains <text>] | --ref <n>) \
-| type [--id <id>] (<selector> | --ref <n>) <text> [--enter] [--no-clear] \
+| click [--id <id>] [--trusted] (<selector> [nth] [--contains <text>] | --ref <n>) \
+| type [--id <id>] [--trusted] (<selector> | --ref <n>) <text> [--enter] [--no-clear] \
 | console [--id <id>] [--clear] [--limit <n>] \
 | net [--id <id>] [--clear] [--limit <n>] \
 | motion [--id <id>] [--observe [--ms <ms>]] \
@@ -1983,13 +1988,17 @@ mod tests {
     #[test]
     fn click_by_ref_and_bare_click_errors() {
         let Ok(Request::Click {
-            selector, r#ref, ..
-        }) = parse(&args(&["click", "--ref", "7"]))
+            selector,
+            r#ref,
+            trusted,
+            ..
+        }) = parse(&args(&["click", "--trusted", "--ref", "7"]))
         else {
             panic!("expected Click");
         };
         assert!(selector.is_none());
         assert_eq!(r#ref, Some(7));
+        assert!(trusted);
         assert!(parse(&args(&["click"])).is_err());
     }
 
@@ -1998,6 +2007,7 @@ mod tests {
         let Ok(Request::Type {
             selector,
             text,
+            trusted,
             clear,
             enter,
             ..
@@ -2007,6 +2017,7 @@ mod tests {
             "rust",
             "borrow",
             "checker",
+            "--trusted",
             "--enter",
         ]))
         else {
@@ -2014,6 +2025,7 @@ mod tests {
         };
         assert_eq!(selector.as_deref(), Some("input[name=q]"));
         assert_eq!(text, "rust borrow checker");
+        assert!(trusted);
         assert!(clear);
         assert!(enter);
     }

@@ -1,0 +1,19 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>hwatu trusted input child fixture</title>
+<style>
+  body { font: 16px system-ui, sans-serif; margin: 20px; background: #f7fbff; }
+  label { display: block; margin-top: 16px; }
+</style>
+<h2>cross-origin child</h2>
+<button id="child-button">child button</button>
+<label>child input <input id="child-input" autocomplete="off"></label>
+<script>
+  const send = (data) => parent.postMessage(data, '*');
+  document.querySelector('#child-button').addEventListener('click', (event) => {
+    send({ kind: 'childButton', trusted: event.isTrusted, type: event.type });
+  });
+  document.querySelector('#child-input').addEventListener('input', (event) => {
+    send({ kind: 'childInput', trusted: event.isTrusted, type: event.type, value: event.target.value });
+  });
+</script>

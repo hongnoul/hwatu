@@ -251,10 +251,11 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
             nth,
             contains,
             r#ref,
+            trusted,
             timeout_ms,
         } => {
             return automation::click(
-                daemon, id, selector, nth, contains, r#ref, timeout_ms, reply,
+                daemon, id, selector, nth, contains, r#ref, trusted, timeout_ms, reply,
             );
         }
         Request::Type {
@@ -264,12 +265,14 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
             contains,
             r#ref,
             text,
+            trusted,
             clear,
             enter,
             timeout_ms,
         } => {
             return automation::type_text(
-                daemon, id, selector, nth, contains, r#ref, text, clear, enter, timeout_ms, reply,
+                daemon, id, selector, nth, contains, r#ref, text, trusted, clear, enter,
+                timeout_ms, reply,
             );
         }
         Request::Motion {
@@ -708,6 +711,7 @@ mod tests {
                 nth: None,
                 contains: None,
                 r#ref: None,
+                trusted: false,
                 timeout_ms: None,
             },
             Request::Type {
@@ -717,6 +721,7 @@ mod tests {
                 contains: None,
                 r#ref: None,
                 text: "x".into(),
+                trusted: false,
                 clear: true,
                 enter: false,
                 timeout_ms: None,

@@ -1,0 +1,28 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>hwatu trusted input fixture</title>
+<style>
+  body { font: 16px system-ui, sans-serif; margin: 24px; }
+  iframe { width: 420px; height: 220px; border: 2px solid #555; }
+  .log { white-space: pre-wrap; font-family: ui-monospace, monospace; }
+</style>
+<h1>trusted input parent fixture</h1>
+<button id="top-button">top button</button>
+<p>Top trusted state: <output id="top-trusted">unset</output></p>
+<iframe id="xorigin" src="http://127.0.0.1:8782/child.html"></iframe>
+<pre id="messages" class="log"></pre>
+<script>
+  const topOut = document.querySelector('#top-trusted');
+  const messages = document.querySelector('#messages');
+  document.querySelector('#top-button').addEventListener('click', (event) => {
+    document.body.dataset.topTrusted = String(event.isTrusted);
+    topOut.value = String(event.isTrusted);
+  });
+  window.addEventListener('message', (event) => {
+    const row = JSON.stringify(event.data);
+    messages.textContent += row + '\n';
+    if (event.data && event.data.kind) {
+      document.body.dataset[event.data.kind] = JSON.stringify(event.data);
+    }
+  });
+</script>

@@ -287,6 +287,8 @@ pub enum Request {
     /// `nth`/`contains`, like Scroll) or by a `ref` from the last
     /// [`Request::Snapshot`]. Dispatches real pointer/mouse events;
     /// the response reports what was hit (match count, tag, text).
+    /// With `trusted`, the daemon must use compositor/toolkit input
+    /// synthesis so page handlers see `event.isTrusted === true`.
     Click {
         #[serde(default)]
         id: Option<u64>,
@@ -299,6 +301,9 @@ pub enum Request {
         /// Interactable index from the last snapshot of this window.
         #[serde(default)]
         r#ref: Option<u32>,
+        /// Use trusted native input instead of JS-dispatched events.
+        #[serde(default, skip_serializing_if = "is_false")]
+        trusted: bool,
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
@@ -319,6 +324,9 @@ pub enum Request {
         #[serde(default)]
         r#ref: Option<u32>,
         text: String,
+        /// Use trusted native input instead of JS-dispatched events.
+        #[serde(default, skip_serializing_if = "is_false")]
+        trusted: bool,
         /// Replace the current value (default) instead of appending.
         #[serde(default = "default_true")]
         clear: bool,
@@ -1196,6 +1204,7 @@ mod tests {
                     nth: None,
                     contains: Some("Save".into()),
                     r#ref: None,
+                    trusted: false,
                     timeout_ms: None,
                 },
                 Request::Expect {
