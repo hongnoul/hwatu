@@ -104,7 +104,7 @@ fn config_autoplay() -> Option<String> {
 const DEFAULT_WINDOW_WIDTH: i32 = 1024;
 const DEFAULT_WINDOW_HEIGHT: i32 = 768;
 
-/// Request a quarter of the current monitor's width for a newly mapped
+/// Request a third of the current monitor's width for a newly mapped
 /// window. Tiling WMs use this as the initial size hint when deciding how to
 /// place a new toplevel, while floating WMs still get a useful desktop-sized
 /// window instead of an arbitrary fixed width.
@@ -120,11 +120,11 @@ fn default_window_width() -> i32 {
         return DEFAULT_WINDOW_WIDTH;
     };
 
-    quarter_width(monitor.geometry().width())
+    third_width(monitor.geometry().width())
 }
 
-fn quarter_width(viewport_width: i32) -> i32 {
-    (viewport_width / 4).max(1)
+fn third_width(viewport_width: i32) -> i32 {
+    (viewport_width / 3).max(1)
 }
 
 /// State saved across a discard. The session blob itself lives on disk
@@ -1954,14 +1954,14 @@ mod tests {
     }
 
     #[test]
-    fn quarter_width_uses_one_fourth_of_the_viewport() {
-        assert_eq!(super::quarter_width(1920), 480);
-        assert_eq!(super::quarter_width(1366), 341);
+    fn third_width_uses_one_third_of_the_viewport() {
+        assert_eq!(super::third_width(1920), 640);
+        assert_eq!(super::third_width(1366), 455);
     }
 
     #[test]
-    fn quarter_width_never_returns_zero() {
-        assert_eq!(super::quarter_width(0), 1);
-        assert_eq!(super::quarter_width(-1), 1);
+    fn third_width_never_returns_zero() {
+        assert_eq!(super::third_width(0), 1);
+        assert_eq!(super::third_width(-1), 1);
     }
 }
