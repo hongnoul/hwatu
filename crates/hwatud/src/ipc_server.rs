@@ -7,7 +7,8 @@ use crate::{adblock::Adblock, automation, window::BrowserWindow, Daemon};
 use gtk::gio;
 use gtk::gio::prelude::*;
 use gtk::glib;
-use hwatu_ipc::{AdblockCmd, Request, Response};
+use hwatu_ipc::{AdblockCmd, BatchResult, BatchStepResult, BatchStepStatus, Request, Response};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 pub fn start(daemon: Rc<Daemon>) -> std::io::Result<()> {
@@ -118,6 +119,11 @@ fn read_next_request(conn: gio::SocketConnection, input: gio::DataInputStream, d
 /// automation commands (eval/navigate/screenshot/wait_load) complete
 /// later on the main loop and consume `reply` when they finish.
 fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
+    let req = match req {
+        Request::Batch { actions } => return dispatch_batch(daemon.clone(), actions, reply),
+        other => other,
+    };
+
     // Async paths hand the reply off and return.
     match req {
         Request::Eval { id, js, timeout_ms } => {
@@ -429,11 +435,110 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
         | Request::Diff { .. }
         | Request::Resize { .. }
         | Request::Expect { .. } => Response::err("internal: async request in sync path"),
+        // Handled above; reaching here means an internal misroute.
+        Request::Batch { .. } => Response::err("internal: batch in sync path"),
         // Subscribe is intercepted in handle_conn (it keeps the
         // connection); reaching dispatch means an internal misroute.
         Request::Subscribe { .. } => Response::err("internal: subscribe in one-shot path"),
     };
     reply(response);
+}
+
+fn dispatch_batch(daemon: Rc<Daemon>, actions: Vec<Request>, reply: automation::Reply) {
+    if let Err(e) = Request::validate_batch(&actions) {
+        reply(Response::err(format!("bad batch: {e}")));
+        return;
+    }
+    let actions = Rc::new(actions);
+    let steps = Rc::new(RefCell::new(Vec::with_capacity(actions.len())));
+    let final_reply = Rc::new(RefCell::new(Some(reply)));
+    dispatch_batch_step(daemon, actions, steps, final_reply, 0);
+}
+
+fn dispatch_batch_step(
+    daemon: Rc<Daemon>,
+    actions: Rc<Vec<Request>>,
+    steps: Rc<RefCell<Vec<BatchStepResult>>>,
+    final_reply: Rc<RefCell<Option<automation::Reply>>>,
+    index: usize,
+) {
+    if index >= actions.len() {
+        finish_batch(actions, steps, final_reply, None);
+        return;
+    }
+
+    let action = actions[index].clone();
+    let action_name = action.kind().to_string();
+    let daemon_next = daemon.clone();
+    let actions_next = actions.clone();
+    let steps_next = steps.clone();
+    let final_reply_next = final_reply.clone();
+    dispatch(
+        &daemon,
+        action,
+        Box::new(move |response| {
+            let error = match &response {
+                Response::Err { message } => Some(message.clone()),
+                Response::Ok { .. } => None,
+            };
+            let failed = error.is_some();
+            steps_next.borrow_mut().push(BatchStepResult {
+                index,
+                action: action_name,
+                status: if failed {
+                    BatchStepStatus::Error
+                } else {
+                    BatchStepStatus::Ok
+                },
+                response: Some(response),
+                error,
+                skipped_reason: None,
+            });
+            if failed {
+                finish_batch(actions_next, steps_next, final_reply_next, Some(index));
+            } else {
+                dispatch_batch_step(
+                    daemon_next,
+                    actions_next,
+                    steps_next,
+                    final_reply_next,
+                    index + 1,
+                );
+            }
+        }),
+    );
+}
+
+fn finish_batch(
+    actions: Rc<Vec<Request>>,
+    steps: Rc<RefCell<Vec<BatchStepResult>>>,
+    final_reply: Rc<RefCell<Option<automation::Reply>>>,
+    failed_at: Option<usize>,
+) {
+    let mut steps = steps.borrow_mut();
+    if let Some(failed_at) = failed_at {
+        for index in failed_at + 1..actions.len() {
+            steps.push(BatchStepResult {
+                index,
+                action: actions[index].kind().to_string(),
+                status: BatchStepStatus::Skipped,
+                response: None,
+                error: None,
+                skipped_reason: Some(format!("not run after step {failed_at} failed")),
+            });
+        }
+    }
+    let result = BatchResult {
+        complete: failed_at.is_none(),
+        executed: failed_at.map_or(actions.len(), |i| i + 1),
+        failed_at,
+        steps: std::mem::take(&mut *steps),
+    };
+    drop(steps);
+    let Some(reply) = final_reply.borrow_mut().take() else {
+        return;
+    };
+    reply(Response::value(serde_json::json!({ "batch": result })));
 }
 
 /// Turn bar/CLI input into a loadable URL: explicit schemes and
@@ -485,7 +590,19 @@ fn is_loopback_host(input: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_url;
+    use super::{finish_batch, normalize_url};
+    use hwatu_ipc::{BatchStepResult, BatchStepStatus, Request, Response};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    fn snapshot_request() -> Request {
+        Request::Snapshot {
+            id: None,
+            diff: false,
+            rect: false,
+            timeout_ms: None,
+        }
+    }
 
     #[test]
     fn normalizes_urls() {
@@ -564,5 +681,79 @@ mod tests {
         assert!(normalized.contains("%20"));
 
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn daemon_batch_validation_rejects_before_execution() {
+        let actions = vec![Request::Close { id: 1 }];
+        assert!(Request::validate_batch(&actions)
+            .unwrap_err()
+            .contains("unsupported"));
+
+        let actions = vec![Request::Batch {
+            actions: vec![snapshot_request()],
+        }];
+        assert!(Request::validate_batch(&actions)
+            .unwrap_err()
+            .contains("nested"));
+    }
+
+    #[test]
+    fn finish_batch_records_explicit_partial_execution() {
+        let actions = Rc::new(vec![
+            snapshot_request(),
+            Request::Click {
+                id: None,
+                selector: Some("button".into()),
+                nth: None,
+                contains: None,
+                r#ref: None,
+                timeout_ms: None,
+            },
+            Request::Type {
+                id: None,
+                selector: Some("input".into()),
+                nth: None,
+                contains: None,
+                r#ref: None,
+                text: "x".into(),
+                clear: true,
+                enter: false,
+                timeout_ms: None,
+            },
+        ]);
+        let steps = Rc::new(RefCell::new(vec![
+            BatchStepResult {
+                index: 0,
+                action: "snapshot".into(),
+                status: BatchStepStatus::Ok,
+                response: Some(Response::ok()),
+                error: None,
+                skipped_reason: None,
+            },
+            BatchStepResult {
+                index: 1,
+                action: "click".into(),
+                status: BatchStepStatus::Error,
+                response: Some(Response::err("button not found")),
+                error: Some("button not found".into()),
+                skipped_reason: None,
+            },
+        ]));
+        let captured = Rc::new(RefCell::new(None));
+        let captured_reply = captured.clone();
+        let reply = Box::new(move |response| {
+            *captured_reply.borrow_mut() = Some(response);
+        });
+        finish_batch(actions, steps, Rc::new(RefCell::new(Some(reply))), Some(1));
+
+        let Response::Ok { value: Some(v), .. } = captured.borrow_mut().take().unwrap() else {
+            panic!("expected ok batch response");
+        };
+        assert_eq!(v["batch"]["complete"], false);
+        assert_eq!(v["batch"]["executed"], 2);
+        assert_eq!(v["batch"]["failed_at"], 1);
+        assert_eq!(v["batch"]["steps"][2]["status"], "skipped");
+        assert_eq!(v["batch"]["steps"][2]["action"], "type");
     }
 }

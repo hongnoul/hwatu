@@ -1,0 +1,1 @@
+{"cmd":"batch","actions":[{"cmd":"eval","id":1,"js":"return document.title","timeout_ms":1000},{"cmd":"click","id":1,"selector":"button","nth":null,"contains":"Save","ref":null,"timeout_ms":null},{"cmd":"expect","id":1,"selector":".done","nth":null,"contains":null,"text":"Saved","absent":false,"visible":true,"timeout_ms":2000,"watch":false}]}

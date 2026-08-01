@@ -272,6 +272,26 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
             until: parse_until(args)?,
             timeout_ms,
         }),
+        "batch_actions" => {
+            let entries = args
+                .get("actions")
+                .and_then(Value::as_array)
+                .ok_or("batch_actions needs `actions` array")?;
+            let mut actions = Vec::with_capacity(entries.len());
+            for (index, entry) in entries.iter().enumerate() {
+                let tool = entry
+                    .get("tool")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| format!("actions[{index}] needs string `tool`"))?;
+                let empty = json!({});
+                let step_args = entry.get("args").unwrap_or(&empty);
+                let action = build_request(tool, step_args)
+                    .map_err(|e| format!("actions[{index}] {tool}: {e}"))?;
+                actions.push(action);
+            }
+            Request::validate_batch(&actions).map_err(|e| format!("batch_actions: {e}"))?;
+            Ok(Request::Batch { actions })
+        }
         "check" => {
             let viewports = parse_viewports(args)?;
             let baseline_dir = opt_str(args, "baseline_dir");
@@ -763,6 +783,27 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
             &[],
         ),
         tool(
+            "batch_actions",
+            "Run a bounded ordered batch of allowlisted browser actions in one IPC request. The daemon validates every step before executing any, runs sequentially, stops on first failure, and returns per-step ok/error/skipped results with explicit partial-execution semantics.",
+            json!({
+                "actions": {
+                    "type": "array",
+                    "maxItems": hwatu_ipc::BATCH_MAX_ACTIONS,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "tool": { "type": "string", "enum": ["eval", "goto", "screenshot", "wait_load", "scroll", "snapshot", "click", "type_text", "console", "expect"],
+                                "description": "Allowlisted tool to execute as this batch step." },
+                            "args": { "type": "object", "description": "Arguments for that tool, using the same schema as the standalone MCP tool." }
+                        },
+                        "required": ["tool"]
+                    },
+                    "description": "Ordered action steps. Nested batch_actions and unsupported tools are rejected before any step runs."
+                }
+            }),
+            &["actions"],
+        ),
+        tool(
             "upload",
             "Set a file input's files from a path on disk (the standard \
              automation technique; the OS picker never opens).",
@@ -1032,6 +1073,39 @@ mod tests {
     }
 
     #[test]
+    fn batch_actions_builds_and_rejects_unsupported_steps() {
+        let Request::Batch { actions } = build_request(
+            "batch_actions",
+            &json!({
+                "actions": [
+                    { "tool": "eval", "args": { "js": "return 1" } },
+                    { "tool": "click", "args": { "ref": 0 } },
+                    { "tool": "expect", "args": { "selector": ".done", "text": "Saved" } }
+                ]
+            }),
+        )
+        .unwrap() else {
+            panic!("expected Batch");
+        };
+        assert_eq!(actions.len(), 3);
+        assert!(matches!(actions[1], Request::Click { r#ref: Some(0), .. }));
+
+        assert!(build_request(
+            "batch_actions",
+            &json!({ "actions": [{ "tool": "close", "args": { "id": 1 } }] }),
+        )
+        .unwrap_err()
+        .contains("unsupported"));
+
+        assert!(build_request(
+            "batch_actions",
+            &json!({ "actions": [{ "tool": "batch_actions", "args": { "actions": [{ "tool": "snapshot" }] } }] }),
+        )
+        .unwrap_err()
+        .contains("nested"));
+    }
+
+    #[test]
     fn close_and_focus_require_id() {
         assert!(build_request("close", &json!({})).is_err());
         assert!(matches!(
@@ -1103,6 +1177,7 @@ mod tests {
             "screenshot": {},
             "scroll": {},
             "wait_load": {},
+            "batch_actions": { "actions": [{ "tool": "snapshot" }] },
             "upload": { "selector": "input", "path": "/tmp/x" },
             "challenge": {},
             "motion": {},
