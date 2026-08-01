@@ -56,6 +56,11 @@ pub(crate) fn normalize_request_paths(request: &mut Request) {
             *baseline = resolve_path(baseline.take());
             *heatmap = resolve_path(heatmap.take());
         }
+        Request::Batch { actions } => {
+            for action in actions {
+                normalize_request_paths(action);
+            }
+        }
         _ => {}
     }
 }
@@ -625,6 +630,43 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             until: until.unwrap_or_default(),
             timeout_ms,
         }),
+        Some("batch") => {
+            const USAGE_BATCH: &str = "usage: hwatu batch (--stdin | '<json-array>' | '{\"cmd\":\"batch\",...}')";
+            let payload = if use_stdin {
+                if rest.len() > 1 {
+                    return Err(format!("batch takes --stdin or inline JSON, not both\n{USAGE_BATCH}"));
+                }
+                let mut payload = String::new();
+                std::io::Read::read_to_string(&mut std::io::stdin().lock(), &mut payload)
+                    .map_err(|e| format!("batch: cannot read stdin: {e}"))?;
+                payload
+            } else {
+                let payload = rest[1..]
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if payload.trim().is_empty() {
+                    return Err(USAGE_BATCH.into());
+                }
+                payload
+            };
+            let value: serde_json::Value = serde_json::from_str(&payload)
+                .map_err(|e| format!("batch: invalid JSON: {e}"))?;
+            let actions = if value.is_array() {
+                serde_json::from_value::<Vec<Request>>(value)
+                    .map_err(|e| format!("batch: invalid action array: {e}"))?
+            } else {
+                let request = serde_json::from_value::<Request>(value)
+                    .map_err(|e| format!("batch: invalid request: {e}"))?;
+                let Request::Batch { actions } = request else {
+                    return Err("batch: JSON object must be a batch request; pass an array for actions".into());
+                };
+                actions
+            };
+            Request::validate_batch(&actions).map_err(|e| format!("batch: {e}"))?;
+            Ok(Request::Batch { actions })
+        }
         Some("check") => {
             let url = rest
                 .get(1)
@@ -965,8 +1007,9 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--foc
 (agent environments default to --headless; set HWATU_AGENT_MODE or \
 \"agent_mode\" in ~/.config/hwatu/config.json to normal|background|headless) \
 | list [--json] | close <id> | focus <id> | unfocus <id> \
-| eval [--id <id>] [--timeout-ms <ms>] <js> | goto [--id <id>] [--no-wait] [--until <stage>] <url> \
-    | shot [--id <id>] [--full] [path] | wait-load [--id <id>] [--until (committed|dom|settled)] \
+	| eval [--id <id>] [--timeout-ms <ms>] <js> | goto [--id <id>] [--no-wait] [--until <stage>] <url> \
+	| batch (--stdin | '<json-action-array>' | '{\"cmd\":\"batch\",...}') \
+	    | shot [--id <id>] [--full] [path] | wait-load [--id <id>] [--until (committed|dom|settled)] \
     | check <url> [--eval <js>] [--shot | --shot=<png>] [--full] [--baseline <png> [--tolerance <0-255>] [--heatmap <png>]] [--viewports <WxH>[,<WxH>...] [--baseline-dir <dir>]] [--until <stage>] [--keep] \
     | render (--stdin | <file.html>) [--base <url>] [--eval <js>] [--shot | --shot=<png>] [--full] [--baseline <png> ...] [--until <stage>] [--keep] \
     | prefetch <url> \

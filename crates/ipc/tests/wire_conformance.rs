@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 Justin Hong
 
-use hwatu_ipc::{Event, LoadStage, OpenMode, Request, Response};
+use hwatu_ipc::{BatchResult, Event, LoadStage, OpenMode, Request, Response};
 use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 
@@ -92,9 +92,39 @@ fn persistent_connections_are_newline_delimited_request_sequences() {
 }
 
 #[test]
+fn batch_request_matches_the_wire_and_validates() {
+    let fixture = include_str!("fixtures/requests/batch_actions.json");
+    assert_golden_roundtrip::<Request>(fixture);
+    let Request::Batch { actions } = serde_json::from_str(fixture).unwrap() else {
+        panic!("batch fixture parsed as the wrong command");
+    };
+    assert_eq!(actions.len(), 3);
+    Request::validate_batch(&actions).unwrap();
+}
+
+#[test]
 fn canonical_responses_match_the_wire() {
     assert_golden_roundtrip::<Response>(include_str!("fixtures/responses/window.json"));
     assert_golden_roundtrip::<Response>(include_str!("fixtures/responses/value.json"));
+    assert_golden_roundtrip::<Response>(include_str!("fixtures/responses/batch_partial.json"));
+}
+
+#[test]
+fn batch_partial_response_has_explicit_skipped_steps() {
+    let Response::Ok { value: Some(v), .. } =
+        serde_json::from_str(include_str!("fixtures/responses/batch_partial.json")).unwrap()
+    else {
+        panic!("batch response fixture parsed as the wrong response");
+    };
+    let result: BatchResult = serde_json::from_value(v["batch"].clone()).unwrap();
+    assert!(!result.complete);
+    assert_eq!(result.executed, 2);
+    assert_eq!(result.failed_at, Some(1));
+    assert_eq!(result.steps[2].action, "type");
+    assert_eq!(
+        result.steps[2].skipped_reason.as_deref(),
+        Some("not run after step 1 failed")
+    );
 }
 
 #[test]

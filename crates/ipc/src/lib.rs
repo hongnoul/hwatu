@@ -505,6 +505,12 @@ pub enum Request {
         width: i32,
         height: i32,
     },
+    /// Execute a bounded sequence of allowlisted automation actions in one
+    /// request. The daemon validates the whole batch before touching the
+    /// page, then runs actions in order and stops on the first failed step.
+    /// The reply is a [`BatchResult`] serialized in [`Response::Ok::value`]
+    /// under `batch`, with skipped entries for actions that were never run.
+    Batch { actions: Vec<Request> },
     /// Hold the connection open and stream server-initiated [`Event`]s
     /// as JSON lines (the push half of the protocol; everything else
     /// stays one-shot). The daemon answers with one `subscribed`
@@ -521,6 +527,135 @@ pub enum Request {
         #[serde(default)]
         window: Option<u64>,
     },
+}
+
+/// Maximum number of actions in one [`Request::Batch`]. This bounds daemon
+/// memory, validation time, and how long one IPC request can occupy the GTK
+/// main loop before giving the caller a progress boundary.
+pub const BATCH_MAX_ACTIONS: usize = 32;
+
+impl Request {
+    /// Stable human-readable variant name for diagnostics and batch results.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Request::Open { .. } => "open",
+            Request::List => "list",
+            Request::Close { .. } => "close",
+            Request::Adblock { .. } => "adblock",
+            Request::Quit => "quit",
+            Request::Ping => "ping",
+            Request::Eval { .. } => "eval",
+            Request::Navigate { .. } => "navigate",
+            Request::Screenshot { .. } => "screenshot",
+            Request::WaitLoad { .. } => "wait_load",
+            Request::Check { .. } => "check",
+            Request::Prefetch { .. } => "prefetch",
+            Request::Challenge { .. } => "challenge",
+            Request::Focus { .. } => "focus",
+            Request::Unfocus { .. } => "unfocus",
+            Request::Upload { .. } => "upload",
+            Request::Scroll { .. } => "scroll",
+            Request::Snapshot { .. } => "snapshot",
+            Request::Click { .. } => "click",
+            Request::Type { .. } => "type",
+            Request::Console { .. } => "console",
+            Request::Net { .. } => "net",
+            Request::Motion { .. } => "motion",
+            Request::Seek { .. } => "seek",
+            Request::Clock { .. } => "clock",
+            Request::Diff { .. } => "diff",
+            Request::Expect { .. } => "expect",
+            Request::Resize { .. } => "resize",
+            Request::Batch { .. } => "batch",
+            Request::Subscribe { .. } => "subscribe",
+        }
+    }
+
+    /// Whether this request is safe and coherent as one step inside a batch.
+    /// Keep this deliberately smaller than the full protocol: lifecycle,
+    /// streaming, browser-global, file-upload, and long-lived watcher actions
+    /// stay top-level one-shots until they have dedicated semantics.
+    pub fn is_batch_action(&self) -> bool {
+        matches!(
+            self,
+            Request::Eval { .. }
+                | Request::Navigate { .. }
+                | Request::Screenshot { .. }
+                | Request::WaitLoad { .. }
+                | Request::Scroll { .. }
+                | Request::Snapshot { .. }
+                | Request::Click { .. }
+                | Request::Type { .. }
+                | Request::Console { .. }
+        ) || matches!(self, Request::Expect { watch: false, .. })
+    }
+
+    /// Validate a batch before any action executes. The daemon calls this
+    /// again even if clients preflight locally: clients are not trusted.
+    pub fn validate_batch(actions: &[Request]) -> Result<(), String> {
+        if actions.is_empty() {
+            return Err("batch must contain at least one action".into());
+        }
+        if actions.len() > BATCH_MAX_ACTIONS {
+            return Err(format!(
+                "batch has {} actions; the cap is {}",
+                actions.len(),
+                BATCH_MAX_ACTIONS
+            ));
+        }
+        for (index, action) in actions.iter().enumerate() {
+            if matches!(action, Request::Batch { .. }) {
+                return Err(format!(
+                    "batch action {index} is nested batch; nested batches are unsupported"
+                ));
+            }
+            if matches!(action, Request::Expect { watch: true, .. }) {
+                return Err(format!(
+                    "batch action {index} is expect --watch; resident watchers are unsupported in batches"
+                ));
+            }
+            if !action.is_batch_action() {
+                return Err(format!(
+                    "batch action {index} ({}) is unsupported; allowed actions are eval, navigate, screenshot, wait_load, scroll, snapshot, click, type, console, expect",
+                    action.kind()
+                ));
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BatchStepStatus {
+    Ok,
+    Error,
+    Skipped,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchStepResult {
+    pub index: usize,
+    pub action: String,
+    pub status: BatchStepStatus,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response: Option<Response>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skipped_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BatchResult {
+    /// True only when every step ran and succeeded.
+    pub complete: bool,
+    /// Count of steps actually executed, including a failing step.
+    pub executed: usize,
+    /// Index of the first failing step, if execution stopped early.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failed_at: Option<usize>,
+    pub steps: Vec<BatchStepResult>,
 }
 
 fn default_true() -> bool {
@@ -1044,6 +1179,143 @@ mod tests {
             Some(&["load".to_string(), "console".to_string()][..])
         );
         assert_eq!(window, Some(7));
+    }
+
+    #[test]
+    fn batch_request_roundtrips_and_validates_allowlist() {
+        let req = Request::Batch {
+            actions: vec![
+                Request::Eval {
+                    id: Some(1),
+                    js: "return document.title".into(),
+                    timeout_ms: Some(1000),
+                },
+                Request::Click {
+                    id: Some(1),
+                    selector: Some("button".into()),
+                    nth: None,
+                    contains: Some("Save".into()),
+                    r#ref: None,
+                    timeout_ms: None,
+                },
+                Request::Expect {
+                    id: Some(1),
+                    selector: ".done".into(),
+                    nth: None,
+                    contains: None,
+                    text: Some("Saved".into()),
+                    absent: false,
+                    visible: true,
+                    timeout_ms: Some(2000),
+                    watch: false,
+                },
+            ],
+        };
+        let wire = serde_json::to_string(&req).unwrap();
+        assert!(wire.contains("\"cmd\":\"batch\""));
+        let Request::Batch { actions } = serde_json::from_str::<Request>(&wire).unwrap() else {
+            panic!("batch failed to roundtrip");
+        };
+        assert_eq!(actions.len(), 3);
+        Request::validate_batch(&actions).unwrap();
+    }
+
+    #[test]
+    fn batch_validation_rejects_nested_oversized_and_unsupported_actions() {
+        assert!(Request::validate_batch(&[])
+            .unwrap_err()
+            .contains("at least one"));
+
+        let too_many = vec![
+            Request::Snapshot {
+                id: None,
+                diff: false,
+                rect: false,
+                timeout_ms: None,
+            };
+            BATCH_MAX_ACTIONS + 1
+        ];
+        assert!(Request::validate_batch(&too_many)
+            .unwrap_err()
+            .contains("cap"));
+
+        let nested = vec![Request::Batch {
+            actions: vec![Request::Snapshot {
+                id: None,
+                diff: false,
+                rect: false,
+                timeout_ms: None,
+            }],
+        }];
+        assert!(Request::validate_batch(&nested)
+            .unwrap_err()
+            .contains("nested"));
+
+        let unsupported = vec![Request::Close { id: 1 }];
+        assert!(Request::validate_batch(&unsupported)
+            .unwrap_err()
+            .contains("unsupported"));
+
+        let watch = vec![Request::Expect {
+            id: None,
+            selector: "main".into(),
+            nth: None,
+            contains: None,
+            text: None,
+            absent: false,
+            visible: false,
+            timeout_ms: None,
+            watch: true,
+        }];
+        assert!(Request::validate_batch(&watch)
+            .unwrap_err()
+            .contains("watch"));
+    }
+
+    #[test]
+    fn batch_result_wire_shape_exposes_partial_execution() {
+        let result = BatchResult {
+            complete: false,
+            executed: 2,
+            failed_at: Some(1),
+            steps: vec![
+                BatchStepResult {
+                    index: 0,
+                    action: "eval".into(),
+                    status: BatchStepStatus::Ok,
+                    response: Some(Response::value(serde_json::json!(1))),
+                    error: None,
+                    skipped_reason: None,
+                },
+                BatchStepResult {
+                    index: 1,
+                    action: "click".into(),
+                    status: BatchStepStatus::Error,
+                    response: Some(Response::err("button not found")),
+                    error: Some("button not found".into()),
+                    skipped_reason: None,
+                },
+                BatchStepResult {
+                    index: 2,
+                    action: "type".into(),
+                    status: BatchStepStatus::Skipped,
+                    response: None,
+                    error: None,
+                    skipped_reason: Some("not run after step 1 failed".into()),
+                },
+            ],
+        };
+        let response = Response::value(serde_json::json!({ "batch": result }));
+        let wire = serde_json::to_string(&response).unwrap();
+        assert!(wire.contains("\"complete\":false"));
+        assert!(wire.contains("\"failed_at\":1"));
+        assert!(wire.contains("\"status\":\"skipped\""));
+        let Response::Ok { value: Some(v), .. } = serde_json::from_str::<Response>(&wire).unwrap()
+        else {
+            panic!("batch response failed to parse");
+        };
+        assert_eq!(v["batch"]["executed"], 2);
+        assert_eq!(v["batch"]["steps"][1]["error"], "button not found");
     }
 
     /// Snapshot keeps the wire back-compat contract around `diff`: a
