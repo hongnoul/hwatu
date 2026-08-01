@@ -336,6 +336,7 @@ pub fn build_webview() -> webkit6::WebView {
     crate::clock::wire_view(&view);
     crate::smoothwheel::wire_view(&view);
     crate::focusshield::wire_view(&view);
+    crate::blurshield::wire_view(&view);
     view
 }
 

@@ -11,6 +11,7 @@ mod abp;
 mod adblock;
 mod automation;
 mod bar;
+mod blurshield;
 mod clock;
 mod compositor;
 mod console;
