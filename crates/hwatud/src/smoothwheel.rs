@@ -916,7 +916,10 @@ mod tests {
             "'mouseup'",
             "'click'",
         ] {
-            let press = SMOOTH_WHEEL_JS.split("function pressTarget").nth(1).unwrap();
+            let press = SMOOTH_WHEEL_JS
+                .split("function pressTarget")
+                .nth(1)
+                .unwrap();
             let body = press.split("function commentCloseTarget").next().unwrap();
             assert!(body.contains(ev), "pressTarget missing {ev}");
         }
