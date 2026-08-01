@@ -357,12 +357,13 @@ impl BrowserWindow {
                 url
             }
             None => {
-                this.mark_nav_pending(launcher::URI);
-                webview.load_uri(launcher::URI);
+                let uri = launcher::deal_uri(daemon.take_deal());
+                this.mark_nav_pending(&uri);
+                webview.load_uri(&uri);
                 if mode == OpenMode::Normal {
                     this.bar.open_url("");
                 }
-                launcher::URI.to_string()
+                uri
             }
         };
         this.show();
@@ -1626,7 +1627,9 @@ impl BrowserWindow {
         let Some(webview) = self.live_webview() else {
             return false;
         };
-        let on_launcher = webview.uri().is_some_and(|u| u == launcher::URI);
+        let on_launcher = webview
+            .uri()
+            .is_some_and(|u| launcher::is_launcher(&u));
         if on_launcher && !webview.can_go_back() {
             self.window.close();
             return true;
