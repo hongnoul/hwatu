@@ -93,10 +93,8 @@ fn autoplay_policy() -> webkit6::AutoplayPolicy {
 /// Read `"autoplay"` from ~/.config/hwatu/config.json (the same file
 /// adblock persists its toggle in). Returns None when absent/invalid.
 fn config_autoplay() -> Option<String> {
-    let raw = std::fs::read_to_string(
-        glib::user_config_dir().join("hwatu").join("config.json"),
-    )
-    .ok()?;
+    let raw =
+        std::fs::read_to_string(glib::user_config_dir().join("hwatu").join("config.json")).ok()?;
     let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
     Some(v.get("autoplay")?.as_str()?.to_string())
 }
