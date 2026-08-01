@@ -73,9 +73,16 @@ pub fn html(deal: usize) -> String {
         r#"<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>hwatu</title><style>
   html, body {{ height: 100%; }}
+  /* Keep the page backing black, then put alpha on a sibling layer so
+     WebKit does not propagate body background to the canvas. */
+  html {{ background: #000; }}
   body {{
     margin: 0; display: flex; overflow: hidden;
     align-items: center; justify-content: center;
+    background: transparent;
+  }}
+  .backdrop {{
+    position: fixed; inset: 0; z-index: 0; pointer-events: none;
     background: rgba(0, 0, 0, 0.9);
   }}
   /* Fill the pane edge to edge; the SVG viewBox letterboxes itself
@@ -85,6 +92,7 @@ pub fn html(deal: usize) -> String {
     width: 100vw;
     height: 100vh;
   }}
+  .card {{ position: relative; z-index: 1; }}
   /* The card art is portrait. In a landscape pane, lay it on its
      side so it covers the pane instead of a thin centered strip.
      Swap the box to the rotated frame; the layout-box overflow is
@@ -97,6 +105,7 @@ pub fn html(deal: usize) -> String {
     }}
   }}
 </style></head><body>
+  <div class="backdrop" aria-hidden="true"></div>
   <div class="card">{card}</div>
 </body></html>"#
     )
@@ -178,6 +187,7 @@ mod tests {
     #[test]
     fn pane_background_is_translucent_without_card_opacity() {
         let page = html(0);
+        assert!(page.contains("html { background: #000; }"));
         assert!(page.contains("background: rgba(0, 0, 0, 0.9);"));
         assert!(!page.contains("opacity:"));
     }
