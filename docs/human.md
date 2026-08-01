@@ -16,8 +16,9 @@ content-extension engine, zero JS in the request path), sane
 downloads, crash-restore sessions, TLS and permission prompts as
 one-line y/n bar prompts.
 
-New windows open at a third of the monitor width, matching the middle
-stop of a 1/4, 1/3, 1/2 tiling preset cycle. The launcher deals a
+New windows open at a third of the monitor width, matching the first
+stop of niri's default 1/3, 1/2, 2/3 preset-width cycle and a
+comfortable reading width on 1080p-class monitors. The launcher deals a
 hanafuda card per window so windows are tellable apart at a glance.
 
 If you want history completion and password-manager integration,
@@ -107,11 +108,11 @@ hwatu quit                 # stop the daemon
 ## Configuration
 
 - `~/.config/hwatu/keys.conf`: keybindings (above).
-- `~/.config/hwatu/config.json`: persistent policy, e.g.
-  `{"autoplay": "muted"}`. Env vars (`HWATU_AUTOPLAY`,
-  `HWATU_FOCUS_SHIELD`, `HWATU_BLUR_SHIELD`, `HWATU_DISABLE_MEDIA`)
-  override per run but vanish on daemon restart; the config file is
-  the durable knob.
+- `~/.config/hwatu/config.json`: persistent policy. Today that is
+  `{"autoplay": "muted"|"deny"}`; the env var wins for a single run
+  but vanishes on daemon restart.
+- Env-only gates, read at window creation: `HWATU_FOCUS_SHIELD=0`,
+  `HWATU_BLUR_SHIELD=0`, `HWATU_DISABLE_MEDIA=1`.
 
 ## Tiling WM setup
 
