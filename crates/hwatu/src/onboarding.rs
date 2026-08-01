@@ -629,6 +629,7 @@ fn demo(args: &[String]) -> i32 {
     match send(&Request::Snapshot {
         id: Some(id),
         diff: false,
+        rect: false,
         timeout_ms: Some(15_000),
     }) {
         Ok(Response::Ok { value: Some(v), .. }) => {
