@@ -33,6 +33,146 @@ const canvasFrames = new Map(); // canvas element -> dataURL
   await new Promise(r => setTimeout(r, 800));
   harvest();
 }
+
+// Scroll-coupled text highlighting is not safe to replay in the static
+// clone yet: sites often implement it with passive scroll listeners that
+// schedule requestAnimationFrame style writes. Detect the dependency and
+// record entry/midpoint/exit evidence instead. This intentionally focuses
+// on multi-token text style changes in normal content, so a fixed/sticky
+// navbar that merely hides or shows on scroll is not reported as a quote
+// highlight.
+async function detectScrollEffects() {
+  const maxScroll = Math.max(0, document.documentElement.scrollHeight - innerHeight);
+  if (maxScroll < 80) return [];
+  const waitScroll = async (y) => {
+    scrollTo(0, Math.max(0, Math.min(maxScroll, y)));
+    const ev = new Event('scroll');
+    window.dispatchEvent(ev);
+    document.dispatchEvent(new Event('scroll'));
+    // Scroll handlers commonly schedule style writes in rAF. Give one
+    // frame a bounded chance to run; the timeout keeps headless capture
+    // from hanging if rAF is throttled.
+    await Promise.race([
+      new Promise(r => requestAnimationFrame(() => r('frame'))),
+      new Promise(r => setTimeout(() => r('timeout'), 120)),
+    ]);
+    await new Promise(r => setTimeout(r, 40));
+  };
+  const ownText = (el) => [...el.childNodes]
+    .filter(n => n.nodeType === Node.TEXT_NODE)
+    .map(n => n.textContent.trim()).join(' ').replace(/\s+/g, ' ').trim();
+  const navish = (el) => {
+    for (let n = el; n && n !== document.body; n = n.parentElement) {
+      const tag = n.tagName && n.tagName.toLowerCase();
+      if (tag === 'nav' || tag === 'header' || n.getAttribute('role') === 'navigation') return true;
+      const st = getComputedStyle(n);
+      if (st.position === 'fixed' || st.position === 'sticky') return true;
+    }
+    return false;
+  };
+  const all = [...document.querySelectorAll('body *')].slice(0, 12000);
+  const candidates = [];
+  for (const el of all) {
+    if (navish(el)) continue;
+    const text = ownText(el);
+    if (text.length < 1 || text.length > 80) continue;
+    const st = getComputedStyle(el);
+    if (st.display === 'none' || st.visibility === 'hidden') continue;
+    candidates.push({ el, text });
+    if (candidates.length >= 5000) break;
+  }
+  if (candidates.length < 3) return [];
+  const styleOf = (el) => {
+    const st = getComputedStyle(el);
+    return {
+      color: st.color,
+      backgroundColor: st.backgroundColor,
+      opacity: st.opacity,
+      textShadow: st.textShadow,
+    };
+  };
+  const styleKey = (s) => `${s.color}|${s.backgroundColor}|${s.opacity}|${s.textShadow}`;
+  const coarse = [...new Set([0, .125, .25, .375, .5, .625, .75, .875, 1]
+    .map(f => Math.round(maxScroll * f)))];
+  const seen = candidates.map(() => []);
+  for (const y of coarse) {
+    await waitScroll(y);
+    for (let i = 0; i < candidates.length; i++) {
+      const { el } = candidates[i];
+      if (!el.isConnected) continue;
+      const style = styleOf(el);
+      seen[i].push({ y, style, key: styleKey(style) });
+    }
+  }
+  const changed = [];
+  for (let i = 0; i < seen.length; i++) {
+    const variants = new Set(seen[i].map(s => s.key));
+    if (variants.size >= 2) changed.push({ i, ...candidates[i], observations: seen[i] });
+  }
+  if (changed.length < 3) {
+    await waitScroll(0);
+    return [];
+  }
+  const groupRoot = (el) => {
+    let best = el.parentElement || el;
+    for (let n = best; n && n !== document.body; n = n.parentElement) {
+      const text = (n.textContent || '').trim().replace(/\s+/g, ' ');
+      const descendants = n.querySelectorAll('*').length;
+      if (text.length >= 30 && text.length <= 800 && descendants <= 180 && !navish(n)) best = n;
+    }
+    return best;
+  };
+  const groups = new Map();
+  for (const item of changed) {
+    const root = groupRoot(item.el);
+    const prev = groups.get(root) || [];
+    prev.push(item);
+    groups.set(root, prev);
+  }
+  const clamp = (y) => Math.max(0, Math.min(maxScroll, Math.round(y)));
+  const effects = [];
+  let effectIndex = 0;
+  for (const [root, items] of [...groups.entries()].sort((a, b) => b[1].length - a[1].length)) {
+    const uniqueText = new Set(items.map(i => i.text.toLowerCase()));
+    if (items.length < 3 || uniqueText.size < 3 || navish(root)) continue;
+    root.dataset.hwatuScrollEffect = effectIndex;
+    const r = root.getBoundingClientRect();
+    const docTop = r.top + scrollY;
+    const docBottom = r.bottom + scrollY;
+    const offsets = [
+      { label: 'entry', y: clamp(docTop - innerHeight * 0.82) },
+      { label: 'midpoint', y: clamp((docTop + docBottom) / 2 - innerHeight / 2) },
+      { label: 'exit', y: clamp(docBottom - innerHeight * 0.18) },
+    ];
+    const samples = [];
+    for (const off of offsets) {
+      await waitScroll(off.y);
+      samples.push({
+        label: off.label,
+        scrollY: Math.round(scrollY),
+        elements: items.slice(0, 16).filter(i => i.el.isConnected).map(i => ({
+          text: i.text,
+          style: styleOf(i.el),
+        })),
+      });
+    }
+    effects.push({
+      kind: 'scroll-coupled-text-style',
+      selector: `[data-hwatu-scroll-effect="${effectIndex}"]`,
+      dependency: 'text descendant computed style changes after document scroll; static clone records evidence but does not replay the scroll listener',
+      changedTextNodes: items.length,
+      sampleOffsets: offsets,
+      textPreview: (root.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 220),
+      samples,
+    });
+    effectIndex += 1;
+    if (effects.length >= 3) break;
+  }
+  await waitScroll(0);
+  return effects;
+}
+const scrollEffects = await detectScrollEffects();
+
 // Freeze animation state for a still capture. Just pause, at the
 // current frame: the sweep above already ran entrance reveals to
 // completion naturally, and force-finish()ing is wrong for exclusive
@@ -202,9 +342,10 @@ return {
   html: '<!doctype html>\n' + doc.outerHTML,
   sheets,
   assets: [...assets].slice(0, 500),
-  canvases,
-  scrolls,
-  pins,
-  viewport: { w: innerWidth, h: innerHeight, dpr: devicePixelRatio },
-};
+    canvases,
+    scrolls,
+    pins,
+    scrollEffects,
+    viewport: { w: innerWidth, h: innerHeight, dpr: devicePixelRatio },
+  };
 })();
