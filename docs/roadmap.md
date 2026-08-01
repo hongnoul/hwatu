@@ -566,6 +566,72 @@ H19. **Session restore to WM workspaces.** Crash-restore exists;
     app_id/title conventions, documented) that WM rules can re-place
     restored windows, and restore on clean quit too (opt-in).
 
+### D3: native-parity shortform scrolling
+
+Adopted 2026-08-01 after a three-agent research pass comparing native
+Reels/Shorts/TikTok clients against the mobile-web feeds in hwatu;
+full findings in
+[research-shortform-native-parity.md](research-shortform-native-parity.md).
+The headline: native apps do NOT crossfade between reels — the
+seamlessness is commit-time playback handoff plus in-memory adjacent
+preload, both replicable from injected user scripts because hwatu
+already owns the gesture (smoothwheel's snap pager and synthetic IG
+swipe). Ordered by seamlessness per unit effort:
+
+H20. **Commit-time playback handoff.** Native clients start the
+    incoming video the moment the gesture commits, under the still-
+    running transition, and hard-cut the outgoing audio (tens-of-ms
+    ramp against clicks). Web feeds wait for IntersectionObserver
+    after settle; hwatu's IG swipe path adds a 650ms absorb on top,
+    so audio audibly overlaps. Fix in smoothwheel's shortform layer:
+    at synthetic pointerup / snap-animation start, `play()` the
+    incoming card's video and ramp-out+pause the outgoing one
+    (volume 1→0 over ~40ms). Idempotent with the site's own observer;
+    fail-open; coalesce play/pause per frame per element (GStreamer
+    pipeline-state wedge, see mediashim.rs). ~50 lines, biggest
+    perceived win.
+H21. **Touchpad guard on Instagram Reels.** Precise two-finger
+    deltas bypass the swipeFeed protection (only discrete wheel is
+    claimed) and silently desync IG's gesture-state feed — the one
+    currently *broken* path. Claim precise deltas on the IG feed:
+    accumulate and translate to synthetic swipes.
+H22. **reelwarm adjacent prefetch.** Native keeps N±1 in memory
+    (Media3 PreloadManager). Browser equivalent: user script Range-
+    fetches ~1MB (moov + first GOP) of the N±1 cards' video URLs
+    into WebKit's network-process cache (IG mobile and TikTok are
+    progressive MP4 — warmable), and forces `preload="metadata"` on
+    the N+1 element only so GStreamer prerolls one decoded frame.
+    Never ±2+: >3-4 concurrent pipelines is the documented deadlock
+    zone.
+H23. **Settle-curve velocity + extent bounce.** Snap settle is a
+    fixed 350ms ease-in-out from zero velocity; native settles start
+    at gesture velocity (reuse `easeWithSlope`, ~300ms ease-out).
+    Ticks at feed extents are silently eaten; add an iOS-style
+    rubber-band transform bounce (c=0.55).
+H24. **Shortform verb batch.** Like, share, save, profile, and
+    keyboard seek (`,`/`.` = ±2s — IG mobile web has no scrubber at
+    all), plus Esc closing the comment sheet. All via the existing
+    aria-label matching in smoothwheel.
+H25. **MPRIS bridge.** `org.mpris.MediaPlayer2.hwatu` driving the
+    shortform play/pause via the existing JS-eval IPC (~150 lines);
+    makes playerctl and headset keys work.
+H26. **Quality + decode audit.** H3 hardware decode multiplies every
+    latency number here. Then: codec advertisement (canPlayType for
+    vp9/av1), honest devicePixelRatio (ABR picks rungs by element
+    size × dpr), desktop-UA option for youtube shorts (quality menu),
+    and verifying IG's ladder under the iPhone UA live.
+H27. **Long-session hygiene.** Focused windows never discard, so a
+    2h reel session accumulates; add memory telemetry (observe.rs),
+    then `WebKitMemoryPressureSettings` and a soft reload-to-current-
+    reel-URL past an RSS threshold (shortform URLs carry position,
+    so the reload is near-seamless). Same property enables resume:
+    persist {url, currentTime} on discard.
+
+Non-gap worth stating: focusshield already beats native on background
+audio (WM focus loss never pauses playback), and the compositing path
+is measured solid (142.9fps). No crossfade will be added — native
+does not have one either.
+
 ### Engine-bound gaps (documented honestly, not planned)
 
 - **Widevine/DRM:** WebKitGTK has ClearKey only; no distro ships
