@@ -660,10 +660,54 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
     }
     return nearestButton(buttons);
   }
+  // React (Instagram) attaches its tap handler to the pointer-event
+  // contract, not the click event: a bare el.click() on the comment
+  // control is silently ignored. Press controls with the full
+  // hover+press sequence aimed at the hit-test point inside the
+  // control; that satisfies React, YouTube's polymer buttons, and
+  // TikTok alike.
+  function buttonTarget(b) {
+    if (!b) return null;
+    const r = b.getBoundingClientRect();
+    const x = (r.left + r.right) / 2, y = (r.top + r.bottom) / 2;
+    let el = document.elementFromPoint(x, y);
+    if (!(el instanceof Element) || !b.contains(el)) el = b;
+    return { el, x, y };
+  }
+  function pressTarget(t) {
+    const o = { bubbles: true, cancelable: true, composed: true, view: window,
+                clientX: t.x, clientY: t.y, button: 0,
+                pointerId: 1, pointerType: 'mouse', isPrimary: true };
+    for (const [C, type] of [
+      [PointerEvent, 'pointerover'], [PointerEvent, 'pointerenter'],
+      [PointerEvent, 'pointermove'], [PointerEvent, 'pointerdown'],
+      [MouseEvent, 'mousedown'], [PointerEvent, 'pointerup'],
+      [MouseEvent, 'mouseup'], [MouseEvent, 'click'],
+    ]) {
+      try { t.el.dispatchEvent(new C(type, o)); } catch (_) {}
+    }
+  }
+  // Instagram mobile web's comment sheet has no close control at all:
+  // it is a full-viewport role=presentation overlay dismissed by
+  // tapping the backdrop above the sheet. Aim at the overlay's top
+  // edge in that case; an explicit close button (YouTube, TikTok)
+  // still wins when present.
+  function commentCloseTarget() {
+    const b = commentCloseButton();
+    if (b) return buttonTarget(b);
+    for (const p of document.querySelectorAll('[role="presentation"]')) {
+      const r = p.getBoundingClientRect();
+      if (r.width < innerWidth * 0.95 || r.height < innerHeight * 0.95) continue;
+      const x = innerWidth / 2, y = 30;
+      const el = document.elementFromPoint(x, y);
+      if (el instanceof Element && p.contains(el)) return { el, x, y };
+    }
+    return null;
+  }
   // ArrowLeft toggles: close the open sheet first, otherwise open it.
   // Without the close arm, pressing ArrowLeft twice only opens the sheet.
-  function commentToggleButton() {
-    return commentCloseButton() || commentButton();
+  function commentToggleTarget() {
+    return commentCloseTarget() || buttonTarget(commentButton());
   }
 
   // Capture phase, ahead of the sites' own handlers: the point of the
@@ -679,12 +723,12 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
       if (e.key === 'ArrowRight') {
         if (holdShortformSpeed()) { e.preventDefault(); e.stopPropagation(); }
       } else if (e.key === 'ArrowLeft' && !e.repeat) {
-        const b = commentToggleButton();
-        if (b) { b.click(); e.preventDefault(); e.stopPropagation(); }
+        const t = commentToggleTarget();
+        if (t) { pressTarget(t); e.preventDefault(); e.stopPropagation(); }
       } else if (e.key === 'ArrowLeft' && e.repeat) {
         // A held left key must not click the toggle repeatedly. Still
         // consume it so the generic horizontal scroller cannot run.
-        if (commentToggleButton()) { e.preventDefault(); e.stopPropagation(); }
+        if (commentToggleTarget()) { e.preventDefault(); e.stopPropagation(); }
       } else if (e.key === ' ' && !e.repeat && !e.shiftKey) {
         if (toggleShortformPlayback()) { e.preventDefault(); e.stopPropagation(); }
       }
@@ -839,17 +883,46 @@ mod tests {
         assert!(SMOOTH_WHEEL_JS.contains("function commentCloseButton"));
         assert!(SMOOTH_WHEEL_JS.contains("[role=\"dialog\"],[aria-modal=\"true\"]"));
         assert!(SMOOTH_WHEEL_JS.contains("[aria-label*=\"close\" i]"));
-        let close = SMOOTH_WHEEL_JS.find("function commentCloseButton").unwrap();
+        let close = SMOOTH_WHEEL_JS.find("function commentCloseTarget").unwrap();
         let opener = SMOOTH_WHEEL_JS.find("function commentButton").unwrap();
         let toggle = SMOOTH_WHEEL_JS
-            .find("return commentCloseButton() || commentButton();")
+            .find("return commentCloseTarget() || buttonTarget(commentButton());")
             .unwrap();
         assert!(close < toggle && opener < toggle);
+        // Instagram's sheet has no close control: the backdrop
+        // (full-viewport role=presentation overlay) is the dismissal
+        // surface, so the close arm must know about it.
+        assert!(SMOOTH_WHEEL_JS.contains("[role=\"presentation\"]"));
         // A held (repeating) ArrowLeft must not click the toggle again,
         // but still consume the key so the scroller cannot run.
         assert!(SMOOTH_WHEEL_JS.contains("e.key === 'ArrowLeft' && !e.repeat"));
         assert!(SMOOTH_WHEEL_JS
-            .contains("if (commentToggleButton()) { e.preventDefault(); e.stopPropagation(); }"));
+            .contains("if (commentToggleTarget()) { e.preventDefault(); e.stopPropagation(); }"));
+    }
+
+    /// Controls must be pressed with the full pointer-event contract:
+    /// React (Instagram) binds to pointer events and ignores a bare
+    /// el.click(), which made ArrowLeft a silent no-op on Reels.
+    #[test]
+    fn comment_toggle_uses_pointer_press() {
+        assert!(SMOOTH_WHEEL_JS.contains("function pressTarget"));
+        for ev in [
+            "'pointerover'",
+            "'pointerenter'",
+            "'pointermove'",
+            "'pointerdown'",
+            "'mousedown'",
+            "'pointerup'",
+            "'mouseup'",
+            "'click'",
+        ] {
+            let press = SMOOTH_WHEEL_JS.split("function pressTarget").nth(1).unwrap();
+            let body = press.split("function commentCloseTarget").next().unwrap();
+            assert!(body.contains(ev), "pressTarget missing {ev}");
+        }
+        // The press aims at the hit-test point inside the control, not
+        // the wrapper element (React handlers live on inner nodes).
+        assert!(SMOOTH_WHEEL_JS.contains("document.elementFromPoint"));
     }
 
     /// Snap paging must claim mandatory-snap feeds (Reels-style) and
@@ -925,7 +998,7 @@ mod tests {
         assert!(SMOOTH_WHEEL_JS.contains("v.playbackRate = 2"));
         assert!(SMOOTH_WHEEL_JS.contains("v.playbackRate = rate"));
         assert!(SMOOTH_WHEEL_JS.contains("svg[aria-label=\"Comment\" i]"));
-        assert!(SMOOTH_WHEEL_JS.contains("b.click()"));
+        assert!(SMOOTH_WHEEL_JS.contains("pressTarget(t)"));
         assert!(SMOOTH_WHEEL_JS.contains("toggleShortformPlayback"));
         assert!(SMOOTH_WHEEL_JS.contains("v.pause()"));
         assert!(SMOOTH_WHEEL_JS.contains("document.addEventListener('visibilitychange'"));
