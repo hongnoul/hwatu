@@ -33,6 +33,17 @@
 //! either fights the engine's snap resolution or strands the view
 //! between reels; paging is what the equivalent native apps do.
 //!
+//! Keyboard scrolling (Arrow/Page/Space) goes through the same
+//! animator, because WebKit's keydown scroll has the identical
+//! stop-start pulse problem and is what makes arrow-keying through a
+//! reel feed feel mushy compared to a native app. Arrows/PageUp/Down/
+//! Space page snap containers exactly like a wheel tick, and glide
+//! plain scrollers with the Chromium curve (key auto-repeat retargets
+//! the running animation, fusing a held key into one accelerating
+//! glide). The handler bails on editable/interactive targets,
+//! modifier chords, and `defaultPrevented` events, so pages that own
+//! their keys (players, games, editors) keep them.
+//!
 //! Fail-open by design: the handler bails — leaving native scrolling
 //! intact — when the event is already `defaultPrevented`, not
 //! cancelable, ctrl/alt/meta-modified (zoom and friends), or when no
@@ -111,12 +122,39 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
     el.scrollTo(h ? { left: v, behavior: 'instant' } : { top: v, behavior: 'instant' });
   }
 
+  // WebKitGTK re-snaps every programmatic scroll on a snap container
+  // in the same frame, quantizing our per-rAF positions to snap points
+  // and collapsing the animation into a teleport. Suspend the
+  // container's snap-type while an animation is in flight; the
+  // animation always ends on an exact snap offset, so restoring is a
+  // re-snap no-op.
+  function suspendSnap(el) {
+    const nodes = el === document.scrollingElement
+      ? [document.documentElement, document.body] : [el];
+    const saved = [];
+    for (const n of nodes) {
+      if (!n) continue;
+      const st = getComputedStyle(n).scrollSnapType;
+      if (!st || st === 'none') continue;
+      saved.push([n, n.style.scrollSnapType]);
+      n.style.scrollSnapType = 'none';
+    }
+    return saved;
+  }
+  function endAnim(el, a) {
+    anims.delete(el);
+    if (a && a.saved) for (const [n, v] of a.saved) n.style.scrollSnapType = v;
+  }
+  function clearAnims() {
+    for (const [el, a] of anims) endAnim(el, a);
+  }
+
   function tick(now) {
     rafId = 0;
     for (const [el, a] of anims) {
       const t = Math.min((now - a.start) / a.dur, 1);
       setPos(el, a.horiz, a.from + (a.to - a.from) * a.curve.value(t));
-      if (t >= 1) anims.delete(el);
+      if (t >= 1) endAnim(el, a);
     }
     if (anims.size) rafId = requestAnimationFrame(tick);
   }
@@ -222,11 +260,12 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
     const now = performance.now();
     const cur = getPos(el, horiz);
     let a = anims.get(el);
-    if (a && a.horiz !== horiz) { anims.delete(el); a = null; }
+    if (a && a.horiz !== horiz) { endAnim(el, a); a = null; }
     if (!a) {
       if (Math.abs(target - cur) < EPS) return;
       anims.set(el, { horiz, from: cur, to: target, start: now,
-                      dur: SNAP_DUR, curve: easeInOut(), snap: true });
+                      dur: SNAP_DUR, curve: easeInOut(), snap: true,
+                      saved: suspendSnap(el) });
       ensureRaf();
       return;
     }
@@ -234,7 +273,7 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
     const pos = a.from + (a.to - a.from) * a.curve.value(t);
     const vel = a.curve.slope(t) * (a.to - a.from) / a.dur;
     const newDelta = target - pos;
-    if (Math.abs(newDelta) < EPS) { anims.delete(el); setPos(el, horiz, target); return; }
+    if (Math.abs(newDelta) < EPS) { setPos(el, horiz, target); endAnim(el, a); return; }
     a.from = pos; a.to = target; a.start = now; a.dur = SNAP_DUR; a.snap = true;
     a.curve = Math.abs(vel) > EPS ? easeWithSlope(vel * SNAP_DUR / newDelta) : easeInOut();
     ensureRaf();
@@ -243,11 +282,14 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
   // Page a mandatory-snap scroller by one snap point. Returns true if
   // the tick was consumed (paged, absorbed mid-flight, or at extent).
   function pageSnap(el, horiz, dir) {
-    if (!isMandatorySnap(el, horiz)) return false;
+    // While our animation flies, the container's snap-type is
+    // suspended, so check the live animation before computed style.
+    const a = anims.get(el);
+    const snapInFlight = !!(a && a.snap && a.horiz === horiz);
+    if (!snapInFlight && !isMandatorySnap(el, horiz)) return false;
     const offsets = snapOffsets(el, horiz);
     if (offsets.length < 2) return false;
-    const a = anims.get(el);
-    if (a && a.snap && a.horiz === horiz) {
+    if (snapInFlight) {
       const t = (performance.now() - a.start) / a.dur;
       const going = a.to > a.from ? 1 : -1;
       // A flick emits several ticks: absorb same-direction ticks
@@ -275,13 +317,14 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
     const max = maxScroll(el, horiz);
     const cur = getPos(el, horiz);
     let a = anims.get(el);
-    if (a && a.horiz !== horiz) { anims.delete(el); a = null; }
+    if (a && a.horiz !== horiz) { endAnim(el, a); a = null; }
 
     const target = Math.min(Math.max((a ? a.to : cur) + delta, 0), max);
     if (!a) {
       if (Math.abs(target - cur) < EPS) return;
       anims.set(el, { horiz, from: cur, to: target, start: now,
-                      dur: durationMs(target - cur), curve: easeInOut() });
+                      dur: durationMs(target - cur), curve: easeInOut(),
+                      saved: suspendSnap(el) });
       ensureRaf();
       return;
     }
@@ -293,14 +336,14 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
     const pos = a.from + (a.to - a.from) * a.curve.value(t);
     const vel = a.curve.slope(t) * (a.to - a.from) / a.dur; // px/ms
     const newDelta = target - pos;
-    if (Math.abs(newDelta) < EPS) { anims.delete(el); setPos(el, horiz, target); return; }
+    if (Math.abs(newDelta) < EPS) { setPos(el, horiz, target); endAnim(el, a); return; }
 
     let dur = durationMs(newDelta);
     if (Math.abs(vel) > EPS) {
       const bound = (newDelta / vel) * 2.5;
       if (bound >= 0) dur = Math.min(dur, bound);
     }
-    if (dur < 1) { anims.delete(el); setPos(el, horiz, target); return; }
+    if (dur < 1) { setPos(el, horiz, target); endAnim(el, a); return; }
 
     a.from = pos; a.to = target; a.start = now; a.dur = dur;
     a.curve = easeWithSlope(vel * dur / newDelta);
@@ -335,10 +378,73 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
     }
   }, { passive: false });
 
-  // Other input takes over instantly: don't fight keys, drags, or
-  // touches with a stale glide.
-  for (const ev of ['keydown', 'mousedown', 'touchstart']) {
-    addEventListener(ev, () => { anims.clear(); }, { capture: true, passive: true });
+  // Keyboard scrolling through the same animator. WebKit's keydown
+  // scroller has the identical isolated-pulse problem as its wheel
+  // animator, and on mandatory-snap feeds native key scroll strands
+  // the view between snap points; paging is what native apps do.
+  const KEY_LINE = 40; // px per arrow tap, Chromium's line step
+  const PAGE_FRACTION = 0.85;
+  function keyDelta(e) {
+    switch (e.key) {
+      case 'ArrowDown':  return { h: false, dir:  1, page: false };
+      case 'ArrowUp':    return { h: false, dir: -1, page: false };
+      case 'ArrowRight': return { h: true,  dir:  1, page: false };
+      case 'ArrowLeft':  return { h: true,  dir: -1, page: false };
+      case 'PageDown':   return { h: false, dir:  1, page: true };
+      case 'PageUp':     return { h: false, dir: -1, page: true };
+      case ' ':          return { h: false, dir: e.shiftKey ? -1 : 1, page: true };
+      default: return null;
+    }
+  }
+  // Targets that own their keys: never steal from text entry or
+  // controls. Interactive-widget roles keep arrows too.
+  function ownsKeys(t) {
+    if (!(t instanceof Element)) return false;
+    if (t.isContentEditable) return true;
+    return t.closest(
+      'input,textarea,select,button,video,audio,[contenteditable=""],[contenteditable="true"],' +
+      '[role="listbox"],[role="menu"],[role="slider"],[role="textbox"],[role="combobox"]'
+    ) != null;
+  }
+
+  // Bubble phase on window: the page's own handlers (players, games,
+  // editors) run first, and their preventDefault makes us bail. A
+  // stopPropagation upstream degrades to engine-native key scroll.
+  addEventListener('keydown', e => {
+    try {
+      const k = keyDelta(e);
+      // Non-scroll keys (or chords) may still move the view natively
+      // (Home/End, page shortcuts): drop any stale glide.
+      if (!k || e.ctrlKey || e.altKey || e.metaKey
+          || (e.shiftKey && e.key !== ' ')) { clearAnims(); return; }
+      if (e.defaultPrevented || !e.cancelable) return;
+      if (ownsKeys(e.target)) { clearAnims(); return; }
+
+      // Keydown targets the focused element (often <body>), not the
+      // element under the pointer like wheel does. When the walk from
+      // focus finds nothing, retry from the viewport center so inner
+      // feed scrollers (reels with body focus) are still reached.
+      let el = scrollTarget(e.target, k.h, k.dir);
+      if (!el) {
+        const mid = document.elementFromPoint(innerWidth / 2, innerHeight / 2);
+        if (mid) el = scrollTarget(mid, k.h, k.dir);
+      }
+      if (!el) return; // nothing scrollable: stay native
+
+      if (pageSnap(el, k.h, k.dir)) { e.preventDefault(); return; }
+      const port = k.h ? el.clientWidth : el.clientHeight;
+      const delta = k.dir * (k.page ? port * PAGE_FRACTION : KEY_LINE);
+      e.preventDefault();
+      animateBy(el, k.h, delta);
+    } catch (_) {
+      // Fail open: native key scrolling still works if we blow up.
+    }
+  }, { passive: false });
+
+  // Other input takes over instantly: don't fight drags or touches
+  // with a stale glide. (Keys are handled above.)
+  for (const ev of ['mousedown', 'touchstart']) {
+    addEventListener(ev, () => { clearAnims(); }, { capture: true, passive: true });
   }
 })();"#;
 
@@ -423,5 +529,28 @@ mod tests {
         let snap = handler.find("pageSnap").unwrap();
         let pd = handler.find("e.preventDefault()").unwrap();
         assert!(snap < pd, "pageSnap must run before preventDefault");
+    }
+
+    /// The keyboard path must guard editable/interactive targets and
+    /// defaultPrevented before any preventDefault, and must page snap
+    /// containers before gliding — same fail-open contract as wheel.
+    #[test]
+    fn key_handler_shape() {
+        let handler = SMOOTH_WHEEL_JS
+            .split("addEventListener('keydown'")
+            .nth(1)
+            .expect("keydown handler present");
+        let pd = handler.find("e.preventDefault()").unwrap();
+        let owns = handler.find("ownsKeys").unwrap();
+        let prevented = handler.find("e.defaultPrevented").unwrap();
+        let snap = handler.find("pageSnap").unwrap();
+        assert!(owns < pd, "ownsKeys guard must precede preventDefault");
+        assert!(prevented < pd, "defaultPrevented check must precede preventDefault");
+        assert!(snap < pd, "pageSnap must run before glide preventDefault");
+        // Bubble phase, not capture: page handlers keep priority.
+        assert!(!handler.starts_with(", e => {}, { capture: true"));
+        for key in ["ArrowDown", "ArrowUp", "PageDown", "PageUp"] {
+            assert!(SMOOTH_WHEEL_JS.contains(key), "{key} handled");
+        }
     }
 }
