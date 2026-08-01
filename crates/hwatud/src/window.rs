@@ -1488,9 +1488,21 @@ impl BrowserWindow {
                     self.window.fullscreen();
                 }
             }
+            Action::Mute => self.toggle_mute(),
             Action::CommandPalette => self.open_palette(),
         }
         glib::Propagation::Stop
+    }
+
+    /// Toggle the WebView's audio mute state and flash the result in
+    /// the bar. A discarded window has no page audio; this is a no-op.
+    fn toggle_mute(self: &Rc<Self>) {
+        let Some(webview) = self.live_webview() else {
+            return;
+        };
+        let muted = !webview.is_muted();
+        webview.set_is_muted(muted);
+        self.flash_bar(if muted { "muted" } else { "unmuted" }, 2);
     }
 
     /// Copy the current page URL to the desktop clipboard.

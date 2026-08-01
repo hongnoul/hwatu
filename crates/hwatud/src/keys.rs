@@ -52,6 +52,8 @@ pub enum Action {
     ZoomOut,
     ZoomReset,
     Fullscreen,
+    /// Toggle page audio mute.
+    Mute,
     /// Open the command palette (fuzzy action search in the bar).
     CommandPalette,
 }
@@ -77,6 +79,7 @@ impl Action {
         Action::ZoomOut,
         Action::ZoomReset,
         Action::Fullscreen,
+        Action::Mute,
         Action::CommandPalette,
     ];
 
@@ -101,6 +104,7 @@ impl Action {
             Action::ZoomOut => "zoom_out",
             Action::ZoomReset => "zoom_reset",
             Action::Fullscreen => "fullscreen",
+            Action::Mute => "mute",
             Action::CommandPalette => "command_palette",
         }
     }
@@ -127,6 +131,7 @@ impl Action {
             Action::ZoomOut => "zoom out",
             Action::ZoomReset => "reset zoom",
             Action::Fullscreen => "toggle fullscreen",
+            Action::Mute => "toggle mute",
             Action::CommandPalette => "command palette",
         }
     }
@@ -162,6 +167,9 @@ impl Action {
             Action::ZoomOut => "ctrl+minus",
             Action::ZoomReset => "ctrl+0",
             Action::Fullscreen => "F11",
+            // Bare key, so it dispatches in the bubble phase: an `m`
+            // typed into a page text box still reaches the page.
+            Action::Mute => "m",
             // ctrl+shift+p mirrors VS Code; ctrl+k is unclaimed in
             // browsers and one chord shorter for daily use.
             Action::CommandPalette => "ctrl+k, ctrl+shift+p",
@@ -555,6 +563,9 @@ mod tests {
             map.lookup(Phase::Bubble, Key::F11, NONE),
             Some(Action::Fullscreen)
         );
+        // Bare m toggles mute; it must bubble so page inputs keep it.
+        assert_eq!(map.lookup(Phase::Bubble, Key::m, NONE), Some(Action::Mute));
+        assert_eq!(map.lookup(Phase::Capture, Key::m, NONE), None);
     }
 
     #[test]
