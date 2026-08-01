@@ -1495,11 +1495,19 @@ impl BrowserWindow {
     /// video (playing first, then largest on screen), flips `.muted`,
     /// and flashes the result. Flashes "no video" when the page has
     /// none; a discarded window has no page and this is a no-op.
+    ///
+    /// The choice persists across videos: feeds like Instagram reels
+    /// mount each clip as a fresh muted `<video>`, so the first toggle
+    /// installs a capture-phase `play` listener that re-applies the
+    /// preferred state to every video that starts. Site-side mute
+    /// clicks are adopted as the new preference (a click handler
+    /// re-reads the state) so the key and the page UI never fight.
     fn toggle_mute(self: &Rc<Self>) {
         let Some(webview) = self.live_webview() else {
             return;
         };
         let js = r#"(() => {
+            const S = window.__hwatuMute ??= { muted: null, installed: false };
             const inView = (v) => {
                 const r = v.getBoundingClientRect();
                 return r.width > 0 && r.height > 0 && r.bottom > 0 &&
@@ -1510,13 +1518,35 @@ impl BrowserWindow {
                 return Math.max(0, Math.min(r.right, innerWidth) - Math.max(r.left, 0)) *
                     Math.max(0, Math.min(r.bottom, innerHeight) - Math.max(r.top, 0));
             };
-            const vids = [...document.querySelectorAll('video')].filter(inView);
-            vids.sort((a, b) => (a.paused - b.paused) || (visArea(b) - visArea(a)));
-            const v = vids[0];
+            const pick = () => {
+                const vids = [...document.querySelectorAll('video')].filter(inView);
+                vids.sort((a, b) => (a.paused - b.paused) || (visArea(b) - visArea(a)));
+                return vids[0];
+            };
+            const apply = (v) => {
+                v.muted = S.muted;
+                if (!S.muted && v.volume === 0) v.volume = 1;
+            };
+            const v = pick();
             if (!v) return 'no video';
-            v.muted = !v.muted;
-            if (!v.muted && v.volume === 0) v.volume = 1;
-            return v.muted ? 'muted' : 'unmuted';
+            S.muted = !v.muted;
+            apply(v);
+            if (!S.installed) {
+                S.installed = true;
+                document.addEventListener('play', (e) => {
+                    if (e.target instanceof HTMLVideoElement && S.muted !== null &&
+                        e.target.muted !== S.muted) {
+                        apply(e.target);
+                    }
+                }, true);
+                document.addEventListener('click', () => {
+                    setTimeout(() => {
+                        const v = pick();
+                        if (v) S.muted = v.muted;
+                    }, 100);
+                }, true);
+            }
+            return S.muted ? 'muted' : 'unmuted';
         })()"#;
         let this = self.clone();
         webview.evaluate_javascript(js, None, None, gtk::gio::Cancellable::NONE, move |result| {
