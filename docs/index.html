@@ -376,10 +376,14 @@ hwatu focus 3                      # hand the session to the human</code></pre>
       <section>
         <h2>Compared</h2>
         <p>
-          As a minimal human browser for a tiling WM (Hyprland, sway, i3,
-          river), the usual suspects trade differently. hwatu's human UI
-          is deliberately scoped to receiving agent hand-offs; for a
-          keyboard-maximalist daily driver, qutebrowser remains the pick.
+          As a minimal human browser for a tiling WM (Hyprland, sway, niri,
+          river), the usual suspects trade differently. Since v0.7.0
+          hwatu's human UI is a credible primary browser: mainstream
+          rebindable keybinds, media-correct video, unified shortform
+          controls, and Chromium-curve scrolling, while still excluding
+          tabs, sync, and an extension platform. For a keyboard-maximalist
+          daily driver with history completion and password fill today,
+          qutebrowser remains the pick.
         </p>
         <table>
           <tr>
@@ -412,7 +416,7 @@ hwatu focus 3                      # hand the session to the human</code></pre>
           </tr>
           <tr>
             <td>Keyboard UI</td>
-            <td>your WM's binds</td>
+            <td>mainstream binds + WM binds</td>
             <td>patches</td>
             <td>browser binds</td>
             <td>lua config</td>
@@ -433,7 +437,8 @@ hwatu focus 3                      # hand the session to the human</code></pre>
           <li>
             <strong>Agent-first.</strong> The primary user opens windows over
             a socket and reads pages as JSON. The human UI serves the
-            hand-off.
+            hand-off, and since v0.7.0 doubles as a primary tiling-WM
+            browser.
           </li>
           <li>
             <strong>No tabs.</strong> A tab is a window. Your tiling WM is the

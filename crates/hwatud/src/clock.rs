@@ -283,6 +283,26 @@ const CLOCK_JS: &str = r#"(() => {
     }
   };
 
+  // ---- scroll events: pumped under virtual stepping ------------------
+  // WebKit dispatches `scroll` events on rendering opportunities, so a
+  // headless/unmapped page updates window.scrollY synchronously on
+  // scrollTo() but never fires the event. Scroll-driven libraries
+  // (Lenis, GSAP ScrollTrigger) hang off that event and never notice
+  // the move. On each `step` tick, compare the window scroll offset
+  // against the last delivered value and dispatch a plain `scroll`
+  // event on document (bubbling to window) when it changed. Element
+  // scrollers are not tracked: agent scrolls drive the window.
+  let lastScrollX = g.scrollX;
+  let lastScrollY = g.scrollY;
+  const pumpScroll = () => {
+    if (g.scrollX === lastScrollX && g.scrollY === lastScrollY) return;
+    lastScrollX = g.scrollX;
+    lastScrollY = g.scrollY;
+    try {
+      document.dispatchEvent(new Event('scroll', { bubbles: true }));
+    } catch (e) {}
+  };
+
   // ---- control surface ----------------------------------------------
   const status = () => ({
     installed: true,
@@ -340,6 +360,7 @@ const CLOCK_JS: &str = r#"(() => {
         fireTimer(dueId);
       }
       pumpIO();
+      pumpScroll();
       flushRaf();
       // Force a synchronous style recalc so CSS transitions triggered
       // by the timers/rAF above are *created* inside this tick, then
@@ -543,6 +564,19 @@ fn wire_seed(daemon: &Rc<Daemon>, id: Option<u64>, seed: u64) -> Result<(), Box<
 #[cfg(test)]
 mod tests {
     use super::CLOCK_JS;
+
+    /// Scroll events must be synthesized under virtual stepping: the
+    /// step loop dispatches a bubbling `scroll` on document when the
+    /// window offset changed since the last tick, because headless
+    /// pages never get the rendering opportunity WebKit needs to fire
+    /// the native event (scroll-driven libs stay frozen otherwise).
+    #[test]
+    fn clock_js_pumps_scroll_events_under_step() {
+        assert!(CLOCK_JS.contains("pumpScroll"));
+        assert!(CLOCK_JS.contains("new Event('scroll', { bubbles: true })"));
+        // Fires only on change: unchanged offsets are a no-op.
+        assert!(CLOCK_JS.contains("g.scrollX === lastScrollX && g.scrollY === lastScrollY"));
+    }
 
     /// The seeded-PRNG surface must exist in the injected shim: the
     /// control surface exposes seedRandom, status reports the seed,

@@ -17,8 +17,13 @@ fingerprint stealth.
 The human side serves the hand-off: `hwatu focus <id>` materializes an
 agent's live headless session as a normal window in the user's tiling
 WM, so a person can solve a challenge or inspect a page, then the
-agent resumes the same session. As a standalone minimal browser for
-tiling WMs it works, but that is intentionally not the focus.
+agent resumes the same session. Since v0.7.0 the human side is also a
+credible primary browser for tiling WMs (Hyprland, sway, niri):
+mainstream rebindable keybinds, media-correct video (unmuted autoplay,
+focus-loss-proof playback, unified shortform controls for Reels,
+Shorts, and TikTok), Chromium-curve scrolling, and native ad blocking,
+while intentionally excluding tabs, sync, an extension platform, and
+a password store of its own.
 
 ## Links
 

@@ -1,0 +1,23 @@
+// hwatu + niri
+// Drop these snippets into ~/.config/niri/config.kdl
+
+// Launch a browser window like you launch a terminal
+binds {
+    Mod+B { spawn "hwatu"; }
+    Mod+Shift+B { spawn "hwatu" "duckduckgo.com"; }
+}
+
+// hwatu windows report app-id "dev.hwatu.hwatud". New windows request
+// a third of the monitor width, matching the first stop of niri's
+// default 1/3, 1/2, 2/3 preset-width cycle (Mod+R cycles).
+window-rule {
+    match app-id=r#"^dev\.hwatu\.hwatud$"#
+    default-column-width { proportion 0.33333; }
+}
+
+// Agent/background windows (hwatu --background, and the default when a
+// coding agent drives hwatu) must not steal focus.
+window-rule {
+    match app-id=r#"^hwatu-background$"#
+    open-focused false
+}
