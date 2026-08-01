@@ -31,6 +31,11 @@
 //! the handler is swallowed before `preventDefault`, so a bug degrades
 //! to engine-native scrolling, never to a dead wheel.
 //!
+//! Instagram Reels also gets a site-scoped ArrowLeft comment toggle. The
+//! toggle clicks the comment control when the sheet is closed and the
+//! sheet's close control when it is open, rather than assuming that the
+//! comment control itself is a toggle.
+//!
 //! `HWATU_SMOOTH_WHEEL=0` disables the whole thing.
 
 /// See module docs. Constants mirror Chromium
@@ -199,6 +204,94 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
     }
   }, { passive: false });
 
+  // Instagram's mobile Reel controls are anonymous role=button wrappers
+  // around SVGs. Use accessibility labels instead of generated class names,
+  // and keep this limited to Reel URLs so ArrowLeft remains native elsewhere.
+  function isInstagramReels() {
+    const host = location.hostname.toLowerCase();
+    return (host === 'instagram.com' || host.endsWith('.instagram.com'))
+      && /(^|\/)reels?(\/|$)/i.test(location.pathname);
+  }
+  function visibleRect(r) {
+    return r.width > 0 && r.height > 0 && r.bottom > 0 && r.right > 0
+      && r.left < innerWidth && r.top < innerHeight;
+  }
+  function ownsReelKeys(target) {
+    const el = target instanceof Element ? target : null;
+    return !!el && (el.matches('input,textarea,select,[contenteditable="true"]')
+      || !!el.closest('input,textarea,select,[contenteditable="true"]'));
+  }
+  function activeReelVideo() {
+    let best = null, bestArea = 0;
+    for (const video of document.querySelectorAll('video')) {
+      const r = video.getBoundingClientRect();
+      if (!visibleRect(r)) continue;
+      const w = Math.min(r.right, innerWidth) - Math.max(r.left, 0);
+      const h = Math.min(r.bottom, innerHeight) - Math.max(r.top, 0);
+      const area = Math.max(0, w) * Math.max(0, h);
+      if (area > bestArea) { best = video; bestArea = area; }
+    }
+    return best;
+  }
+  function nearestButton(buttons) {
+    if (!buttons.length) return null;
+    const active = activeReelVideo();
+    const ar = active && active.getBoundingClientRect();
+    const ax = ar ? (ar.left + ar.right) / 2 : innerWidth / 2;
+    const ay = ar ? (ar.top + ar.bottom) / 2 : innerHeight / 2;
+    return buttons.reduce((best, button) => {
+      const r = button.getBoundingClientRect();
+      const score = Math.hypot((r.left + r.right) / 2 - ax,
+                               (r.top + r.bottom) / 2 - ay);
+      return !best || score < best.score ? { button, score } : best;
+    }, null).button;
+  }
+  function reelCommentButton() {
+    const buttons = [];
+    for (const button of document.querySelectorAll('button,[role="button"]')) {
+      const r = button.getBoundingClientRect();
+      if (visibleRect(r) && (button.matches('[aria-label*="comment" i]')
+          || button.querySelector('svg[aria-label*="comment" i]'))) {
+        buttons.push(button);
+      }
+    }
+    return nearestButton(buttons);
+  }
+  function reelCommentCloseButton() {
+    const buttons = [];
+    // The open comments sheet is a dialog on current Instagram mobile web.
+    // Search only inside modal roots so unrelated page close buttons cannot
+    // steal ArrowLeft.
+    for (const root of document.querySelectorAll('[role="dialog"],[aria-modal="true"]')) {
+      for (const button of root.querySelectorAll('button,[role="button"]')) {
+        const r = button.getBoundingClientRect();
+        if (visibleRect(r) && (button.matches('[aria-label*="close" i]')
+            || button.querySelector('svg[aria-label*="close" i]'))) {
+          buttons.push(button);
+        }
+      }
+    }
+    return nearestButton(buttons);
+  }
+  function reelCommentToggleButton() {
+    return reelCommentCloseButton() || reelCommentButton();
+  }
+
+  addEventListener('keydown', e => {
+    try {
+      if (!isInstagramReels() || e.defaultPrevented || e.ctrlKey || e.altKey || e.metaKey
+          || ownsReelKeys(e.target) || e.key !== 'ArrowLeft') return;
+      const button = reelCommentToggleButton();
+      if (!button) return;
+      // A held key must not click the control repeatedly. Still consume it
+      // while the sheet is open so the generic horizontal scroller cannot run.
+      if (!e.repeat) button.click();
+      e.preventDefault();
+    } catch (_) {
+      // Fail open: native/page keyboard handling remains available.
+    }
+  }, { passive: false });
+
   // Other input takes over instantly: don't fight keys, drags, or
   // touches with a stale glide.
   for (const ev of ['keydown', 'mousedown', 'touchstart']) {
@@ -270,5 +363,23 @@ mod tests {
         let discrete = handler.find("isDiscrete").unwrap();
         let target = handler.find("scrollTarget").unwrap();
         assert!(discrete < pd && target < pd);
+    }
+
+    /// ArrowLeft must select the close control before falling back to the
+    /// comment opener, otherwise pressing it twice only opens the sheet.
+    #[test]
+    fn instagram_comment_toggle_closes_open_sheet() {
+        assert!(SMOOTH_WHEEL_JS.contains("function reelCommentCloseButton"));
+        assert!(SMOOTH_WHEEL_JS.contains("[role=\"dialog\"],[aria-modal=\"true\"]"));
+        assert!(SMOOTH_WHEEL_JS.contains("[aria-label*=\"close\" i]"));
+        let close = SMOOTH_WHEEL_JS
+            .find("function reelCommentCloseButton")
+            .unwrap();
+        let opener = SMOOTH_WHEEL_JS.find("function reelCommentButton").unwrap();
+        let toggle = SMOOTH_WHEEL_JS
+            .find("return reelCommentCloseButton() || reelCommentButton();")
+            .unwrap();
+        assert!(close < toggle && opener < toggle);
+        assert!(SMOOTH_WHEEL_JS.contains("if (!e.repeat) button.click();"));
     }
 }
