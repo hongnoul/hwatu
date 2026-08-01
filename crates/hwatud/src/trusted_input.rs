@@ -355,7 +355,12 @@ pub async fn inject_type(
         glib::timeout_future(Duration::from_millis(30)).await;
         run_wtype(&["-k", "Return"])?;
     }
-    glib::timeout_future(Duration::from_millis(40)).await;
+    // wtype returns once the events are queued, not once WebKit has
+    // delivered them to the page. Settle proportionally to the text
+    // length so callers that read page state right after us see the
+    // final value.
+    let settle = 120 + 8 * text.chars().count() as u64;
+    glib::timeout_future(Duration::from_millis(settle.min(1200))).await;
     Ok(report)
 }
 
@@ -599,7 +604,24 @@ async fn calibrate(
                 "page stopped observing pointer motion (last saw viewport {ox:.0},{oy:.0}); \
                  the window may be occluded or on another workspace"
             );
-            glib::timeout_future(Duration::from_millis(120)).await;
+            // A stable stall usually means the window lost its
+            // fullscreen/focused state to a racing configure (e.g. a
+            // previous trusted session's restore was still in flight
+            // when this one started). Re-assert it and retry.
+            if attempt % 3 == 2 {
+                if let Ok(id) = find_niri_window(win) {
+                    let _ = Command::new("niri")
+                        .args(["msg", "action", "focus-window", "--id", &id.to_string()])
+                        .status();
+                }
+                win.present();
+                win.window.unfullscreen();
+                glib::timeout_future(Duration::from_millis(80)).await;
+                win.window.fullscreen();
+                glib::timeout_future(Duration::from_millis(250)).await;
+            } else {
+                glib::timeout_future(Duration::from_millis(120)).await;
+            }
             continue;
         }
         last_seq = seq;
