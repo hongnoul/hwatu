@@ -254,7 +254,10 @@ fn default_open_mode() -> OpenMode {
             .map(|k| k.starts_with("JCODE_") && !JCODE_USER_CONFIG_VARS.contains(&k))
             .unwrap_or(false)
     });
-    if !from_jcode && !AGENT_MARKERS.iter().any(|k| std::env::var_os(k).is_some()) {
+    let from_agent = from_jcode || AGENT_MARKERS.iter().any(|k| std::env::var_os(k).is_some());
+    let user_initiated = std::env::var_os("GIO_LAUNCHED_DESKTOP_FILE").is_some()
+        || std::env::var("JCODE_OPEN_ORIGIN").as_deref() == Ok("user");
+    if should_default_to_normal(user_initiated, from_agent) {
         return OpenMode::Normal;
     }
     if let Ok(v) = std::env::var("HWATU_AGENT_MODE") {
@@ -266,6 +269,16 @@ fn default_open_mode() -> OpenMode {
         );
     }
     config_agent_mode().unwrap_or(OpenMode::Headless)
+}
+
+/// A URL explicitly activated by a user is visible even when the application
+/// that called the system opener is itself an agent UI. GIO marks conforming
+/// desktop-entry launches; jcode supplies `JCODE_OPEN_ORIGIN=user` because some
+/// `xdg-open` implementations execute desktop entries directly without a GIO
+/// marker. Without this exception, the inherited `JCODE_*` environment would
+/// silently create a headless hwatu page.
+fn should_default_to_normal(user_initiated: bool, from_agent: bool) -> bool {
+    user_initiated || !from_agent
 }
 
 /// Parse a user-facing mode name. `focus` is accepted as an alias for
@@ -1247,7 +1260,8 @@ pub(crate) fn connect_or_spawn() -> std::io::Result<UnixStream> {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_onboarding_command, normalize_request_paths, parse_with_default_mode, OpenMode,
+        is_onboarding_command, normalize_request_paths, parse_with_default_mode,
+        should_default_to_normal, OpenMode,
     };
     use hwatu_ipc::Request;
 
@@ -1258,6 +1272,13 @@ mod tests {
         assert!(is_onboarding_command(Some("demo")));
         assert!(!is_onboarding_command(Some("https://example.com")));
         assert!(!is_onboarding_command(None));
+    }
+
+    #[test]
+    fn desktop_entry_launch_is_visible_inside_agent_environment() {
+        assert!(should_default_to_normal(true, true));
+        assert!(should_default_to_normal(false, false));
+        assert!(!should_default_to_normal(false, true));
     }
 
     /// Env-independent parse: tests themselves often run under a
