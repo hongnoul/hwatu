@@ -16,7 +16,7 @@ content-extension engine, zero JS in the request path), sane
 downloads, crash-restore sessions, TLS and permission prompts as
 one-line y/n bar prompts.
 
-New windows open at a third of the monitor width, matching the first
+New windows open at half the monitor width, matching the middle
 stop of niri's default 1/3, 1/2, 2/3 preset-width cycle and a
 comfortable reading width on 1080p-class monitors. Prefer a different
 fraction? Set `"preferred_width"` in `~/.config/hwatu/config.json`
@@ -115,7 +115,7 @@ hwatu quit                 # stop the daemon
   - `"autoplay": "muted"|"deny"`: the env var wins for a single run
     but vanishes on daemon restart.
   - `"preferred_width": 0.25`: initial window width as a fraction of
-    the monitor width, between 0 and 1. Default is one third.
+    the monitor width, between 0 and 1. Default is one half.
 - Env-only gates, read at window creation: `HWATU_FOCUS_SHIELD=0`,
   `HWATU_BLUR_SHIELD=0`, `HWATU_DISABLE_MEDIA=1`.
 

@@ -120,7 +120,7 @@ const DEFAULT_WINDOW_HEIGHT: i32 = 768;
 /// mapped window. Tiling WMs use this as the initial size hint when deciding
 /// how to place a new toplevel, while floating WMs still get a useful
 /// desktop-sized window instead of an arbitrary fixed width. The built-in
-/// default is one third; users can override it with `"preferred_width"` in
+/// default is one half; users can override it with `"preferred_width"` in
 /// `~/.config/hwatu/config.json`.
 fn default_window_width() -> i32 {
     let Some(display) = gtk::gdk::Display::default() else {
@@ -137,7 +137,7 @@ fn default_window_width() -> i32 {
     preferred_width(monitor.geometry().width(), preferred_width_ratio())
 }
 
-const DEFAULT_PREFERRED_WIDTH: f64 = 1.0 / 3.0;
+const DEFAULT_PREFERRED_WIDTH: f64 = 1.0 / 2.0;
 
 fn preferred_width_ratio() -> f64 {
     config_value("preferred_width")
@@ -2082,6 +2082,15 @@ mod tests {
         assert_eq!(super::preferred_width(1920, 1.0 / 3.0), 640);
         assert_eq!(super::preferred_width(1366, 1.0 / 3.0), 455);
         assert_eq!(super::preferred_width(1920, 0.25), 480);
+    }
+
+    #[test]
+    fn preferred_width_defaults_to_one_half() {
+        assert_eq!(super::DEFAULT_PREFERRED_WIDTH, 0.5);
+        assert_eq!(
+            super::preferred_width(1920, super::DEFAULT_PREFERRED_WIDTH),
+            960
+        );
     }
 
     #[test]
