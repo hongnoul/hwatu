@@ -1,11 +1,8 @@
-# Copy to .github/workflows/astrophile.yml in your repo.
-# Weekly growth snapshot + geo check, committed back to the repo so
-# .astrophile/snapshots.jsonl becomes a long-term trend log.
-name: astrophile weekly snapshot
+# Manual growth snapshot + geo check, committed back to the repo so
+# .astrophile/snapshots.jsonl remains an on-demand trend log.
+name: astrophile snapshot
 
 on:
-  schedule:
-    - cron: '0 9 * * 1' # Mondays 09:00 UTC
   workflow_dispatch:
 
 permissions:
@@ -60,6 +57,6 @@ jobs:
           git config user.name 'astrophile-bot'
           git config user.email 'actions@github.com'
           git add -f .astrophile/snapshots.jsonl
-          git diff --cached --quiet || git commit -m 'astrophile: weekly snapshot'
+          git diff --cached --quiet || git commit -m 'astrophile: snapshot'
           git pull --rebase origin "${GITHUB_REF_NAME}"
           git push
