@@ -584,6 +584,18 @@ impl Request {
         }
     }
 
+    /// True when this request asks the daemon to execute page JavaScript.
+    /// Operators can disable this entire surface at the daemon boundary so
+    /// direct CLI, MCP, and raw socket clients all get the same policy.
+    pub fn uses_eval(&self) -> bool {
+        match self {
+            Request::Eval { .. } => true,
+            Request::Check { eval, .. } => eval.as_ref().is_some_and(|js| !js.is_empty()),
+            Request::Batch { actions } => actions.iter().any(Self::uses_eval),
+            _ => false,
+        }
+    }
+
     /// Whether this request is safe and coherent as one step inside a batch.
     /// Keep this deliberately smaller than the full protocol: lifecycle,
     /// streaming, browser-global, file-upload, and long-lived watcher actions
@@ -1232,6 +1244,77 @@ mod tests {
         };
         assert_eq!(actions.len(), 3);
         Request::validate_batch(&actions).unwrap();
+    }
+
+    #[test]
+    fn uses_eval_covers_direct_check_and_batch_surfaces() {
+        assert!(Request::Eval {
+            id: None,
+            js: "return document.cookie".into(),
+            timeout_ms: None,
+        }
+        .uses_eval());
+
+        let mut check = Request::Check {
+            url: Some("https://example.test".into()),
+            render: None,
+            base: None,
+            eval: None,
+            shot: false,
+            shot_path: None,
+            full: false,
+            baseline: None,
+            tolerance: None,
+            heatmap: None,
+            until: LoadStage::default(),
+            keep: false,
+            timeout_ms: None,
+            viewports: vec![],
+            baseline_dir: None,
+        };
+        assert!(!check.uses_eval());
+        if let Request::Check { eval, .. } = &mut check {
+            *eval = Some("".into());
+        }
+        assert!(!check.uses_eval());
+        if let Request::Check { eval, .. } = &mut check {
+            *eval = Some("localStorage.secret".into());
+        }
+        assert!(check.uses_eval());
+
+        assert!(!Request::Navigate {
+            id: Some(1),
+            url: "https://example.test".into(),
+            wait: true,
+            until: LoadStage::default(),
+            timeout_ms: None,
+        }
+        .uses_eval());
+
+        assert!(Request::Batch {
+            actions: vec![
+                Request::Navigate {
+                    id: Some(1),
+                    url: "https://example.test".into(),
+                    wait: true,
+                    until: LoadStage::default(),
+                    timeout_ms: None,
+                },
+                check,
+            ],
+        }
+        .uses_eval());
+
+        assert!(Request::Batch {
+            actions: vec![Request::Batch {
+                actions: vec![Request::Eval {
+                    id: Some(1),
+                    js: "document.cookie".into(),
+                    timeout_ms: None,
+                }],
+            }],
+        }
+        .uses_eval());
     }
 
     #[test]

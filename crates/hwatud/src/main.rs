@@ -41,6 +41,7 @@ use gtk::{gio, glib};
 use hwatu_ipc::OpenMode;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::rc::Rc;
 use webkit6::prelude::*;
 
@@ -97,10 +98,91 @@ pub struct Daemon {
     /// Next hanafuda card to deal on a launcher window (see
     /// [`launcher::deal_uri`]). Wraps modulo the deck size.
     pub next_deal: RefCell<usize>,
+    /// Operator security policy selected at daemon startup.
+    pub security: SecurityConfig,
+    /// Isolated network session used by every WebView when the daemon is
+    /// running in ephemeral-profile mode. Holding the object here keeps the
+    /// in-memory cookie jar alive while the daemon runs.
+    pub network_session: Option<webkit6::NetworkSession>,
+    /// Temporary website-data/cache root removed on clean exit when the daemon
+    /// runs in ephemeral-profile mode.
+    _ephemeral_profile: Option<EphemeralProfile>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SecurityConfig {
+    pub eval_enabled: bool,
+    pub ephemeral_profile: bool,
+}
+
+impl Default for SecurityConfig {
+    fn default() -> Self {
+        Self {
+            eval_enabled: true,
+            ephemeral_profile: false,
+        }
+    }
+}
+
+struct EphemeralProfile {
+    root: PathBuf,
+}
+
+impl EphemeralProfile {
+    fn create() -> std::io::Result<Self> {
+        let root = std::env::temp_dir().join(format!(
+            "hwatud-ephemeral-{}-{}",
+            std::process::id(),
+            glib::monotonic_time()
+        ));
+        std::fs::create_dir_all(&root)?;
+        Ok(Self { root })
+    }
+
+    fn root(&self) -> &std::path::Path {
+        &self.root
+    }
+}
+
+impl Drop for EphemeralProfile {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
 }
 
 impl Daemon {
-    fn new(app: gtk::Application) -> Rc<Self> {
+    fn new(app: gtk::Application, security: SecurityConfig) -> Rc<Self> {
+        let (network_session, ephemeral_profile) = if security.ephemeral_profile {
+            match EphemeralProfile::create() {
+                Ok(profile) => {
+                    let data = profile.root().join("data");
+                    let cache = profile.root().join("cache");
+                    if let Err(e) =
+                        std::fs::create_dir_all(&data).and_then(|_| std::fs::create_dir_all(&cache))
+                    {
+                        eprintln!("hwatud: failed to create ephemeral profile directories: {e}");
+                        std::process::exit(1);
+                    }
+                    let session = webkit6::NetworkSession::new(
+                        Some(&data.to_string_lossy()),
+                        Some(&cache.to_string_lossy()),
+                    );
+                    session.set_persistent_credential_storage_enabled(false);
+                    println!(
+                        "hwatud: ephemeral profile enabled under {} (removed on exit)",
+                        profile.root().display()
+                    );
+                    (Some(session), Some(profile))
+                }
+                Err(e) => {
+                    eprintln!("hwatud: failed to create ephemeral profile: {e}");
+                    std::process::exit(1);
+                }
+            }
+        } else {
+            (None, None)
+        };
+
         Rc::new(Self {
             app,
             windows: RefCell::new(HashMap::new()),
@@ -115,6 +197,9 @@ impl Daemon {
             session_save_timer: RefCell::new(None),
             events: events::Broker::default(),
             next_deal: RefCell::new(0),
+            security,
+            network_session,
+            _ephemeral_profile: ephemeral_profile,
         })
     }
 
@@ -130,7 +215,7 @@ impl Daemon {
     /// Take the warm WebView (or build one) and immediately warm the next.
     pub fn take_webview(self: &Rc<Self>) -> webkit6::WebView {
         let view = self.prewarmed.borrow_mut().take().unwrap_or_else(|| {
-            let view = window::build_webview();
+            let view = window::build_webview(self);
             self.adblock.apply_to(&view);
             view
         });
@@ -151,7 +236,7 @@ impl Daemon {
         let daemon = self.clone();
         glib::idle_add_local_once(move || {
             if daemon.prewarmed.borrow().is_none() {
-                let view = window::build_webview();
+                let view = window::build_webview(&daemon);
                 daemon.adblock.apply_to(&view);
                 // Deep warm: loading about:blank realizes the web
                 // process and the GPU compositor path while idle, so a
@@ -175,6 +260,9 @@ impl Daemon {
     /// bursty navigation doesn't thrash the disk. The trailing save
     /// always runs, so the file converges on the true state.
     pub fn schedule_session_save(self: &Rc<Self>) {
+        if self.security.ephemeral_profile {
+            return;
+        }
         if self.session_save_timer.borrow().is_some() {
             return;
         }
@@ -187,6 +275,9 @@ impl Daemon {
     }
 
     pub fn save_session_now(&self) {
+        if self.security.ephemeral_profile {
+            return;
+        }
         let entries: Vec<session::SessionEntry> = {
             let windows = self.windows.borrow();
             let mut infos: Vec<_> = windows.values().map(|w| w.info()).collect();
@@ -212,7 +303,11 @@ impl Daemon {
 /// the XDG data dir, so logins survive daemon restarts. All WebViews
 /// share the default session (persistence is what makes the shared
 /// engine feel like one browser instead of a fleet of incognito tabs).
-fn persist_cookies() {
+fn persist_cookies(security: SecurityConfig) {
+    if security.ephemeral_profile {
+        println!("hwatud: ephemeral profile enabled; persistent cookies disabled");
+        return;
+    }
     let Some(session) = webkit6::NetworkSession::default() else {
         eprintln!("hwatud: no default network session; cookies will not persist");
         return;
@@ -290,6 +385,18 @@ fn open_sandbox_for_media() {
 }
 
 fn main() -> glib::ExitCode {
+    let security = match parse_security_args(std::env::args().skip(1)) {
+        Ok(ParseSecurity::Run(security)) => security,
+        Ok(ParseSecurity::Help) => {
+            println!("usage: hwatud [--no-eval] [--ephemeral-profile]");
+            return glib::ExitCode::SUCCESS;
+        }
+        Err(message) => {
+            eprintln!("hwatud: {message}");
+            eprintln!("usage: hwatud [--no-eval] [--ephemeral-profile]");
+            return glib::ExitCode::FAILURE;
+        }
+    };
     // Keep RAM predictable: cap glibc arena explosion under GTK threads.
     std::env::set_var("MALLOC_ARENA_MAX", "2");
     // Full-refresh-rate scrolling: WebKitGTK's default DMA-BUF
@@ -351,15 +458,17 @@ fn main() -> glib::ExitCode {
     app.connect_startup(move |app| {
         bar::install_css();
         // Reclaim session blobs orphaned by a crashed/killed daemon.
-        window::sweep_discard_dir();
-        let daemon = Daemon::new(app.clone());
+        if !security.ephemeral_profile {
+            window::sweep_discard_dir();
+        }
+        let daemon = Daemon::new(app.clone(), security);
         // Cookies persist across daemon restarts. WebKit's default
         // network session keeps its jar in RAM only until told
         // otherwise, which makes every restart look like a brand-new
         // browser: logins vanish, and sites like GitHub answer the
         // fresh jar with their strictest anti-bot login path (device
         // verification, captcha). Must run before any WebView exists.
-        persist_cookies();
+        persist_cookies(security);
         // Local media playback needs the web-process sandbox to see
         // the files. Before any web process exists (hard requirement).
         open_sandbox_for_media();
@@ -374,7 +483,11 @@ fn main() -> glib::ExitCode {
         // Crash resilience: a leftover session file means the previous
         // daemon died uncleanly (clean quits delete it); reopen its
         // windows. After the socket is up so spawn timing stays honest.
-        let leftovers = session::take();
+        let leftovers = if security.ephemeral_profile {
+            Vec::new()
+        } else {
+            session::take()
+        };
         if !leftovers.is_empty() {
             println!(
                 "hwatud: restoring {} window(s) from a previous session",
@@ -437,9 +550,40 @@ fn parse_dpr(raw: Option<&str>) -> Option<i32> {
     raw?.trim().parse::<i32>().ok().filter(|&n| n > 0)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParseSecurity {
+    Run(SecurityConfig),
+    Help,
+}
+
+fn parse_security_args<I, S>(args: I) -> Result<ParseSecurity, String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut config = SecurityConfig::default();
+
+    if std::env::var_os("HWATUD_NO_EVAL").is_some_and(|v| !v.is_empty() && v != "0") {
+        config.eval_enabled = false;
+    }
+    if std::env::var_os("HWATUD_EPHEMERAL_PROFILE").is_some_and(|v| !v.is_empty() && v != "0") {
+        config.ephemeral_profile = true;
+    }
+
+    for arg in args {
+        match arg.as_ref() {
+            "--no-eval" => config.eval_enabled = false,
+            "--ephemeral-profile" | "--ephemeral" => config.ephemeral_profile = true,
+            "--help" | "-h" => return Ok(ParseSecurity::Help),
+            other => return Err(format!("unknown argument `{other}`")),
+        }
+    }
+    Ok(ParseSecurity::Run(config))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::parse_dpr;
+    use super::{parse_dpr, parse_security_args, ParseSecurity, SecurityConfig};
 
     /// The DPR pin only accepts positive integers: GDK_SCALE cannot
     /// express fractions, and 0/negative are nonsense. Everything
@@ -455,5 +599,37 @@ mod tests {
         assert_eq!(parse_dpr(Some("1")), Some(1));
         assert_eq!(parse_dpr(Some(" 2 ")), Some(2));
         assert_eq!(parse_dpr(Some("3")), Some(3));
+    }
+
+    #[test]
+    fn security_args_default_open_profile() {
+        assert_eq!(
+            parse_security_args(std::iter::empty::<&str>()).unwrap(),
+            ParseSecurity::Run(SecurityConfig::default())
+        );
+    }
+
+    #[test]
+    fn security_args_accept_eval_and_profile_opt_outs() {
+        assert_eq!(
+            parse_security_args(["--no-eval", "--ephemeral-profile"]).unwrap(),
+            ParseSecurity::Run(SecurityConfig {
+                eval_enabled: false,
+                ephemeral_profile: true,
+            })
+        );
+    }
+
+    #[test]
+    fn security_args_help_is_successful_control_flow() {
+        assert_eq!(
+            parse_security_args(["--help"]).unwrap(),
+            ParseSecurity::Help
+        );
+    }
+
+    #[test]
+    fn security_args_reject_unknown_flags() {
+        assert!(parse_security_args(["--cookies-please"]).is_err());
     }
 }

@@ -345,15 +345,17 @@ fn set_wayland_app_id(window: &gtk::Window, app_id: &str) {
 
 /// Build a fully configured WebView. Called for the prewarm pool and as
 /// a fallback; all engine knobs live here, never on the spawn path.
-pub fn build_webview() -> webkit6::WebView {
+pub fn build_webview(daemon: &Daemon) -> webkit6::WebView {
     // website-policies is construct-only, hence the builder. Autoplay
     // defaults to full allow (with sound); see autoplay_policy().
     let policies = webkit6::WebsitePolicies::builder()
         .autoplay(autoplay_policy())
         .build();
-    let view = webkit6::WebView::builder()
-        .website_policies(&policies)
-        .build();
+    let mut builder = webkit6::WebView::builder().website_policies(&policies);
+    if let Some(session) = &daemon.network_session {
+        builder = builder.network_session(session);
+    }
+    let view = builder.build();
     apply_view_settings(&view);
     crate::console::wire_view(&view);
     crate::clock::wire_view(&view);
@@ -1067,15 +1069,21 @@ impl BrowserWindow {
         let url = webview.uri().map(|u| u.to_string()).unwrap_or_default();
         let title = webview.title().map(|t| t.to_string()).unwrap_or_default();
         // Serialize history to disk, not RAM: the whole point is to
-        // give memory back. Write failures degrade to a URL reload.
-        let session_file = webview
-            .session_state()
-            .and_then(|state| state.serialize())
-            .and_then(|bytes| {
-                let path = discard_dir()?.join(format!("window-{}.session", self.id));
-                std::fs::write(&path, bytes).ok()?;
-                Some(path)
-            });
+        // give memory back. Write failures degrade to a URL reload. In
+        // ephemeral-profile mode no normal profile/cache state may be
+        // written, so discards deliberately keep only the URL/title.
+        let session_file = if self.daemon.security.ephemeral_profile {
+            None
+        } else {
+            webview
+                .session_state()
+                .and_then(|state| state.serialize())
+                .and_then(|bytes| {
+                    let path = discard_dir()?.join(format!("window-{}.session", self.id));
+                    std::fs::write(&path, bytes).ok()?;
+                    Some(path)
+                })
+        };
         self.saved.replace(Some(SavedState {
             session_file,
             url,
