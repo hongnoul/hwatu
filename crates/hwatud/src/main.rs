@@ -135,7 +135,17 @@ impl EphemeralProfile {
             std::process::id(),
             glib::monotonic_time()
         ));
-        std::fs::create_dir_all(&root)?;
+        // The profile may contain authenticated cookies and page data.
+        // Create the predictable-by-design path atomically instead of
+        // accepting an existing directory, and keep other OS users out.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+
+            std::fs::DirBuilder::new().mode(0o700).create(&root)?;
+        }
+        #[cfg(not(unix))]
+        std::fs::create_dir(&root)?;
         Ok(Self { root })
     }
 
@@ -583,7 +593,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_dpr, parse_security_args, ParseSecurity, SecurityConfig};
+    use super::{parse_dpr, parse_security_args, EphemeralProfile, ParseSecurity, SecurityConfig};
 
     /// The DPR pin only accepts positive integers: GDK_SCALE cannot
     /// express fractions, and 0/negative are nonsense. Everything
@@ -631,5 +641,18 @@ mod tests {
     #[test]
     fn security_args_reject_unknown_flags() {
         assert!(parse_security_args(["--cookies-please"]).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ephemeral_profile_is_private_and_removed_on_drop() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let profile = EphemeralProfile::create().unwrap();
+        let root = profile.root().to_path_buf();
+        let mode = std::fs::metadata(&root).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o700);
+        drop(profile);
+        assert!(!root.exists());
     }
 }
