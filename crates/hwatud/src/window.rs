@@ -635,9 +635,6 @@ impl BrowserWindow {
                 );
                 if crate::console::is_turnstile_compat_error(entry) {
                     let Some(this) = weak.upgrade() else { return };
-                    if this.turnstile_handoff_offered.replace(true) {
-                        return;
-                    }
                     let Some(uri) = entry
                         .page
                         .as_deref()
@@ -645,6 +642,12 @@ impl BrowserWindow {
                     else {
                         return;
                     };
+                    // Invalid/non-web page provenance must not consume the
+                    // one-shot offer: a later valid main-page rejection in
+                    // this document still deserves a recovery prompt.
+                    if this.turnstile_handoff_offered.replace(true) {
+                        return;
+                    }
                     this.push_prompt(Prompt::ExternalBrowser {
                         uri: uri.to_string(),
                     });
