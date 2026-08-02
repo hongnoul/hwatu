@@ -98,6 +98,13 @@
 //! entering the animator. Precise touchpad deltas are untouched: they
 //! are real hardware pixel values, not synthesized line steps.
 //!
+//! Sites in `nativeWheelSite` skip the non-passive wheel listener. A
+//! root listener makes WebKitGTK route touchpad gestures through the web
+//! process instead of its async scrolling thread even when the handler
+//! ultimately leaves precise deltas alone. Animation-heavy pages such as
+//! Baseten can then appear not to scroll at all. Keyboard enhancements
+//! remain installed; only wheel input returns to the engine-native path.
+//!
 //! `HWATU_SMOOTH_WHEEL=0` disables the whole thing.
 
 /// See module docs. Constants mirror Chromium
@@ -653,49 +660,60 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
     ensureRaf();
   }
 
-  addEventListener('wheel', e => {
-    try {
-      if (e.defaultPrevented || !e.cancelable) return;
-      if (e.ctrlKey || e.altKey || e.metaKey) return; // zoom & friends
-      if (!isDiscrete(e)) {
-        // Precise touchpad deltas normally stay native, but on the
-        // IG gesture feed native pixels desync the reel state: claim
-        // and translate them into synthetic swipes.
-        if (!e.shiftKey && e.deltaY
-            && preciseFeedScroll(e.target, e.deltaY)) e.preventDefault();
-        return;
+  // A non-passive root wheel listener marks the whole viewport as a
+  // synchronous wheel-event region in WebKitGTK. Keep known pages that
+  // need the engine's async touchpad path out of that region entirely.
+  function nativeWheelSite() {
+    const host = location.hostname.toLowerCase().replace(/^www\./, '');
+    return host === 'baseten.co' || host.endsWith('.baseten.co');
+  }
+
+  function installWheelHandler() {
+    addEventListener('wheel', e => {
+      try {
+        if (e.defaultPrevented || !e.cancelable) return;
+        if (e.ctrlKey || e.altKey || e.metaKey) return; // zoom & friends
+        if (!isDiscrete(e)) {
+          // Precise touchpad deltas normally stay native, but on the
+          // IG gesture feed native pixels desync the reel state: claim
+          // and translate them into synthetic swipes.
+          if (!e.shiftKey && e.deltaY
+              && preciseFeedScroll(e.target, e.deltaY)) e.preventDefault();
+          return;
+        }
+
+        let dx = e.deltaX, dy = e.deltaY;
+        if (e.deltaMode === 1) { dx *= 40; dy *= 40; }
+        else if (e.deltaMode === 2) { dx *= innerWidth; dy *= innerHeight; }
+        // Sensitivity applies to synthesized notch deltas (pixel/line
+        // modes); page-mode deltas are already viewport-sized.
+        if (e.deltaMode !== 2) { dx *= SENS; dy *= SENS; }
+        if (e.shiftKey && !dx) { dx = dy; dy = 0; }
+
+        const horiz = Math.abs(dx) > Math.abs(dy);
+        const delta = horiz ? dx : dy;
+        if (!delta) return;
+
+        const el = scrollTarget(e.target, horiz, delta > 0 ? 1 : -1);
+        if (!el) {
+          // IG's transform-virtualized feed can be unscrollable by
+          // extent (see gestureFeed) while still swipeable.
+          const feed = !horiz && gestureFeed(e.target);
+          if (feed && swipeFeed(feed, delta > 0 ? 1 : -1)) e.preventDefault();
+          return; // nothing scrollable: stay native
+        }
+
+        // Snap paging decides before preventDefault so an exception in
+        // it degrades to native scrolling, not a dead wheel.
+        if (pageSnap(el, horiz, delta > 0 ? 1 : -1)) { e.preventDefault(); return; }
+        e.preventDefault();
+        animateBy(el, horiz, delta);
+      } catch (_) {
+        // Fail open: native scrolling still works if we blow up.
       }
-
-      let dx = e.deltaX, dy = e.deltaY;
-      if (e.deltaMode === 1) { dx *= 40; dy *= 40; }
-      else if (e.deltaMode === 2) { dx *= innerWidth; dy *= innerHeight; }
-      // Sensitivity applies to synthesized notch deltas (pixel/line
-      // modes); page-mode deltas are already viewport-sized.
-      if (e.deltaMode !== 2) { dx *= SENS; dy *= SENS; }
-      if (e.shiftKey && !dx) { dx = dy; dy = 0; }
-
-      const horiz = Math.abs(dx) > Math.abs(dy);
-      const delta = horiz ? dx : dy;
-      if (!delta) return;
-
-      const el = scrollTarget(e.target, horiz, delta > 0 ? 1 : -1);
-      if (!el) {
-        // IG's transform-virtualized feed can be unscrollable by
-        // extent (see gestureFeed) while still swipeable.
-        const feed = !horiz && gestureFeed(e.target);
-        if (feed && swipeFeed(feed, delta > 0 ? 1 : -1)) e.preventDefault();
-        return; // nothing scrollable: stay native
-      }
-
-      // Snap paging decides before preventDefault so an exception in
-      // it degrades to native scrolling, not a dead wheel.
-      if (pageSnap(el, horiz, delta > 0 ? 1 : -1)) { e.preventDefault(); return; }
-      e.preventDefault();
-      animateBy(el, horiz, delta);
-    } catch (_) {
-      // Fail open: native scrolling still works if we blow up.
-    }
-  }, { passive: false });
+    }, { passive: false });
+  }
+  if (!nativeWheelSite()) installWheelHandler();
 
   // Keyboard scrolling through the same animator. WebKit's keydown
   // scroller has the identical isolated-pulse problem as its wheel
@@ -1108,6 +1126,26 @@ mod tests {
         let target = handler.find("scrollTarget").unwrap();
         let pd = target + handler[target..].find("e.preventDefault()").unwrap();
         assert!(target < pd);
+    }
+
+    /// Baseten's animation-heavy homepage needs WebKitGTK's asynchronous
+    /// touchpad path. Installing any non-passive root wheel listener would
+    /// mark the whole viewport for synchronous web-process scrolling.
+    #[test]
+    fn baseten_keeps_native_wheel_path() {
+        assert!(SMOOTH_WHEEL_JS.contains("function nativeWheelSite"));
+        assert!(SMOOTH_WHEEL_JS.contains("host === 'baseten.co'"));
+        assert!(SMOOTH_WHEEL_JS.contains("host.endsWith('.baseten.co')"));
+        let install = SMOOTH_WHEEL_JS
+            .find("function installWheelHandler")
+            .expect("wheel listener installer");
+        let gate = SMOOTH_WHEEL_JS
+            .find("if (!nativeWheelSite()) installWheelHandler();")
+            .expect("native-wheel host gate");
+        assert!(
+            install < gate,
+            "listener must only install behind the host gate"
+        );
     }
 
     /// ArrowLeft must select the close control before falling back to the
