@@ -90,22 +90,30 @@ fn autoplay_policy() -> webkit6::AutoplayPolicy {
     }
 }
 
-/// Read `"autoplay"` from ~/.config/hwatu/config.json (the same file
-/// adblock persists its toggle in). Returns None when absent/invalid.
-fn config_autoplay() -> Option<String> {
+/// Read one key from ~/.config/hwatu/config.json (the same file adblock
+/// persists its toggle in). Returns None when the file or key is
+/// absent/invalid.
+fn config_value(key: &str) -> Option<serde_json::Value> {
     let raw =
         std::fs::read_to_string(glib::user_config_dir().join("hwatu").join("config.json")).ok()?;
     let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    Some(v.get("autoplay")?.as_str()?.to_string())
+    Some(v.get(key)?.clone())
+}
+
+/// Read `"autoplay"` from config.json. Returns None when absent/invalid.
+fn config_autoplay() -> Option<String> {
+    Some(config_value("autoplay")?.as_str()?.to_string())
 }
 
 const DEFAULT_WINDOW_WIDTH: i32 = 1024;
 const DEFAULT_WINDOW_HEIGHT: i32 = 768;
 
-/// Request a third of the current monitor's width for a newly mapped
-/// window. Tiling WMs use this as the initial size hint when deciding how to
-/// place a new toplevel, while floating WMs still get a useful desktop-sized
-/// window instead of an arbitrary fixed width.
+/// Request the preferred fraction of the current monitor's width for a newly
+/// mapped window. Tiling WMs use this as the initial size hint when deciding
+/// how to place a new toplevel, while floating WMs still get a useful
+/// desktop-sized window instead of an arbitrary fixed width. The built-in
+/// default is one third; users can override it with `"preferred_width"` in
+/// `~/.config/hwatu/config.json`.
 fn default_window_width() -> i32 {
     let Some(display) = gtk::gdk::Display::default() else {
         return DEFAULT_WINDOW_WIDTH;
@@ -118,11 +126,28 @@ fn default_window_width() -> i32 {
         return DEFAULT_WINDOW_WIDTH;
     };
 
-    third_width(monitor.geometry().width())
+    preferred_width(monitor.geometry().width(), preferred_width_ratio())
 }
 
-fn third_width(viewport_width: i32) -> i32 {
-    (viewport_width / 3).max(1)
+const DEFAULT_PREFERRED_WIDTH: f64 = 1.0 / 3.0;
+
+fn preferred_width_ratio() -> f64 {
+    config_value("preferred_width")
+        .and_then(|v| ratio_from_value(&v))
+        .unwrap_or(DEFAULT_PREFERRED_WIDTH)
+}
+
+/// Accept only a finite fraction in (0, 1]; anything else (zero, negatives,
+/// above one, NaN, inf, non-numbers) is rejected so a typo cannot produce
+/// an invisible or absurd window.
+fn ratio_from_value(value: &serde_json::Value) -> Option<f64> {
+    value
+        .as_f64()
+        .filter(|ratio| ratio.is_finite() && *ratio > 0.0 && *ratio <= 1.0)
+}
+
+fn preferred_width(viewport_width: i32, ratio: f64) -> i32 {
+    ((viewport_width as f64) * ratio).floor().max(1.0) as i32
 }
 
 /// State saved across a discard. The session blob itself lives on disk
@@ -2025,14 +2050,31 @@ mod tests {
     }
 
     #[test]
-    fn third_width_uses_one_third_of_the_viewport() {
-        assert_eq!(super::third_width(1920), 640);
-        assert_eq!(super::third_width(1366), 455);
+    fn preferred_width_uses_the_configured_fraction_of_the_viewport() {
+        assert_eq!(super::preferred_width(1920, 1.0 / 3.0), 640);
+        assert_eq!(super::preferred_width(1366, 1.0 / 3.0), 455);
+        assert_eq!(super::preferred_width(1920, 0.25), 480);
     }
 
     #[test]
-    fn third_width_never_returns_zero() {
-        assert_eq!(super::third_width(0), 1);
-        assert_eq!(super::third_width(-1), 1);
+    fn preferred_width_never_returns_zero() {
+        assert_eq!(super::preferred_width(0, super::DEFAULT_PREFERRED_WIDTH), 1);
+        assert_eq!(
+            super::preferred_width(-1, super::DEFAULT_PREFERRED_WIDTH),
+            1
+        );
+    }
+
+    #[test]
+    fn ratio_from_value_accepts_only_fractions_in_zero_one() {
+        use serde_json::json;
+        assert_eq!(super::ratio_from_value(&json!(0.25)), Some(0.25));
+        assert_eq!(super::ratio_from_value(&json!(1.0)), Some(1.0));
+        assert_eq!(super::ratio_from_value(&json!(0.0)), None);
+        assert_eq!(super::ratio_from_value(&json!(-0.5)), None);
+        assert_eq!(super::ratio_from_value(&json!(1.5)), None);
+        assert_eq!(super::ratio_from_value(&json!("0.25")), None);
+        assert_eq!(super::ratio_from_value(&json!(null)), None);
+        assert_eq!(super::ratio_from_value(&json!({})), None);
     }
 }

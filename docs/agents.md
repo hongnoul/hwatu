@@ -520,6 +520,15 @@ hwatu focus $id    # window appears in their WM, session intact
 
 ## Window modes
 
+New visible windows request one third of the first monitor's width by
+default. A personal installation can override that initial size without
+changing the upstream default by adding a fractional value between 0 and 1
+to `~/.config/hwatu/config.json`:
+
+```json
+{"preferred_width": 0.25}
+```
+
 - **normal**: map + request focus. What a human asked for.
 - **background**: mapped, rendered, present in the WM layout, but
   no activation request: focus stays where the user has it. Pair
