@@ -12,9 +12,22 @@ cargo build --manifest-path "$root/Cargo.toml" >&2
 work="$(mktemp -d "${TMPDIR:-/tmp}/hwatu-parser-fixed-point.XXXXXX")"
 export XDG_RUNTIME_DIR="$work/run"
 export XDG_STATE_HOME="$work/state"
-mkdir -p "$XDG_RUNTIME_DIR" "$XDG_STATE_HOME"
+export XDG_CONFIG_HOME="$work/config"
+export XDG_DATA_HOME="$work/data"
+export XDG_CACHE_HOME="$work/cache"
+mkdir -p \
+    "$XDG_RUNTIME_DIR" \
+    "$XDG_STATE_HOME" \
+    "$XDG_CONFIG_HOME" \
+    "$XDG_DATA_HOME" \
+    "$XDG_CACHE_HOME"
 
+server_pid=""
 cleanup() {
+    if [[ -n "$server_pid" ]]; then
+        kill "$server_pid" >/dev/null 2>&1 || true
+        wait "$server_pid" 2>/dev/null || true
+    fi
     "$bin/hwatu" quit >/dev/null 2>&1 || true
     if [[ -z "${KEEP_HWATU_PARSER_FIXED_POINT_TEST:-}" ]]; then
         rm -rf "$work"
@@ -108,5 +121,3 @@ if (margin !== '0px/0px') throw new Error('class reset margin drifted: ' + margi
 JS
 )
 "$bin/hwatu" eval --id "$clone_id" "$dom_assert_js"
-
-kill "$server_pid" >/dev/null 2>&1 || true
