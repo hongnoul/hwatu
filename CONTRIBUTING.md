@@ -6,13 +6,12 @@ Bug reports, patches, and packaging work are all welcome.
 
 hwatu is AI-first: the product is visual verification for coding
 agents, and the roadmap ([docs/roadmap.md](docs/roadmap.md)) is
-ordered around the agent path (MCP server, snapshot quality,
-profiles/isolation, displayless CI). The human UI is deliberately
-frozen at "receive an agent hand-off" quality: fixes there are
-welcome, but new human-browser features (link hints, history,
-password integration, sync, extensions) are explicit non-goals and
-will be declined. Small human papercuts (zoom, undo-close, yank) are
-fine if they stay inside the existing Action/Keymap machinery.
+ordered around the agent path first. The human side is also becoming a
+credible primary browser for keyboard-driven tiling-WM users because that
+makes agent hand-off land in the browser the user already trusts. Human-browser
+work is welcome when it satisfies the gated daily-driver plan in the roadmap;
+speculative Chromium feature parity is not. Tabs, sync, a built-in password
+store, and a general extensions platform remain explicit non-goals.
 
 ## Building
 

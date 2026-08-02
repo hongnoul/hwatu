@@ -468,6 +468,182 @@ drivers.
 Another session is currently fixing embedded iframe video
 interaction; it is deliberately absent from the list below.
 
+### v0.8.0: the primary-browser retention floor
+
+The next human-facing milestone is not “more browser features.” It is a
+**daily-driver contract**: a tiling-WM user can set hwatu as the default
+browser for two weeks without losing state, exposing their personal profile
+to an agent by accident, or reaching for Chromium except for the engine-bound
+gaps listed below. This milestone temporarily supersedes the D0–D3 ordering;
+the H-items remain the backlog, but work is pulled from them in the gate order
+here.
+
+This is not a claim of Chromium feature parity. It is parity on the failure
+modes that make somebody abandon a primary browser: trust, state recovery,
+responsiveness, ordinary forms and downloads, sign-in continuity, and an
+honest fallback when WebKitGTK cannot complete a flow.
+
+#### Q0. Trust and recovery before convenience
+
+These are release blockers. A browser that contains real accounts must have a
+stricter contract than an agent verification harness.
+
+1. **Separate personal, agent, and private profiles.** A personal daemon must
+   never be the implicit target of MCP/CLI automation. Add named profiles and
+   separate sockets/data roots; default agent sessions to an ephemeral or
+   explicitly named agent profile. Human hand-off materializes that same agent
+   profile, while access to a personal profile requires an explicit trusted
+   invocation. `--no-eval` and `--ephemeral-profile` from issue #49 are the
+   foundation, not the finished profile model. Personal profiles are
+   non-evaluable by default.
+2. **Make auth and navigation loss recoverable.** Fix issue #51: a web-process
+   crash during headless→focused authentication must retain the last committed
+   URL, expose the termination reason through IPC/UI, and offer reload instead
+   of leaving a live blank window. Add a Clerk-style sign-in fixture and a
+   process-termination regression test.
+3. **Restore what the user believes is durable.** Clean quit and crash restart
+   restore windows and per-window history; Ctrl+Shift+T restores an accidentally
+   closed window (H12); cookies, permission decisions, zoom, autoplay/media
+   policy, and other per-site settings are written atomically (H5/H19). Never
+   claim form-body recovery unless it is actually implemented and tested.
+4. **Give the user ownership of stored data.** Ship clear-site-data (H16),
+   profile reset, and private windows that provably leave no normal
+   cookie, cache, history, or crash-session artifacts. Document the local
+   socket/eval threat model in the product, not only in contributor docs.
+5. **Define the engine security contract.** `doctor` reports the exact
+   WebKitGTK version, verifies the web-process sandbox is active, warns when the
+   distro engine is below hwatu's supported security floor, and links the
+   upgrade path. A primary-browser release cannot depend on an unknown or stale
+   system engine without saying so.
+
+**Q0 gate:** no open security, credential-boundary, auth-state-loss, or
+session-data-loss defect; 100/100 auth hand-offs preserve the committed URL,
+cookies, and usable page state; forced web-process death and daemon SIGKILL
+surface a recovery UI within 500 ms while retaining URL/title/reason; automated
+agent sessions cannot see or evaluate the personal profile without an explicit
+opt-in. A recovered local page reloads p95 <2 seconds and daemon restart
+restores all headed windows within 5 seconds on the reference session.
+
+#### Q1. Responsiveness and bounded resources
+
+The important number is tail latency, not a smooth demo. The browser must stay
+responsive while pages, media, and agents misbehave.
+
+1. **Build the input-to-present benchmark.** Measure physical key event →
+   painted glyph on the same 144 Hz Wayland machine in hwatu and Chromium.
+   Publish p50/p95/p99 for a local text fixture, a large contenteditable page,
+   and one real application. Under a fixture that burns 200 ms/s of page-main-
+   thread time while four screenshot/diff checks run, browser-owned input is
+   p95 ≤2 display frames, p99 ≤4, and max <100 ms over 10,000 keystrokes.
+2. **Install a GTK main-loop stall watchdog.** Record >8 ms and >50 ms stalls
+   with the active operation. Move pixel diff, snapshot LCS, image encoding,
+   and other plain-data work off the GTK/input thread; bound or coalesce work
+   that cannot move. Four concurrent agent checks must not make a focused human
+   window miss the targets above.
+3. **Eliminate focus-restore dead input.** Restore on pointer entry/WM-adjacent
+   signals, show an honest “restoring…” state, and measure focus→Committed.
+   Never replay buffered keys across an IME boundary. The gate is zero silently
+   dropped keys in the focus/restore fixture.
+4. **Contain media hangs.** Replace one global autoplay choice with remembered
+   per-site policy and a Chromium-like safe default. Detect an unresponsive web
+   process, report which page/media transition was active, and recover/reload
+   with media blocked instead of wedging input. Keep `HWATU_BLOCK_AUTOPLAY=1`
+   as a diagnostic escape hatch. Test Venice/Clerk-style background videos and
+   the existing scale.com GStreamer reproducer.
+5. **Prove memory is bounded.** Promote the issue #48 soak into a release gate:
+   eight hours plus 1,000 open/navigate/shot/snapshot/close cycles, process-tree
+   PSS sampled after warm-up, last-75% slope <2 MiB/hour, final PSS no more than
+   15% or 150 MiB above baseline, and at least 90% of each closed window's PSS
+   reclaimed within 60 seconds. Publish the CSV and summary.
+6. **Re-test the graphics matrix on every WebKitGTK update.** Compare DMA-BUF
+   and legacy EGLImage presentation, damage propagation on/off, Intel/NVIDIA
+   hybrid and single-GPU Wayland, 60/120/144 Hz. Prefer correct partial damage
+   and DMA-BUF once upstream fixes make them win; do not fossilize workarounds.
+
+**Q1 gate:** the latency, focus, media-hang, concurrent-agent, and eight-hour
+soak suites pass on the reference machine, plus a four-hour media/WebRTC soak
+with zero hangs/crashes and no unexplained UI gap >250 ms. Methodology and raw
+summaries live in `docs/benchmarks.md`.
+
+#### Q2. Complete an ordinary browser day
+
+This phase is deliberately boring. Each item removes a common reason to open a
+second browser.
+
+1. **Navigation memory:** global history and URL completion (H9), link hints
+   for follow/new-window/yank (H10), and undo-close with per-window history
+   restoration (H12). No sync service.
+2. **Credential ergonomics without a new password vault:** integrate the
+   freedesktop Secret Service plus explicit `pass`, KeePassXC, and Bitwarden
+   adapters (H11). Filling is user-initiated, origin-scoped, visible, and never
+   exposed to an untrusted agent profile.
+3. **Files that finish:** file chooser/upload (H1); a bounded download history
+   with progress, cancel, retry, open, and reveal; collision-safe names and
+   visible failures. Upload and download fixtures cover native dialogs and
+   drag/drop before this item is called done.
+4. **Per-site controls in one discoverable surface:** origin+permission-kind
+   decisions with revocation, zoom, autoplay/media, cosmetic ad filtering
+   (H14), and clear data. Defaults remain configurable as dotfiles, but ordinary
+   changes must not require discovering an environment variable.
+5. **Common content paths:** verified inline PDF viewing (H8), WebRTC + hardware
+   decode with `doctor` diagnostics (H2/H3), and keyboard-only/Orca
+   accessibility smoke tests for navigation, forms, prompts, and downloads.
+6. **Default-browser integration:** install/uninstall `xdg-settings` and
+   desktop-file support cleanly, preserve external-link intent, and provide a
+   first-run import/checklist without taking over silently.
+
+**Q2 gate:** an automated/manual journey matrix passes for sign-in, reload,
+back/forward, upload, download, inline PDF, camera/mic permission, password
+fill, private-window cleanup, undo-close, daemon restart, and opening an
+external link. Upload cases include single/multiple/cancel/zero-byte/large
+Unicode files with exact hash round-trips; 50 parallel same-name downloads
+finish without overwrite and with exactly-once terminal events. Permission
+decisions survive 50 restarts with zero cross-origin leakage. Every failure
+names a recovery action.
+
+#### Q3. Compatibility is a tested budget, not a promise
+
+1. Maintain a public daily-driver matrix spanning account/auth (Clerk and
+   Google), work apps, GitHub/GitLab, docs/editors, maps, shopping/payment,
+   social/video, WebRTC, uploads/downloads, and hostile long-running pages.
+   Test workflows, not home-page screenshots. Freeze the matrix before the
+   milestone starts; removing a failing journey requires a documented
+   engine-bound classification, not a denominator change.
+2. Add a sanitized `hwatu diagnose --id` bundle: versions, GPU/render path,
+   termination reason, bounded console/network summaries, enabled quirks, and
+   no cookies, credentials, page bodies, or private URLs by default.
+3. Productize fallback instead of pretending engine gaps do not exist. One
+   action opens the current URL in the configured fallback browser; link hints
+   can open a target there. Surface the reason when possible (Widevine,
+   passkey/WebAuthn, anti-bot rejection), and track upstream status quarterly.
+   The fallback test preserves exact URLs containing Unicode, spaces, and shell
+   metacharacters 100/100 without invoking a shell, leaves the original window
+   intact, and reports a missing handler visibly.
+4. Turn repeated site failures into narrow, reviewable compatibility rules
+   with fixtures and expiry/version notes. Do not grow an untested pile of UA
+   spoofing and injected patches.
+
+**Q3 gate:** the published matrix completes at least 95% of supported journeys;
+all remaining failures are either documented engine-bound cases with a
+one-action fallback or tracked release blockers.
+
+#### Release proof and sequencing
+
+Q0 and Q1 run first and may proceed in parallel. Q2 builds on the profile and
+recovery model. Q3 runs continuously from the first patch. Remaining D3
+shortform work, notifications, spellcheck, printing, quickmarks/search
+keywords, forced dark mode, mpv/editor integration, workspace-aware restore,
+and other delight features do not preempt a failed gate; target them at v0.8.x
+or later after observed demand.
+
+v0.8.0 ships only after: (1) a 14-day maintainer dogfood with hwatu registered
+as the OS default browser; (2) zero unrecovered data/auth loss and zero
+unexplained renderer hangs; (3) the Q1 benchmark/soak artifacts are published;
+(4) the Q2 journey matrix passes; and (5) fallback use during dogfood is limited
+to the documented engine-bound list. Run the headed journey smoke on niri,
+sway, and Hyprland before release. The release note reports failures and
+fallbacks as prominently as successes.
+
 ### D0: silently broken or one-line-cheap (engine already does it)
 
 Each of these is small because WebKitGTK 2.52 already implements the
