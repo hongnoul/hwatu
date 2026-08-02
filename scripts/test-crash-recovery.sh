@@ -15,11 +15,32 @@ work="$(mktemp -d "${TMPDIR:-/tmp}/hwatu-crash-recovery.XXXXXX")"
 daemon_pid=""
 server_pid=""
 cleanup() {
+    set +e
     "$bin/hwatu" quit >/dev/null 2>&1 || true
-    [[ -n "$daemon_pid" ]] && kill "$daemon_pid" 2>/dev/null || true
-    [[ -n "$server_pid" ]] && kill "$server_pid" 2>/dev/null || true
-    wait 2>/dev/null || true
-    rm -rf "$work"
+    if [[ -n "$daemon_pid" ]]; then
+        # A recovered WebKit process may still be flushing cache files after
+        # the daemon accepts quit. Reap the daemon before removing its XDG
+        # roots so a child cannot recreate entries under rm.
+        for _ in $(seq 1 100); do
+            kill -0 "$daemon_pid" 2>/dev/null || break
+            sleep 0.02
+        done
+        kill "$daemon_pid" 2>/dev/null || true
+        wait "$daemon_pid" 2>/dev/null || true
+    fi
+    if [[ -n "$server_pid" ]]; then
+        kill "$server_pid" 2>/dev/null || true
+        wait "$server_pid" 2>/dev/null || true
+    fi
+    # Sandboxed WebKit helpers can outlive their parent for a few scheduler
+    # ticks. Retry bounded removal rather than reporting a false test failure
+    # or leaking the fixture directory.
+    for _ in $(seq 1 100); do
+        rm -rf "$work" 2>/dev/null && return
+        sleep 0.02
+    done
+    echo "failed to remove test directory: $work" >&2
+    return 1
 }
 trap cleanup EXIT INT TERM
 

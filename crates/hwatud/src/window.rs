@@ -2422,7 +2422,6 @@ mod tests {
     }
 
     #[test]
-<<<<<<< HEAD
     fn confirmation_keys_only_claim_explicit_answers() {
         let none = gtk::gdk::ModifierType::empty();
         assert_eq!(super::confirm_answer(gtk::gdk::Key::y, none), Some(true));
