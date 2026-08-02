@@ -26,10 +26,6 @@ pub enum Prompt {
         certificate: gio::TlsCertificate,
         reason: String,
     },
-    /// The window's web process died (crash or kernel OOM kill). `y`
-    /// reloads the page; `n` leaves the dead view (find/history intact,
-    /// reload later via the WM or a new prompt).
-    Crash { reason: &'static str },
 }
 
 impl Prompt {
@@ -39,7 +35,6 @@ impl Prompt {
             Prompt::Tls { host, reason, .. } => {
                 format!("TLS error for {host} ({reason}), proceed?")
             }
-            Prompt::Crash { reason } => format!("page {reason}, reload?"),
         }
     }
 
@@ -48,9 +43,6 @@ impl Prompt {
             Prompt::Permission { host, kind, .. } => Some(format!("perm:{host}:{kind}")),
             // TLS exceptions are handled by the network session itself.
             Prompt::Tls { .. } => None,
-            // Always ask: a crash loop should stay visible, not be
-            // silently auto-answered from a remembered decision.
-            Prompt::Crash { .. } => None,
         }
     }
 }
@@ -132,14 +124,6 @@ fn answer(prompt: &Prompt, allow: bool, webview: Option<&webkit6::WebView>) {
                 println!("hwatud: TLS exception for {host} (this session)");
                 session.allow_tls_certificate_for_host(certificate, host);
                 webview.load_uri(failing_uri);
-            }
-        }
-        Prompt::Crash { .. } => {
-            if !allow {
-                return;
-            }
-            if let Some(webview) = webview {
-                webview.reload();
             }
         }
     }

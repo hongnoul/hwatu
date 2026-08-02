@@ -895,10 +895,9 @@ impl BrowserWindow {
                 eprintln!("hwatud: web process for window {} {reason}", this.id);
                 this.show_recovery_overlay(
                     "Page crashed",
-                    &format!("The web process {reason}. Press y in the bar to reload, or Ctrl+l to open a URL."),
+                    &format!("The web process {reason}. Press Ctrl+r or F5 to reload, or Ctrl+l to open a URL."),
                     RecoveryOverlay::Failure,
                 );
-                this.push_prompt(Prompt::Crash { reason });
             });
         }
         // Popups: window.open / target=_blank. WM-is-the-tab-bar means
