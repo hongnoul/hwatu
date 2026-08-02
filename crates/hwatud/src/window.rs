@@ -64,6 +64,14 @@ fn home_page() -> Option<String> {
         .filter(|v| !v.trim().is_empty())
 }
 
+/// WebKit cancels the in-flight main-frame request when another navigation
+/// replaces it, including back/forward history traversal. That is normal
+/// navigation control flow, not a page failure worth surfacing to the user.
+fn load_was_cancelled(error: &glib::Error) -> bool {
+    error.matches(webkit6::NetworkError::Cancelled)
+        || error.matches(gtk::gio::IOErrorEnum::Cancelled)
+}
+
 /// Media autoplay policy for every WebView. WebKit's own default is
 /// ALLOW_WITHOUT_SOUND, which is why video sites autoplay muted: their
 /// unmuted-play probe is rejected, so they fall back to a muted player.
@@ -894,6 +902,13 @@ impl BrowserWindow {
         {
             let this = self.clone();
             webview.connect_load_failed(move |_, _, failing_uri, error| {
+                // Back/forward (and any navigation that supersedes an
+                // in-flight load) cancels the old main-frame request. The
+                // replacement load is already underway, so treating this as
+                // a failure leaves a false overlay on top of the new page.
+                if load_was_cancelled(error) {
+                    return true;
+                }
                 // A navigation converted into a download (attachment
                 // disposition or unrenderable MIME) aborts the frame
                 // load with FrameLoadInterruptedByPolicyChange. That
@@ -2023,7 +2038,7 @@ impl BrowserWindow {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_feature_overrides;
+    use super::{load_was_cancelled, parse_feature_overrides};
 
     #[test]
     fn parses_on_off_pairs() {
@@ -2076,5 +2091,26 @@ mod tests {
         assert_eq!(super::ratio_from_value(&json!("0.25")), None);
         assert_eq!(super::ratio_from_value(&json!(null)), None);
         assert_eq!(super::ratio_from_value(&json!({})), None);
+    }
+
+    #[test]
+    fn cancelled_webkit_load_is_not_a_page_failure() {
+        let error = glib::Error::new(
+            webkit6::NetworkError::Cancelled,
+            "Load request cancelled",
+        );
+        assert!(load_was_cancelled(&error));
+    }
+
+    #[test]
+    fn cancelled_gio_load_is_not_a_page_failure() {
+        let error = glib::Error::new(gtk::gio::IOErrorEnum::Cancelled, "Operation cancelled");
+        assert!(load_was_cancelled(&error));
+    }
+
+    #[test]
+    fn genuine_network_error_remains_a_page_failure() {
+        let error = glib::Error::new(webkit6::NetworkError::Failed, "Connection failed");
+        assert!(!load_was_cancelled(&error));
     }
 }
