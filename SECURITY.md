@@ -33,7 +33,7 @@ HWATUD_NO_EVAL=1 hwatud
 
 This policy is enforced in the daemon before dispatch, so direct CLI, MCP, and raw socket requests receive the same rejection. It rejects direct eval, `check`/`render` requests with non-empty eval parameters, and batches containing eval surfaces.
 
-To avoid writing cookies, credentials, crash-recovery sessions, and discarded-window session blobs into the normal profile/cache locations, start an isolated temporary profile:
+To avoid persisting cookies, credentials, crash-recovery sessions, and discarded-window session blobs, start an ephemeral profile:
 
 ```sh
 hwatud --ephemeral-profile
@@ -45,7 +45,7 @@ or set:
 HWATUD_EPHEMERAL_PROFILE=1 hwatud
 ```
 
-Ephemeral-profile mode creates a daemon-private temporary WebKit data/cache root, disables persistent credential storage, skips persistent cookie setup, skips crash-session restore/save, and skips normal discarded-window state cleanup/writes. The temporary root is removed on clean daemon exit. A hard kill, kernel crash, or WebKit child process still may leave temporary files behind until the OS or operator cleans the temp directory.
+Ephemeral-profile mode uses WebKitGTK's memory-only ephemeral network session, disables persistent credential storage, skips persistent cookie setup, skips crash-session restore/save, and skips normal discarded-window state cleanup/writes. No temporary browser profile is created on disk.
 
 For the strictest local handoff mode, combine both:
 

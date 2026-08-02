@@ -41,7 +41,6 @@ use gtk::{gio, glib};
 use hwatu_ipc::OpenMode;
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::rc::Rc;
 use webkit6::prelude::*;
 
@@ -104,9 +103,6 @@ pub struct Daemon {
     /// running in ephemeral-profile mode. Holding the object here keeps the
     /// in-memory cookie jar alive while the daemon runs.
     pub network_session: Option<webkit6::NetworkSession>,
-    /// Temporary website-data/cache root removed on clean exit when the daemon
-    /// runs in ephemeral-profile mode.
-    _ephemeral_profile: Option<EphemeralProfile>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,73 +120,15 @@ impl Default for SecurityConfig {
     }
 }
 
-struct EphemeralProfile {
-    root: PathBuf,
-}
-
-impl EphemeralProfile {
-    fn create() -> std::io::Result<Self> {
-        let root = std::env::temp_dir().join(format!(
-            "hwatud-ephemeral-{}-{}",
-            std::process::id(),
-            glib::monotonic_time()
-        ));
-        // The profile may contain authenticated cookies and page data.
-        // Create the predictable-by-design path atomically instead of
-        // accepting an existing directory, and keep other OS users out.
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::DirBuilderExt;
-
-            std::fs::DirBuilder::new().mode(0o700).create(&root)?;
-        }
-        #[cfg(not(unix))]
-        std::fs::create_dir(&root)?;
-        Ok(Self { root })
-    }
-
-    fn root(&self) -> &std::path::Path {
-        &self.root
-    }
-}
-
-impl Drop for EphemeralProfile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
-    }
-}
-
 impl Daemon {
     fn new(app: gtk::Application, security: SecurityConfig) -> Rc<Self> {
-        let (network_session, ephemeral_profile) = if security.ephemeral_profile {
-            match EphemeralProfile::create() {
-                Ok(profile) => {
-                    let data = profile.root().join("data");
-                    let cache = profile.root().join("cache");
-                    if let Err(e) =
-                        std::fs::create_dir_all(&data).and_then(|_| std::fs::create_dir_all(&cache))
-                    {
-                        eprintln!("hwatud: failed to create ephemeral profile directories: {e}");
-                        std::process::exit(1);
-                    }
-                    let session = webkit6::NetworkSession::new(
-                        Some(&data.to_string_lossy()),
-                        Some(&cache.to_string_lossy()),
-                    );
-                    session.set_persistent_credential_storage_enabled(false);
-                    println!(
-                        "hwatud: ephemeral profile enabled under {} (removed on exit)",
-                        profile.root().display()
-                    );
-                    (Some(session), Some(profile))
-                }
-                Err(e) => {
-                    eprintln!("hwatud: failed to create ephemeral profile: {e}");
-                    std::process::exit(1);
-                }
-            }
+        let network_session = if security.ephemeral_profile {
+            let session = webkit6::NetworkSession::new_ephemeral();
+            session.set_persistent_credential_storage_enabled(false);
+            println!("hwatud: ephemeral profile enabled (memory-only WebKit session)");
+            Some(session)
         } else {
-            (None, None)
+            None
         };
 
         Rc::new(Self {
@@ -209,7 +147,6 @@ impl Daemon {
             next_deal: RefCell::new(0),
             security,
             network_session,
-            _ephemeral_profile: ephemeral_profile,
         })
     }
 
@@ -593,7 +530,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_dpr, parse_security_args, EphemeralProfile, ParseSecurity, SecurityConfig};
+    use super::{parse_dpr, parse_security_args, ParseSecurity, SecurityConfig};
 
     /// The DPR pin only accepts positive integers: GDK_SCALE cannot
     /// express fractions, and 0/negative are nonsense. Everything
@@ -641,18 +578,5 @@ mod tests {
     #[test]
     fn security_args_reject_unknown_flags() {
         assert!(parse_security_args(["--cookies-please"]).is_err());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn ephemeral_profile_is_private_and_removed_on_drop() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let profile = EphemeralProfile::create().unwrap();
-        let root = profile.root().to_path_buf();
-        let mode = std::fs::metadata(&root).unwrap().permissions().mode() & 0o777;
-        assert_eq!(mode, 0o700);
-        drop(profile);
-        assert!(!root.exists());
     }
 }
