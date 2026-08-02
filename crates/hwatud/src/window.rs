@@ -158,6 +158,25 @@ fn preferred_width(viewport_width: i32, ratio: f64) -> i32 {
     ((viewport_width as f64) * ratio).floor().max(1.0) as i32
 }
 
+/// Interpret only the keys owned by a confirmation prompt. Everything else
+/// must keep propagating to the page, otherwise a prompt appearing while the
+/// user types into a form can silently eat characters.
+fn confirm_answer(key: gtk::gdk::Key, state: gtk::gdk::ModifierType) -> Option<bool> {
+    let command_modifiers = gtk::gdk::ModifierType::CONTROL_MASK
+        | gtk::gdk::ModifierType::ALT_MASK
+        | gtk::gdk::ModifierType::SUPER_MASK
+        | gtk::gdk::ModifierType::HYPER_MASK
+        | gtk::gdk::ModifierType::META_MASK;
+    if state.intersects(command_modifiers) {
+        return None;
+    }
+    match key {
+        gtk::gdk::Key::y | gtk::gdk::Key::Y => Some(true),
+        gtk::gdk::Key::n | gtk::gdk::Key::N | gtk::gdk::Key::Escape => Some(false),
+        _ => None,
+    }
+}
+
 /// State saved across a discard. The session blob itself lives on disk
 /// (see [`discard_dir`]): keeping it in RAM would leak per-window
 /// memory exactly when the point of discarding is to reclaim it, and
@@ -727,13 +746,10 @@ impl BrowserWindow {
                 let BarMode::Confirm { tag } = this2.bar.mode() else {
                     return glib::Propagation::Proceed;
                 };
-                match key {
-                    gtk::gdk::Key::y | gtk::gdk::Key::Y => this2.answer_confirm(&tag, true),
-                    gtk::gdk::Key::n | gtk::gdk::Key::N | gtk::gdk::Key::Escape => {
-                        this2.answer_confirm(&tag, false)
-                    }
-                    _ => {}
-                }
+                let Some(answer) = confirm_answer(key, state) else {
+                    return glib::Propagation::Proceed;
+                };
+                this2.answer_confirm(&tag, answer);
                 glib::Propagation::Stop
             });
             window.add_controller(ctrl);
@@ -1743,13 +1759,10 @@ impl BrowserWindow {
             // don't leak into the page under the bar.
             BarMode::Find { .. } | BarMode::Url | BarMode::Palette => glib::Propagation::Proceed,
             BarMode::Confirm { tag } => {
-                match key {
-                    gtk::gdk::Key::y | gtk::gdk::Key::Y => self.answer_confirm(&tag, true),
-                    gtk::gdk::Key::n | gtk::gdk::Key::N | gtk::gdk::Key::Escape => {
-                        self.answer_confirm(&tag, false)
-                    }
-                    _ => {}
-                }
+                let Some(answer) = confirm_answer(key, state) else {
+                    return glib::Propagation::Proceed;
+                };
+                self.answer_confirm(&tag, answer);
                 glib::Propagation::Stop
             }
         }
@@ -2094,11 +2107,34 @@ mod tests {
     }
 
     #[test]
-    fn cancelled_webkit_load_is_not_a_page_failure() {
-        let error = glib::Error::new(
-            webkit6::NetworkError::Cancelled,
-            "Load request cancelled",
+    fn confirmation_keys_only_claim_explicit_answers() {
+        let none = gtk::gdk::ModifierType::empty();
+        assert_eq!(super::confirm_answer(gtk::gdk::Key::y, none), Some(true));
+        assert_eq!(
+            super::confirm_answer(gtk::gdk::Key::Y, gtk::gdk::ModifierType::SHIFT_MASK),
+            Some(true)
         );
+        assert_eq!(super::confirm_answer(gtk::gdk::Key::n, none), Some(false));
+        assert_eq!(super::confirm_answer(gtk::gdk::Key::N, none), Some(false));
+        assert_eq!(
+            super::confirm_answer(gtk::gdk::Key::Escape, none),
+            Some(false)
+        );
+        assert_eq!(super::confirm_answer(gtk::gdk::Key::a, none), None);
+        assert_eq!(super::confirm_answer(gtk::gdk::Key::exclam, none), None);
+        assert_eq!(
+            super::confirm_answer(gtk::gdk::Key::y, gtk::gdk::ModifierType::CONTROL_MASK),
+            None
+        );
+        assert_eq!(
+            super::confirm_answer(gtk::gdk::Key::n, gtk::gdk::ModifierType::ALT_MASK),
+            None
+        );
+    }
+
+    #[test]
+    fn cancelled_webkit_load_is_not_a_page_failure() {
+        let error = glib::Error::new(webkit6::NetworkError::Cancelled, "Load request cancelled");
         assert!(load_was_cancelled(&error));
     }
 
