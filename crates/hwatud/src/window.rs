@@ -249,6 +249,9 @@ pub struct BrowserWindow {
     /// (method, url, status, type, timing), not just failures.
     /// Outlives discards for the same reason the console buffer does.
     pub net: crate::net::Buffer,
+    /// Suppress a retry storm: Turnstile emits the same 600010 rejection
+    /// repeatedly in one document.  Reset on the next top-level load.
+    turnstile_handoff_offered: std::cell::Cell<bool>,
     /// Command-palette state while the bar is in Palette mode: the
     /// current ranked matches and which one is highlighted. Cleared on
     /// close so a reopened palette starts fresh.
@@ -609,6 +612,7 @@ impl BrowserWindow {
             snapshot_baseline: RefCell::new(None),
             console: crate::console::Buffer::default(),
             net: crate::net::Buffer::default(),
+            turnstile_handoff_offered: std::cell::Cell::new(false),
             palette: RefCell::new(None),
         });
 
@@ -622,12 +626,29 @@ impl BrowserWindow {
         {
             let daemon = daemon.clone();
             let win_id = id;
+            let weak = Rc::downgrade(&this);
             this.console.set_hook(move |entry| {
                 daemon.events.emit(
                     "console",
                     Some(win_id),
                     serde_json::to_value(entry).unwrap_or_default(),
                 );
+                if crate::console::is_turnstile_compat_error(entry) {
+                    let Some(this) = weak.upgrade() else { return };
+                    if this.turnstile_handoff_offered.replace(true) {
+                        return;
+                    }
+                    let Some(uri) = entry
+                        .page
+                        .as_deref()
+                        .filter(|uri| uri.starts_with("https://") || uri.starts_with("http://"))
+                    else {
+                        return;
+                    };
+                    this.push_prompt(Prompt::ExternalBrowser {
+                        uri: uri.to_string(),
+                    });
+                }
             });
         }
         daemon.events.emit(
@@ -763,6 +784,7 @@ impl BrowserWindow {
             webview.connect_load_changed(move |wv, event| match event {
                 webkit6::LoadEvent::Started => {
                     this.note_load_engaged(wv);
+                    this.turnstile_handoff_offered.set(false);
                     this.load_committed.set(false);
                     this.clear_recovery_overlay();
                     this.emit_load(wv, "started");

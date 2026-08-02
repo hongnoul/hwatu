@@ -26,6 +26,10 @@ pub enum Prompt {
         certificate: gio::TlsCertificate,
         reason: String,
     },
+    /// The page's anti-bot provider rejected WebKitGTK.  A different engine
+    /// is the only honest recovery: do not spoof hardware fingerprints or
+    /// silently claim that the challenge passed.
+    ExternalBrowser { uri: String },
 }
 
 impl Prompt {
@@ -35,6 +39,10 @@ impl Prompt {
             Prompt::Tls { host, reason, .. } => {
                 format!("TLS error for {host} ({reason}), proceed?")
             }
+            Prompt::ExternalBrowser { uri } => format!(
+                "Cloudflare rejected WebKitGTK; open {} in another browser?",
+                host_of(uri)
+            ),
         }
     }
 
@@ -43,6 +51,8 @@ impl Prompt {
             Prompt::Permission { host, kind, .. } => Some(format!("perm:{host}:{kind}")),
             // TLS exceptions are handled by the network session itself.
             Prompt::Tls { .. } => None,
+            // Launching another application is always an explicit action.
+            Prompt::ExternalBrowser { .. } => None,
         }
     }
 }
@@ -124,6 +134,15 @@ fn answer(prompt: &Prompt, allow: bool, webview: Option<&webkit6::WebView>) {
                 println!("hwatud: TLS exception for {host} (this session)");
                 session.allow_tls_certificate_for_host(certificate, host);
                 webview.load_uri(failing_uri);
+            }
+        }
+        Prompt::ExternalBrowser { uri } => {
+            if !allow {
+                return;
+            }
+            match crate::external::open(uri) {
+                Ok(browser) => println!("hwatud: opened {uri} in {browser}"),
+                Err(error) => eprintln!("hwatud: cannot open {uri} externally: {error}"),
             }
         }
     }
