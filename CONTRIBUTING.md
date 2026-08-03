@@ -4,15 +4,18 @@ Bug reports, patches, and packaging work are all welcome.
 
 ## Priorities
 
-hwatu is AI-first: the product is visual verification for coding
-agents, and the roadmap ([docs/roadmap.md](docs/roadmap.md)) is
-ordered around the agent path (MCP server, snapshot quality,
-profiles/isolation, displayless CI). The human UI is deliberately
-frozen at "receive an agent hand-off" quality: fixes there are
-welcome, but new human-browser features (link hints, history,
-password integration, sync, extensions) are explicit non-goals and
-will be declined. Small human papercuts (zoom, undo-close, yank) are
-fine if they stay inside the existing Action/Keymap machinery.
+hwatu is one shared browser platform with two products. AI verification remains
+first when shared-runtime priorities conflict. The tiling-WM browser has its own
+accepted daily-driver roadmap rather than being frozen at hand-off quality.
+Choose the relevant plan before proposing work:
+
+- [AI verification](docs/roadmaps/verification.md)
+- [Tiling-WM browser](docs/roadmaps/browser.md)
+- [Shared platform](docs/roadmaps/platform.md)
+
+Reusable behavior moves into the platform through an explicit capability and
+tests. Do not make verification depend on browser-shell policy or duplicate
+runtime machinery between products.
 
 ## Building
 
@@ -41,9 +44,10 @@ reports become roadmap and regression work.
 
 ## Pull requests
 
-- Keep the philosophy: agent-first, no tabs, no chrome, the WM does
-  window management. Check [docs/roadmap.md](docs/roadmap.md) before
-  building a feature.
+- Preserve the product boundary: agent-first verification, a focused tiling-WM
+  browser, and no tabs. The WM does window management. Check the
+  [roadmap index](docs/roadmap.md) and the relevant track before building a
+  feature.
 - New engine knobs go in code with correct defaults, not in a config file.
 - `cargo test && cargo clippy` must pass.
 - One logical change per PR.
