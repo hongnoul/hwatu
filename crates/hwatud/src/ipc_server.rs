@@ -119,6 +119,13 @@ fn read_next_request(conn: gio::SocketConnection, input: gio::DataInputStream, d
 /// automation commands (eval/navigate/screenshot/wait_load) complete
 /// later on the main loop and consume `reply` when they finish.
 fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
+    if !daemon.security.eval_enabled && req.uses_eval() {
+        reply(Response::err(
+            "eval disabled by daemon policy (--no-eval)".to_string(),
+        ));
+        return;
+    }
+
     let req = match req {
         Request::Batch { actions } => return dispatch_batch(daemon.clone(), actions, reply),
         other => other,
