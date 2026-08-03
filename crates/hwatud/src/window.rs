@@ -72,6 +72,19 @@ fn load_was_cancelled(error: &glib::Error) -> bool {
         || error.matches(gtk::gio::IOErrorEnum::Cancelled)
 }
 
+/// Whether a navigation action is a conventional Ctrl+click on a link.
+/// WebKit reports modifiers as GDK bits but leaves tab creation to the
+/// embedder, so without this check Ctrl+click navigates the current view.
+fn is_ctrl_click_link(
+    navigation_type: webkit6::NavigationType,
+    mouse_button: u32,
+    modifiers: u32,
+) -> bool {
+    navigation_type == webkit6::NavigationType::LinkClicked
+        && mouse_button == 1
+        && modifiers & gtk::gdk::ModifierType::CONTROL_MASK.bits() != 0
+}
+
 /// Media autoplay policy for every WebView. WebKit's own default is
 /// ALLOW_WITHOUT_SOUND, which is why video sites autoplay muted: their
 /// unmuted-play probe is rejected, so they fall back to a muted player.
@@ -997,12 +1010,39 @@ impl BrowserWindow {
             let this = self.clone();
             webview.connect_close(move |_| this.window.close());
         }
-        // Non-displayable responses (Content-Disposition: attachment,
-        // MIME types WebKit can't render) become downloads instead of
-        // dead ends. Main-document responses also pass through the
-        // per-site UA switcher (mobile UI for reels-style sites),
-        // which may restart the load under the right user-agent.
-        webview.connect_decide_policy(|wv, decision, decision_type| {
+        // Ctrl+click follows the same client-tab path as Ctrl+t instead of
+        // replacing the current page. Non-displayable responses
+        // (Content-Disposition: attachment, MIME types WebKit can't render)
+        // become downloads instead of dead ends. Main-document responses
+        // also pass through the per-site UA switcher (mobile UI for
+        // reels-style sites), which may restart the load under the right
+        // user-agent.
+        let this = self.clone();
+        webview.connect_decide_policy(move |wv, decision, decision_type| {
+            if decision_type == webkit6::PolicyDecisionType::NavigationAction {
+                let Some(navigation) =
+                    decision.dynamic_cast_ref::<webkit6::NavigationPolicyDecision>()
+                else {
+                    return false;
+                };
+                let Some(mut action) = navigation.navigation_action() else {
+                    return false;
+                };
+                if !is_ctrl_click_link(
+                    action.navigation_type(),
+                    action.mouse_button(),
+                    action.modifiers(),
+                ) {
+                    return false;
+                }
+                let Some(uri) = action.request().and_then(|request| request.uri()) else {
+                    return false;
+                };
+
+                decision.ignore();
+                Self::open(&this.daemon, Some(uri.to_string()), None, OpenMode::Normal);
+                return true;
+            }
             if decision_type != webkit6::PolicyDecisionType::Response {
                 return false; // default handling
             }
@@ -2059,7 +2099,7 @@ impl BrowserWindow {
 
 #[cfg(test)]
 mod tests {
-    use super::{load_was_cancelled, parse_feature_overrides};
+    use super::{is_ctrl_click_link, load_was_cancelled, parse_feature_overrides};
 
     #[test]
     fn parses_on_off_pairs() {
@@ -2165,5 +2205,33 @@ mod tests {
     fn genuine_network_error_remains_a_page_failure() {
         let error = glib::Error::new(webkit6::NetworkError::Failed, "Connection failed");
         assert!(!load_was_cancelled(&error));
+    }
+
+    #[test]
+    fn only_ctrl_primary_link_clicks_open_new_tabs() {
+        let ctrl = gtk::gdk::ModifierType::CONTROL_MASK.bits();
+        let shift = gtk::gdk::ModifierType::SHIFT_MASK.bits();
+
+        assert!(is_ctrl_click_link(
+            webkit6::NavigationType::LinkClicked,
+            1,
+            ctrl
+        ));
+        assert!(is_ctrl_click_link(
+            webkit6::NavigationType::LinkClicked,
+            1,
+            ctrl | shift
+        ));
+        assert!(!is_ctrl_click_link(
+            webkit6::NavigationType::LinkClicked,
+            1,
+            shift
+        ));
+        assert!(!is_ctrl_click_link(
+            webkit6::NavigationType::LinkClicked,
+            3,
+            ctrl
+        ));
+        assert!(!is_ctrl_click_link(webkit6::NavigationType::Other, 1, ctrl));
     }
 }
