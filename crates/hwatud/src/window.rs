@@ -85,6 +85,32 @@ fn is_ctrl_click_link(
         && modifiers & gtk::gdk::ModifierType::CONTROL_MASK.bits() != 0
 }
 
+/// Return the scheme for a URI that should leave the browser.
+///
+/// WebKit does not launch desktop handlers for custom schemes on behalf of
+/// embedders. Keep browser-owned schemes in the WebView and hand protocols
+/// such as `zoommtg:`, `mailto:`, and `tel:` to GIO instead. Callers must also
+/// require a user gesture so a page cannot launch native applications merely
+/// by loading.
+fn external_uri_scheme(uri: &str) -> Option<String> {
+    let (scheme, _) = uri.split_once(':')?;
+    if scheme.is_empty()
+        || !scheme.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_alphabetic()
+                || (index > 0 && (byte.is_ascii_digit() || matches!(byte, b'+' | b'-' | b'.')))
+        })
+    {
+        return None;
+    }
+
+    let scheme = scheme.to_ascii_lowercase();
+    match scheme.as_str() {
+        "http" | "https" | "about" | "data" | "blob" | "file" | "javascript" | "ws" | "wss"
+        | "hwatu" => None,
+        _ => Some(scheme),
+    }
+}
+
 /// Media autoplay policy for every WebView. WebKit's own default is
 /// ALLOW_WITHOUT_SOUND, which is why video sites autoplay muted: their
 /// unmuted-play probe is rejected, so they fall back to a muted player.
@@ -1019,7 +1045,11 @@ impl BrowserWindow {
         // user-agent.
         let this = self.clone();
         webview.connect_decide_policy(move |wv, decision, decision_type| {
-            if decision_type == webkit6::PolicyDecisionType::NavigationAction {
+            if matches!(
+                decision_type,
+                webkit6::PolicyDecisionType::NavigationAction
+                    | webkit6::PolicyDecisionType::NewWindowAction
+            ) {
                 let Some(navigation) =
                     decision.dynamic_cast_ref::<webkit6::NavigationPolicyDecision>()
                 else {
@@ -1028,6 +1058,35 @@ impl BrowserWindow {
                 let Some(mut action) = navigation.navigation_action() else {
                     return false;
                 };
+                let Some(uri) = action.request().and_then(|request| request.uri()) else {
+                    return false;
+                };
+
+                // Native-app links need explicit embedder handling. Only
+                // honor them during a user gesture, and only when the desktop
+                // has a registered handler for the scheme. This covers Zoom's
+                // `zoommtg:` join button without allowing pages to launch
+                // arbitrary programs on load.
+                if action.is_user_gesture()
+                    && external_uri_scheme(&uri).is_some_and(|scheme| {
+                        gtk::gio::AppInfo::default_for_uri_scheme(&scheme).is_some()
+                    })
+                {
+                    decision.ignore();
+                    if let Err(error) = gtk::gio::AppInfo::launch_default_for_uri(
+                        &uri,
+                        None::<&gtk::gio::AppLaunchContext>,
+                    ) {
+                        eprintln!("hwatud: could not open external URI: {error}");
+                        this.flash_bar("could not open external application", 4);
+                    }
+                    return true;
+                }
+
+                if decision_type == webkit6::PolicyDecisionType::NewWindowAction {
+                    return false;
+                }
+
                 if !is_ctrl_click_link(
                     action.navigation_type(),
                     action.mouse_button(),
@@ -1035,10 +1094,6 @@ impl BrowserWindow {
                 ) {
                     return false;
                 }
-                let Some(uri) = action.request().and_then(|request| request.uri()) else {
-                    return false;
-                };
-
                 decision.ignore();
                 Self::open(&this.daemon, Some(uri.to_string()), None, OpenMode::Normal);
                 return true;
@@ -2099,7 +2154,9 @@ impl BrowserWindow {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_ctrl_click_link, load_was_cancelled, parse_feature_overrides};
+    use super::{
+        external_uri_scheme, is_ctrl_click_link, load_was_cancelled, parse_feature_overrides,
+    };
 
     #[test]
     fn parses_on_off_pairs() {
@@ -2233,5 +2290,32 @@ mod tests {
             ctrl
         ));
         assert!(!is_ctrl_click_link(webkit6::NavigationType::Other, 1, ctrl));
+    }
+
+    #[test]
+    fn native_app_schemes_are_external_but_browser_schemes_are_not() {
+        assert_eq!(
+            external_uri_scheme("zoommtg://zoom.us/join"),
+            Some("zoommtg".into())
+        );
+        assert_eq!(
+            external_uri_scheme("mailto:person@example.com"),
+            Some("mailto".into())
+        );
+        assert_eq!(
+            external_uri_scheme("ZOOMMTG://zoom.us/join"),
+            Some("zoommtg".into())
+        );
+        assert_eq!(
+            external_uri_scheme("web+notes:42"),
+            Some("web+notes".into())
+        );
+
+        assert_eq!(external_uri_scheme("https://zoom.us/join"), None);
+        assert_eq!(external_uri_scheme("HTTP://example.com"), None);
+        assert_eq!(external_uri_scheme("javascript:alert(1)"), None);
+        assert_eq!(external_uri_scheme("hwatu://launcher"), None);
+        assert_eq!(external_uri_scheme("not a uri"), None);
+        assert_eq!(external_uri_scheme("1invalid:value"), None);
     }
 }
