@@ -64,6 +64,14 @@ fn home_page() -> Option<String> {
         .filter(|v| !v.trim().is_empty())
 }
 
+/// WebKit cancels the in-flight main-frame request when another navigation
+/// replaces it, including back/forward history traversal. That is normal
+/// navigation control flow, not a page failure worth surfacing to the user.
+fn load_was_cancelled(error: &glib::Error) -> bool {
+    error.matches(webkit6::NetworkError::Cancelled)
+        || error.matches(gtk::gio::IOErrorEnum::Cancelled)
+}
+
 /// Media autoplay policy for every WebView. WebKit's own default is
 /// ALLOW_WITHOUT_SOUND, which is why video sites autoplay muted: their
 /// unmuted-play probe is rejected, so they fall back to a muted player.
@@ -112,7 +120,7 @@ const DEFAULT_WINDOW_HEIGHT: i32 = 768;
 /// mapped window. Tiling WMs use this as the initial size hint when deciding
 /// how to place a new toplevel, while floating WMs still get a useful
 /// desktop-sized window instead of an arbitrary fixed width. The built-in
-/// default is one third; users can override it with `"preferred_width"` in
+/// default is one half; users can override it with `"preferred_width"` in
 /// `~/.config/hwatu/config.json`.
 fn default_window_width() -> i32 {
     let Some(display) = gtk::gdk::Display::default() else {
@@ -129,7 +137,7 @@ fn default_window_width() -> i32 {
     preferred_width(monitor.geometry().width(), preferred_width_ratio())
 }
 
-const DEFAULT_PREFERRED_WIDTH: f64 = 1.0 / 3.0;
+const DEFAULT_PREFERRED_WIDTH: f64 = 1.0 / 2.0;
 
 fn preferred_width_ratio() -> f64 {
     config_value("preferred_width")
@@ -148,6 +156,25 @@ fn ratio_from_value(value: &serde_json::Value) -> Option<f64> {
 
 fn preferred_width(viewport_width: i32, ratio: f64) -> i32 {
     ((viewport_width as f64) * ratio).floor().max(1.0) as i32
+}
+
+/// Interpret only the keys owned by a confirmation prompt. Everything else
+/// must keep propagating to the page, otherwise a prompt appearing while the
+/// user types into a form can silently eat characters.
+fn confirm_answer(key: gtk::gdk::Key, state: gtk::gdk::ModifierType) -> Option<bool> {
+    let command_modifiers = gtk::gdk::ModifierType::CONTROL_MASK
+        | gtk::gdk::ModifierType::ALT_MASK
+        | gtk::gdk::ModifierType::SUPER_MASK
+        | gtk::gdk::ModifierType::HYPER_MASK
+        | gtk::gdk::ModifierType::META_MASK;
+    if state.intersects(command_modifiers) {
+        return None;
+    }
+    match key {
+        gtk::gdk::Key::y | gtk::gdk::Key::Y => Some(true),
+        gtk::gdk::Key::n | gtk::gdk::Key::N | gtk::gdk::Key::Escape => Some(false),
+        _ => None,
+    }
 }
 
 /// State saved across a discard. The session blob itself lives on disk
@@ -719,13 +746,10 @@ impl BrowserWindow {
                 let BarMode::Confirm { tag } = this2.bar.mode() else {
                     return glib::Propagation::Proceed;
                 };
-                match key {
-                    gtk::gdk::Key::y | gtk::gdk::Key::Y => this2.answer_confirm(&tag, true),
-                    gtk::gdk::Key::n | gtk::gdk::Key::N | gtk::gdk::Key::Escape => {
-                        this2.answer_confirm(&tag, false)
-                    }
-                    _ => {}
-                }
+                let Some(answer) = confirm_answer(key, state) else {
+                    return glib::Propagation::Proceed;
+                };
+                this2.answer_confirm(&tag, answer);
                 glib::Propagation::Stop
             });
             window.add_controller(ctrl);
@@ -894,6 +918,13 @@ impl BrowserWindow {
         {
             let this = self.clone();
             webview.connect_load_failed(move |_, _, failing_uri, error| {
+                // Back/forward (and any navigation that supersedes an
+                // in-flight load) cancels the old main-frame request. The
+                // replacement load is already underway, so treating this as
+                // a failure leaves a false overlay on top of the new page.
+                if load_was_cancelled(error) {
+                    return true;
+                }
                 // A navigation converted into a download (attachment
                 // disposition or unrenderable MIME) aborts the frame
                 // load with FrameLoadInterruptedByPolicyChange. That
@@ -1728,13 +1759,10 @@ impl BrowserWindow {
             // don't leak into the page under the bar.
             BarMode::Find { .. } | BarMode::Url | BarMode::Palette => glib::Propagation::Proceed,
             BarMode::Confirm { tag } => {
-                match key {
-                    gtk::gdk::Key::y | gtk::gdk::Key::Y => self.answer_confirm(&tag, true),
-                    gtk::gdk::Key::n | gtk::gdk::Key::N | gtk::gdk::Key::Escape => {
-                        self.answer_confirm(&tag, false)
-                    }
-                    _ => {}
-                }
+                let Some(answer) = confirm_answer(key, state) else {
+                    return glib::Propagation::Proceed;
+                };
+                self.answer_confirm(&tag, answer);
                 glib::Propagation::Stop
             }
         }
@@ -2023,7 +2051,7 @@ impl BrowserWindow {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_feature_overrides;
+    use super::{load_was_cancelled, parse_feature_overrides};
 
     #[test]
     fn parses_on_off_pairs() {
@@ -2057,6 +2085,15 @@ mod tests {
     }
 
     #[test]
+    fn preferred_width_defaults_to_one_half() {
+        assert_eq!(super::DEFAULT_PREFERRED_WIDTH, 0.5);
+        assert_eq!(
+            super::preferred_width(1920, super::DEFAULT_PREFERRED_WIDTH),
+            960
+        );
+    }
+
+    #[test]
     fn preferred_width_never_returns_zero() {
         assert_eq!(super::preferred_width(0, super::DEFAULT_PREFERRED_WIDTH), 1);
         assert_eq!(
@@ -2076,5 +2113,49 @@ mod tests {
         assert_eq!(super::ratio_from_value(&json!("0.25")), None);
         assert_eq!(super::ratio_from_value(&json!(null)), None);
         assert_eq!(super::ratio_from_value(&json!({})), None);
+    }
+
+    #[test]
+    fn confirmation_keys_only_claim_explicit_answers() {
+        let none = gtk::gdk::ModifierType::empty();
+        assert_eq!(super::confirm_answer(gtk::gdk::Key::y, none), Some(true));
+        assert_eq!(
+            super::confirm_answer(gtk::gdk::Key::Y, gtk::gdk::ModifierType::SHIFT_MASK),
+            Some(true)
+        );
+        assert_eq!(super::confirm_answer(gtk::gdk::Key::n, none), Some(false));
+        assert_eq!(super::confirm_answer(gtk::gdk::Key::N, none), Some(false));
+        assert_eq!(
+            super::confirm_answer(gtk::gdk::Key::Escape, none),
+            Some(false)
+        );
+        assert_eq!(super::confirm_answer(gtk::gdk::Key::a, none), None);
+        assert_eq!(super::confirm_answer(gtk::gdk::Key::exclam, none), None);
+        assert_eq!(
+            super::confirm_answer(gtk::gdk::Key::y, gtk::gdk::ModifierType::CONTROL_MASK),
+            None
+        );
+        assert_eq!(
+            super::confirm_answer(gtk::gdk::Key::n, gtk::gdk::ModifierType::ALT_MASK),
+            None
+        );
+    }
+
+    #[test]
+    fn cancelled_webkit_load_is_not_a_page_failure() {
+        let error = glib::Error::new(webkit6::NetworkError::Cancelled, "Load request cancelled");
+        assert!(load_was_cancelled(&error));
+    }
+
+    #[test]
+    fn cancelled_gio_load_is_not_a_page_failure() {
+        let error = glib::Error::new(gtk::gio::IOErrorEnum::Cancelled, "Operation cancelled");
+        assert!(load_was_cancelled(&error));
+    }
+
+    #[test]
+    fn genuine_network_error_remains_a_page_failure() {
+        let error = glib::Error::new(webkit6::NetworkError::Failed, "Connection failed");
+        assert!(!load_was_cancelled(&error));
     }
 }
