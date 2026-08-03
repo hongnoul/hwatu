@@ -255,8 +255,12 @@ fn default_open_mode() -> OpenMode {
             .unwrap_or(false)
     });
     let from_agent = from_jcode || AGENT_MARKERS.iter().any(|k| std::env::var_os(k).is_some());
-    let user_initiated = std::env::var_os("GIO_LAUNCHED_DESKTOP_FILE").is_some()
-        || std::env::var("JCODE_OPEN_ORIGIN").as_deref() == Ok("user");
+    let gio_launch_pid = std::env::var("GIO_LAUNCHED_DESKTOP_FILE_PID").ok();
+    let user_initiated = is_current_gio_launch(
+        std::env::var_os("GIO_LAUNCHED_DESKTOP_FILE").is_some(),
+        gio_launch_pid.as_deref(),
+        std::process::id(),
+    ) || std::env::var("JCODE_OPEN_ORIGIN").as_deref() == Ok("user");
     if should_default_to_normal(user_initiated, from_agent) {
         return OpenMode::Normal;
     }
@@ -279,6 +283,18 @@ fn default_open_mode() -> OpenMode {
 /// silently create a headless hwatu page.
 fn should_default_to_normal(user_initiated: bool, from_agent: bool) -> bool {
     user_initiated || !from_agent
+}
+
+/// GIO launch markers are inherited by child processes. The companion PID is
+/// therefore required to prove that GIO launched this process, rather than an
+/// ancestor such as a terminal or agent UI.
+fn is_current_gio_launch(
+    desktop_file_present: bool,
+    launched_pid: Option<&str>,
+    current_pid: u32,
+) -> bool {
+    desktop_file_present
+        && launched_pid.and_then(|pid| pid.parse::<u32>().ok()) == Some(current_pid)
 }
 
 /// Parse a user-facing mode name. `focus` is accepted as an alias for
@@ -1260,8 +1276,8 @@ pub(crate) fn connect_or_spawn() -> std::io::Result<UnixStream> {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_onboarding_command, normalize_request_paths, parse_with_default_mode,
-        should_default_to_normal, OpenMode,
+        is_current_gio_launch, is_onboarding_command, normalize_request_paths,
+        parse_with_default_mode, should_default_to_normal, OpenMode,
     };
     use hwatu_ipc::Request;
 
@@ -1279,6 +1295,15 @@ mod tests {
         assert!(should_default_to_normal(true, true));
         assert!(should_default_to_normal(false, false));
         assert!(!should_default_to_normal(false, true));
+    }
+
+    #[test]
+    fn gio_launch_marker_must_belong_to_current_process() {
+        assert!(is_current_gio_launch(true, Some("42"), 42));
+        assert!(!is_current_gio_launch(true, Some("41"), 42));
+        assert!(!is_current_gio_launch(true, None, 42));
+        assert!(!is_current_gio_launch(true, Some("not-a-pid"), 42));
+        assert!(!is_current_gio_launch(false, Some("42"), 42));
     }
 
     /// Env-independent parse: tests themselves often run under a

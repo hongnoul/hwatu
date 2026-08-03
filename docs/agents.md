@@ -521,7 +521,7 @@ hwatu focus $id    # window appears in their WM, session intact
 
 ## Window modes
 
-New visible windows request one third of the first monitor's width by
+New visible windows request one half of the first monitor's width by
 default. A personal installation can override that initial size without
 changing the upstream default by adding a fractional value between 0 and 1
 to `~/.config/hwatu/config.json`:
