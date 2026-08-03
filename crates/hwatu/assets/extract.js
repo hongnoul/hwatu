@@ -387,6 +387,87 @@ const interactiveCount = document.querySelectorAll(
   'a[href], button, [role=button], [onclick], input, select, textarea, summary, [role=link], [role=tab], [role=menuitem]'
 ).length;
 
+// Parser fixed-point guard: DOMs produced by JS/React can be valid live
+// trees that are not representable as equivalent text/html. The common
+// case is block-flow line wrappers inside <p>; when reparsed, the HTML
+// parser auto-closes the paragraph and ejects the wrapper siblings. Rewrite
+// only those unsafe paragraphs in the cloned document so serialization is a
+// fixed point while preserving attributes, children, and paragraph semantics.
+function parserFixedPointRewrite(doc) {
+  const BLOCK_IN_P = new Set([
+    'address', 'article', 'aside', 'blockquote', 'details', 'dialog', 'div',
+    'dl', 'fieldset', 'figcaption', 'figure', 'footer', 'form', 'h1', 'h2',
+    'h3', 'h4', 'h5', 'h6', 'header', 'hgroup', 'hr', 'main', 'menu', 'nav',
+    'ol', 'p', 'pre', 'section', 'table', 'ul'
+  ]);
+  const hasBarePSelector = () => {
+    const re = /(^|[^.#\w-])p(?=$|[^\w-])/i;
+    for (const sheet of sheets) {
+      const text = sheet.text || '';
+      if (re.test(text)) return true;
+    }
+    return false;
+  };
+  const stats = {
+    rewritten: [],
+    reparsed_tag_count_deltas: [],
+    injected_css: false,
+  };
+  let i = 0;
+  for (const p of [...doc.querySelectorAll('p')]) {
+    const offenders = [...p.children].filter(c => BLOCK_IN_P.has(c.tagName.toLowerCase()));
+    if (!offenders.length) continue;
+    const div = doc.ownerDocument.createElement('div');
+    for (const attr of [...p.attributes]) div.setAttribute(attr.name, attr.value);
+    div.setAttribute('role', div.getAttribute('role') || 'paragraph');
+    div.setAttribute('data-hwatu-was', 'p');
+    div.setAttribute('data-hwatu-parser-fix', String(i));
+    while (p.firstChild) div.appendChild(p.firstChild);
+    p.replaceWith(div);
+    stats.rewritten.push({
+      i,
+      from: 'p',
+      to: 'div',
+      reason: 'block child inside p would be ejected by text/html reparse',
+      block_children: [...new Set(offenders.map(c => c.tagName.toLowerCase()))],
+      class: div.getAttribute('class') || null,
+      id: div.getAttribute('id') || null,
+    });
+    i += 1;
+  }
+  if (stats.rewritten.length && hasBarePSelector()) {
+    const style = doc.ownerDocument.createElement('style');
+    style.setAttribute('data-hwatu-parser-fix-style', '');
+    style.textContent = ':where([data-hwatu-was="p"][role="paragraph"]) { display: block; margin-block: 1em; }';
+    (doc.querySelector('head') || doc).appendChild(style);
+    stats.injected_css = true;
+  }
+  const html = '<!doctype html>\n' + doc.outerHTML;
+  const reparsed = document.implementation.createHTMLDocument('hwatu-reparse-check');
+  reparsed.open();
+  reparsed.write(html);
+  reparsed.close();
+  const countTags = (root) => {
+    const counts = new Map();
+    for (const el of root.querySelectorAll('*')) {
+      const tag = el.tagName.toLowerCase();
+      counts.set(tag, (counts.get(tag) || 0) + 1);
+    }
+    return counts;
+  };
+  const liveCounts = countTags(doc);
+  const reparsedCounts = countTags(reparsed.documentElement);
+  const tags = new Set([...liveCounts.keys(), ...reparsedCounts.keys()]);
+  for (const tag of [...tags].sort()) {
+    const live = liveCounts.get(tag) || 0;
+    const reparsed = reparsedCounts.get(tag) || 0;
+    if (live !== reparsed) stats.reparsed_tag_count_deltas.push({ tag, live, reparsed });
+  }
+  stats.fixed_point = stats.reparsed_tag_count_deltas.length === 0;
+  stats.html = html;
+  return stats;
+}
+
 // 4. Serialized DOM. Strip scripts (the clone is a static still) and
 //    live stylesheet links (we inline the CSSOM text instead).
 const doc = document.documentElement.cloneNode(true);
@@ -401,10 +482,18 @@ doc.querySelectorAll('noscript').forEach(el => {
   el.replaceWith(span);
 });
 
+const parserFixedPoint = parserFixedPointRewrite(doc);
+
 return {
   base: location.href,
   title: document.title,
-  html: '<!doctype html>\n' + doc.outerHTML,
+  html: parserFixedPoint.html,
+  parserFixedPoint: {
+    rewritten: parserFixedPoint.rewritten,
+    reparsed_tag_count_deltas: parserFixedPoint.reparsed_tag_count_deltas,
+    fixed_point: parserFixedPoint.fixed_point,
+    injected_css: parserFixedPoint.injected_css,
+  },
   sheets,
   assets: [...assets].slice(0, 500),
     canvases,

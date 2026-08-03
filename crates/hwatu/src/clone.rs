@@ -373,6 +373,12 @@ fn clone_with_window(opts: &Opts, live: u64) -> Result<String, String> {
         "unreplicated_motion": unreplicated_motion,
         "stripped_scripts": stripped_scripts,
         "interactive_elements": interactive,
+        "parser_fixed_point": cap.get("parserFixedPoint").cloned().unwrap_or_else(|| serde_json::json!({
+            "fixed_point": true,
+            "rewritten": [],
+            "reparsed_tag_count_deltas": [],
+            "injected_css": false,
+        })),
         "scroll_effects": stats.scroll_effects,
         "summary": honesty,
         "envelope": "still clone; scores cover exactly this viewport and these scroll offsets",
