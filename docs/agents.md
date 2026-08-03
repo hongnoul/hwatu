@@ -2,9 +2,10 @@
 
 hwatu is a visual verification harness for coding agents: a warm
 WebKit daemon where opening, driving, and closing a real rendered
-browser window costs about as much as running `ls`. This is hwatu's
-primary use case, not a side feature; the plan of record is
-[roadmap.md](roadmap.md).
+browser window costs about as much as running `ls`. This is Hwatu's
+primary use case, not a side feature. Its plan of record is the
+[AI verification roadmap](roadmaps/verification.md), under the shared
+[portfolio roadmap](roadmap.md).
 
 It is not a scraping browser. If you need to crawl the web at scale,
 use a headless-Chrome fleet or Lightpanda. hwatu is for the inner

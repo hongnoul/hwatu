@@ -25,8 +25,9 @@ verification fixture, and perform a live human hand-off.
 
 These decisions are more durable than any backend.
 
-- **Agent-first.** Hwatu is a visual-verification browser for coding agents, not
-  a general-purpose human browser.
+- **Agent verification leads.** AI verification is the first product and wins
+  shared-runtime conflicts. Its interfaces stay focused on reproducible evidence
+  rather than absorbing general browser UI.
 - **The human side earns its keep, then some.** Since v0.7.0 the human side is a
   credible primary browser for tiling WMs: mainstream keybinds, media-correct
   playback, unified shortform controls, Chromium-curve scrolling. The
@@ -55,6 +56,21 @@ These decisions are more durable than any backend.
   engine unless the caller opts into another policy.
 - **Small core, hard boundaries.** Portable orchestration and verification math
   must not import GTK, GLib, Cocoa, Win32, or engine-specific types.
+
+## One platform, two products
+
+The shared native-browser platform supports two independently judged products:
+
+- **AI verification** owns machine-readable observation, deterministic checks,
+  evidence, and agent ergonomics.
+- **The tiling-WM browser** owns keyboard navigation, human-facing chrome,
+  media behavior, and daily-driver site usability.
+
+They share the daemon, protocol, native backend, live sessions, and hand-off.
+They do not depend on each other's product policy. Reusable behavior is promoted
+into the shared platform with a capability contract and conformance coverage;
+it is never copied periodically from one product into the other. The portfolio
+and track plans live in the [roadmap index](docs/roadmap.md).
 
 ## What stays portable
 
@@ -278,7 +294,9 @@ Linux regression gate make the portable boundary executable.
 - Replace the stable protocol with platform-specific CLIs or MCP tools.
 - Promise pixel-identical rendering across WebKitGTK, WKWebView, and WebView2.
 - Reduce hand-off to opening the URL in another browser.
-- Add tabs, sync, password management, extensions, or general daily-browser UX.
+- Put browser-shell policy into verification or portable runtime code. Tabs,
+  sync, a password store, and a general extension platform remain out of scope.
+  Focused daily-browser work belongs to the tiling-WM browser roadmap.
 - Block useful Linux roadmap work while portability foundations are incremental.
 - Claim support from cross-compilation alone.
 

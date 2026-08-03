@@ -324,8 +324,8 @@ sidesteps it via recycling but `open` still pays it). Fixed so far:
 screenshot encode (was 90 ms of the pass; threaded fast-PNG encode,
 ~14 ms), load-settle tail (`--until dom`, 2026-07-25), and per-pass
 overhead (composite `check` + window recycling, 2026-07-25, which
-took the warm screenshot pass from ~100 ms to 35-39 ms). Tracked in
-[roadmap.md](roadmap.md).
+took the warm screenshot pass from ~100 ms to 35-39 ms). Shared runtime
+performance work is tracked in the [platform roadmap](roadmaps/platform.md).
 
 Caveat on method: hwatu steps go through CLI process spawns (5 per
 pass, the worst case for it) except in the socket variants, while

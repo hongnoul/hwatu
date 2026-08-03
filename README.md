@@ -30,7 +30,10 @@ provide scrolling short-form content experience in mobile-level framerate.
 - [Agent guide](docs/agents.md): protocol, primitives, verification loops
 - [Human guide](docs/human.md): daily driving hwatu in a tiling WM, keybinds, media, hand-off
 - [Benchmarks](docs/benchmarks.md): every number, measured, with methodology
-- [Roadmap](docs/roadmap.md): plan of record, priorities, non-goals
+- [Roadmap](docs/roadmap.md): portfolio priorities and product boundaries
+  - [AI verification](docs/roadmaps/verification.md)
+  - [Tiling-WM browser](docs/roadmaps/browser.md)
+  - [Shared platform](docs/roadmaps/platform.md)
 - [Continuous improvement](docs/continuous-improvement.md): activation metric, feedback loop, weekly cadence
 - [Launch kit](docs/launch-kit.md): reusable copy, channels, and measurement plan
 

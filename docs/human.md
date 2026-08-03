@@ -25,10 +25,11 @@ hanafuda card per window so windows are tellable apart at a glance.
 
 If you want history completion and password-manager integration,
 qutebrowser still does those better today (both are now on the
-[roadmap](roadmap.md)). What hwatu offers instead: one
+[browser roadmap](roadmaps/browser.md)). What Hwatu offers instead: one
 warm engine for all windows (~56 MB per extra window), native ad
 blocking with no extension process, and the agent hand-off loop no
-other browser has. Scope and non-goals: [roadmap.md](roadmap.md).
+other browser has. Portfolio scope and shared non-goals live in the
+[roadmap index](roadmap.md).
 
 ## Keybindings
 
