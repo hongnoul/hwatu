@@ -2526,6 +2526,7 @@ fn trusted_report(
 /// What a trusted injection does with the resolved target point.
 enum TrustedAction {
     Click,
+    Paste,
     Type {
         text: String,
         clear: bool,
@@ -2563,6 +2564,7 @@ fn trusted_input_run(
 ) {
     let what: &'static str = match action {
         TrustedAction::Click => "trusted click",
+        TrustedAction::Paste => "trusted paste",
         TrustedAction::Type { .. } => "trusted type",
     };
     let reply = OnceReply::new(reply);
@@ -2642,6 +2644,9 @@ fn trusted_input_run(
                         TrustedAction::Click => {
                             crate::trusted_input::inject_click(&win, &view_for_cb, &target).await
                         }
+                        TrustedAction::Paste => {
+                            crate::trusted_input::inject_paste(&win, &view_for_cb, &target).await
+                        }
                         TrustedAction::Type { text, clear, enter } => {
                             crate::trusted_input::inject_type(
                                 &win,
@@ -2661,6 +2666,7 @@ fn trusted_input_run(
                     let url = view_for_cb.uri().map(|u| u.to_string());
                     let done = match action {
                         TrustedAction::Click => "clicked",
+                        TrustedAction::Paste => "pasted",
                         TrustedAction::Type { .. } => "typed",
                     };
                     // Give the compositor round-trip + page handlers a
@@ -2809,6 +2815,33 @@ return {{ typed: matched, value: String(value).slice(0, 200), url: location.href
         enter = enter,
     );
     eval_with(daemon, id, js, timeout_ms, NavPolicy::Success, reply);
+}
+
+/// Paste from the compositor clipboard into an element with native trusted
+/// input. This intentionally has no JS fallback: clipboard pasting must happen
+/// through the compositor while the trusted input session owns focus.
+#[allow(clippy::too_many_arguments)]
+pub fn paste(
+    daemon: &Rc<Daemon>,
+    id: Option<u64>,
+    selector: Option<String>,
+    nth: Option<u32>,
+    contains: Option<String>,
+    ref_idx: Option<u32>,
+    timeout_ms: Option<u64>,
+    reply: Reply,
+) {
+    trusted_input_run(
+        daemon,
+        id,
+        selector,
+        nth,
+        contains,
+        ref_idx,
+        TrustedAction::Paste,
+        timeout_ms,
+        reply,
+    );
 }
 
 /// Read a window's console/error/network capture buffer. Synchronous

@@ -364,6 +364,20 @@ pub async fn inject_type(
     Ok(report)
 }
 
+pub async fn inject_paste(
+    win: &Rc<BrowserWindow>,
+    view: &webkit6::WebView,
+    target: &TargetPoint,
+) -> Result<InputReport, String> {
+    // The click both proves delivery (calibration) and moves keyboard
+    // focus to the target's window + element before wtype sends Ctrl+V.
+    let report = inject_click(win, view, target).await?;
+    glib::timeout_future(Duration::from_millis(60)).await;
+    run_wtype(&["-M", "ctrl", "v", "-m", "ctrl"])?;
+    glib::timeout_future(Duration::from_millis(180)).await;
+    Ok(report)
+}
+
 struct WlState;
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for WlState {

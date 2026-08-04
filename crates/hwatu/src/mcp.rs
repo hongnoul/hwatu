@@ -403,6 +403,21 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
                 timeout_ms,
             })
         }
+        "paste" => {
+            let selector = opt_str(args, "selector");
+            let r#ref = opt_u32(args, "ref");
+            if selector.is_none() && r#ref.is_none() {
+                return Err("paste needs `selector` or `ref`".into());
+            }
+            Ok(Request::Paste {
+                id,
+                selector,
+                nth: opt_u32(args, "nth"),
+                contains: opt_str(args, "contains"),
+                r#ref,
+                timeout_ms,
+            })
+        }
         "scroll" => Ok(Request::Scroll {
             id,
             selector: opt_str(args, "selector"),
@@ -707,6 +722,20 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
                 "enter": prop("boolean", "Press Enter afterwards (submits the form if unhandled)."),
             }),
             &["text"],
+        ),
+        tool(
+            "paste",
+            "Paste from the compositor clipboard into an element targeted like click. \
+             Always uses native trusted input: clicks/focuses the element, then \
+             presses Ctrl+V with wtype while the daemon owns compositor focus.",
+            json!({
+                "id": prop("integer", ID_DESC),
+                "selector": prop("string", "CSS selector."),
+                "nth": prop("integer", "0-based index among selector matches."),
+                "contains": prop("string", "Keep only matches whose text contains this."),
+                "ref": prop("integer", "Interactable index from the last snapshot."),
+            }),
+            &[],
         ),
         tool(
             "eval",
@@ -1084,6 +1113,33 @@ mod tests {
     }
 
     #[test]
+    fn paste_requires_selector_or_ref() {
+        assert!(build_request("paste", &json!({})).is_err());
+        let Request::Paste { r#ref, .. } = build_request("paste", &json!({ "ref": 4 })).unwrap()
+        else {
+            panic!("expected Paste");
+        };
+        assert_eq!(r#ref, Some(4));
+
+        let Request::Paste {
+            selector,
+            nth,
+            contains,
+            ..
+        } = build_request(
+            "paste",
+            &json!({ "selector": "textarea", "nth": 1, "contains": "Bio" }),
+        )
+        .unwrap()
+        else {
+            panic!("expected Paste");
+        };
+        assert_eq!(selector.as_deref(), Some("textarea"));
+        assert_eq!(nth, Some(1));
+        assert_eq!(contains.as_deref(), Some("Bio"));
+    }
+
+    #[test]
     fn batch_actions_builds_and_rejects_unsupported_steps() {
         let Request::Batch { actions } = build_request(
             "batch_actions",
@@ -1182,6 +1238,7 @@ mod tests {
             "expect": { "selector": "h1" },
             "click": { "ref": 0 },
             "type_text": { "ref": 0, "text": "x" },
+            "paste": { "ref": 0 },
             "eval": { "js": "1+1" },
             "console": {},
             "net": {},

@@ -989,6 +989,28 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 timeout_ms,
             })
         }
+        Some("paste") => {
+            let selector = if r#ref.is_some() {
+                None
+            } else {
+                Some(
+                    rest.get(1)
+                        .ok_or("usage: hwatu paste [--id <id>] (<selector> | --ref <n>)")?
+                        .to_string(),
+                )
+            };
+            if selector.is_none() && r#ref.is_none() {
+                return Err("usage: hwatu paste [--id <id>] (<selector> | --ref <n>)".into());
+            }
+            Ok(Request::Paste {
+                id,
+                selector,
+                nth,
+                contains,
+                r#ref,
+                timeout_ms,
+            })
+        }
         Some("console") => Ok(Request::Console { id, clear, limit }),
         Some("net") => Ok(Request::Net { id, clear, limit }),
         Some("focus") => {
@@ -1053,9 +1075,10 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--foc
 | scroll [--id <id>] [<selector> [nth]] [--contains <text>] [--to-y <px>] [--by <pages>] \
 | snapshot [--id <id>] [--diff] [--rect] \
 | expect [--id <id>] <selector> [--contains <filter>] [--text <substring>] [--absent] [--visible] [--nth <n>] [--timeout-ms <ms>] [--watch] \
-| click [--id <id>] [--trusted] (<selector> [nth] [--contains <text>] | --ref <n>) \
-| type [--id <id>] [--trusted] (<selector> | --ref <n>) <text> [--enter] [--no-clear] \
-| console [--id <id>] [--clear] [--limit <n>] \
+	| click [--id <id>] [--trusted] (<selector> [nth] [--contains <text>] | --ref <n>) \
+	| type [--id <id>] [--trusted] (<selector> | --ref <n>) <text> [--enter] [--no-clear] \
+	| paste [--id <id>] (<selector> | --ref <n>) \
+	| console [--id <id>] [--clear] [--limit <n>] \
 | net [--id <id>] [--clear] [--limit <n>] \
 | motion [--id <id>] [--observe [--ms <ms>]] \
 | resize [--id <id>] <width>x<height> \
@@ -2094,6 +2117,41 @@ mod tests {
         assert!(!clear);
         assert!(parse(&args(&["type", "input"])).is_err());
         assert!(parse(&args(&["type"])).is_err());
+    }
+
+    #[test]
+    fn paste_targets_selector_or_ref() {
+        let Ok(Request::Paste {
+            selector,
+            nth,
+            contains,
+            r#ref,
+            ..
+        }) = parse(&args(&[
+            "paste",
+            "textarea",
+            "--nth",
+            "2",
+            "--contains",
+            "Bio",
+        ]))
+        else {
+            panic!("expected Paste");
+        };
+        assert_eq!(selector.as_deref(), Some("textarea"));
+        assert_eq!(nth, Some(2));
+        assert_eq!(contains.as_deref(), Some("Bio"));
+        assert!(r#ref.is_none());
+
+        let Ok(Request::Paste {
+            selector, r#ref, ..
+        }) = parse(&args(&["paste", "--ref", "4"]))
+        else {
+            panic!("expected Paste");
+        };
+        assert!(selector.is_none());
+        assert_eq!(r#ref, Some(4));
+        assert!(parse(&args(&["paste"])).is_err());
     }
 
     #[test]

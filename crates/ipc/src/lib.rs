@@ -342,6 +342,25 @@ pub enum Request {
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
+    /// Paste from the compositor clipboard into an element targeted like
+    /// [`Request::Click`]. Always uses trusted native input synthesis: the
+    /// daemon clicks/focuses the target, then asks `wtype` to press Ctrl+V
+    /// while the trusted input session owns compositor focus.
+    Paste {
+        #[serde(default)]
+        id: Option<u64>,
+        #[serde(default)]
+        selector: Option<String>,
+        #[serde(default)]
+        nth: Option<u32>,
+        #[serde(default)]
+        contains: Option<String>,
+        /// Interactable index from the last snapshot of this window.
+        #[serde(default)]
+        r#ref: Option<u32>,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
     /// Read the window's console/error/network capture buffer:
     /// console.* calls, uncaught exceptions, unhandled rejections,
     /// failed resource loads, and HTTP >= 400 responses. `clear`
@@ -571,6 +590,7 @@ impl Request {
             Request::Snapshot { .. } => "snapshot",
             Request::Click { .. } => "click",
             Request::Type { .. } => "type",
+            Request::Paste { .. } => "paste",
             Request::Console { .. } => "console",
             Request::Net { .. } => "net",
             Request::Motion { .. } => "motion",
@@ -611,6 +631,7 @@ impl Request {
                 | Request::Snapshot { .. }
                 | Request::Click { .. }
                 | Request::Type { .. }
+                | Request::Paste { .. }
                 | Request::Console { .. }
         ) || matches!(self, Request::Expect { watch: false, .. })
     }
@@ -1175,6 +1196,46 @@ mod tests {
         assert_eq!(id, Some(4));
         assert!(clear);
         assert_eq!(limit, Some(50));
+    }
+
+    #[test]
+    fn paste_roundtrips_with_selector_or_ref() {
+        let req = Request::Paste {
+            id: Some(9),
+            selector: Some("textarea".into()),
+            nth: Some(1),
+            contains: Some("Bio".into()),
+            r#ref: None,
+            timeout_ms: Some(2500),
+        };
+        let wire = serde_json::to_string(&req).unwrap();
+        assert!(wire.contains("\"cmd\":\"paste\""));
+        let Ok(Request::Paste {
+            id,
+            selector,
+            nth,
+            contains,
+            r#ref,
+            timeout_ms,
+        }) = serde_json::from_str::<Request>(&wire)
+        else {
+            panic!("paste failed to roundtrip");
+        };
+        assert_eq!(id, Some(9));
+        assert_eq!(selector.as_deref(), Some("textarea"));
+        assert_eq!(nth, Some(1));
+        assert_eq!(contains.as_deref(), Some("Bio"));
+        assert_eq!(r#ref, None);
+        assert_eq!(timeout_ms, Some(2500));
+
+        let Ok(Request::Paste {
+            selector, r#ref, ..
+        }) = serde_json::from_str::<Request>(r#"{"cmd":"paste","ref":7}"#)
+        else {
+            panic!("paste ref failed to parse");
+        };
+        assert!(selector.is_none());
+        assert_eq!(r#ref, Some(7));
     }
 
     /// Subscribe roundtrips with and without filters; a bare
