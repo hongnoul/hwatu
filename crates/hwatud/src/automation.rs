@@ -2534,6 +2534,17 @@ enum TrustedAction {
     },
 }
 
+fn trusted_input_mode_error(mode: OpenMode) -> Option<&'static str> {
+    match mode {
+        OpenMode::Normal => None,
+        OpenMode::Background | OpenMode::Headless => Some(
+            "trusted input is unavailable for background/headless windows because native \
+             compositor events would promote and focus the window; use standard headless \
+             automation or explicitly open a normal window",
+        ),
+    }
+}
+
 /// Shared driver for trusted click/type. Sequence, all on the GTK main
 /// thread (the injection itself talks to the compositor over a private
 /// Wayland connection, which is fine to block on for a few ms):
@@ -2572,6 +2583,9 @@ fn trusted_input_run(
         Ok(w) => w,
         Err(resp) => return reply.send(*resp),
     };
+    if let Some(message) = trusted_input_mode_error(win.mode()) {
+        return reply.send(Response::err(format!("{what} refused: {message}")));
+    }
     let view = match live_view(&win) {
         Ok(v) => v,
         Err(resp) => return reply.send(*resp),
@@ -2941,8 +2955,9 @@ fn mime_from_extension(path: &str) -> &'static str {
 mod tests {
     use super::{
         base64, challenge_detect_js, challenge_wait_js, expect_watch_js, plan_eval_source,
-        ExpectSpec, VISIBILITY_INSPECTOR_JS,
+        trusted_input_mode_error, ExpectSpec, VISIBILITY_INSPECTOR_JS,
     };
+    use hwatu_ipc::OpenMode;
 
     #[test]
     fn base64_matches_rfc_vectors() {
@@ -2953,6 +2968,15 @@ mod tests {
         assert_eq!(base64(b"foob"), "Zm9vYg==");
         assert_eq!(base64(b"fooba"), "Zm9vYmE=");
         assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn trusted_input_never_promotes_non_normal_windows() {
+        assert_eq!(trusted_input_mode_error(OpenMode::Normal), None);
+        for mode in [OpenMode::Background, OpenMode::Headless] {
+            let message = trusted_input_mode_error(mode).expect("mode must be refused");
+            assert!(message.contains("would promote and focus the window"));
+        }
     }
 
     #[test]
