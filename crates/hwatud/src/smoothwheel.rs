@@ -122,6 +122,24 @@
 //! Baseten can then appear not to scroll at all. Keyboard enhancements
 //! remain installed; only wheel input returns to the engine-native path.
 //!
+//! Precise rescue: on some driver stacks (observed on NVIDIA+Wayland
+//! and Intel+NVIDIA hybrid laptops) that synchronous routing kills the
+//! engine's precise path outright — two-finger touchpad scrolling
+//! moves nothing anywhere while discrete wheel ticks (claimed by the
+//! animator) still work. The per-site skip list can't cover "every
+//! page on this GPU stack", so the handler self-heals: it watches
+//! unclaimed precise bursts, and when a burst has accumulated real
+//! travel and the target scroller provably hasn't moved a pixel by
+//! the deferred check, the page flips to rescue mode — precise deltas
+//! are claimed and drive the scroller directly (1:1 finger tracking,
+//! like the native path), with a short velocity fling on release
+//! through the same animator (the engine's kinetic scroll is as dead
+//! as its precise path). A healthy engine moves the scroller within a
+//! frame or two, so the check never trips it. This also restores
+//! two-finger panning (both axes) of a pinch-zoomed page: the pinch
+//! commits as page scale, growing the root scroller's extent, and the
+//! rescue pans it like any other scroller.
+//!
 //! `HWATU_SMOOTH_WHEEL=0` disables the whole thing.
 
 /// See module docs. Constants mirror Chromium
@@ -781,6 +799,75 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
     return host === 'baseten.co' || host.endsWith('.baseten.co');
   }
 
+  // Precise rescue (see module docs): on some driver stacks the
+  // engine's precise touchpad path is dead inside the synchronous
+  // wheel region — unclaimed precise deltas move nothing anywhere,
+  // while discrete ticks (claimed by the animator) still work. Probe
+  // unclaimed bursts: real accumulated travel with a provably unmoved
+  // scroller flips the page into rescue mode for the rest of its
+  // life. Claimed deltas then track the finger 1:1 on BOTH axes (a
+  // pinch-zoomed page pans diagonally, exactly like the native path)
+  // and a release fling runs through the animator (the engine's
+  // kinetic scroll is as dead as its precise path). A healthy engine
+  // moves the scroller well within the probe window, so the probe
+  // never trips it.
+  const RESCUE_PROBE_MS = 150, RESCUE_MIN_TRAVEL = 48,
+        RESCUE_BURST_GAP_MS = 250, RESCUE_IDLE_MS = 120,
+        RESCUE_FLING_SCALE = 180, RESCUE_MIN_FLING_V = 0.4;
+  let rescued = false;
+  let probe = null;
+  let flingSamples = [], flingTimer = 0;
+  function rescueFling(el) {
+    const samples = flingSamples;
+    flingSamples = [];
+    if (samples.length < 3) return;
+    const span = samples[samples.length - 1].t - samples[0].t;
+    if (span <= 0) return;
+    let sx = 0, sy = 0;
+    for (const s of samples) { sx += s.dx; sy += s.dy; }
+    const horiz = Math.abs(sx) > Math.abs(sy);
+    const v = (horiz ? sx : sy) / span; // px/ms at release
+    if (Math.abs(v) < RESCUE_MIN_FLING_V) return;
+    animateBy(el, horiz, v * RESCUE_FLING_SCALE);
+  }
+  function rescueScroll(e) {
+    let dx = e.deltaX, dy = e.deltaY;
+    if (e.shiftKey && !dx) { dx = dy; dy = 0; }
+    if (!dx && !dy) return rescued; // scroll-stop: absorb once claimed
+    const horiz = Math.abs(dx) > Math.abs(dy);
+    const el = scrollTarget(e.target, horiz, (horiz ? dx : dy) > 0 ? 1 : -1);
+    if (!el) return false;
+    const now = performance.now();
+    if (!rescued) {
+      // Feed (or start) the dead-path probe; this event stays native.
+      // The token closure keeps a stale timer from judging a newer
+      // burst's probe.
+      if (!probe || probe.el !== el || now - probe.last > RESCUE_BURST_GAP_MS) {
+        const p = { el, horiz, pos: getPos(el, horiz), travel: 0, last: now };
+        probe = p;
+        setTimeout(() => {
+          if (probe !== p) return;
+          probe = null;
+          if (!rescued && p.travel >= RESCUE_MIN_TRAVEL && p.el.isConnected
+              && Math.abs(getPos(p.el, p.horiz) - p.pos) < 1) rescued = true;
+        }, RESCUE_PROBE_MS);
+      }
+      probe.travel += Math.abs(horiz ? dx : dy);
+      probe.last = now;
+      return false;
+    }
+    // 1:1 finger tracking on both axes; the fling arms on idle. A
+    // stale glide must not fight the finger.
+    const a = anims.get(el);
+    if (a) endAnim(el, a);
+    el.scrollBy({ left: dx, top: dy, behavior: 'instant' });
+    flingSamples.push({ t: now, dx, dy });
+    if (flingSamples.length > 8) flingSamples.shift();
+    clearTimeout(flingTimer);
+    flingTimer = setTimeout(() => rescueFling(el), RESCUE_IDLE_MS);
+    return true;
+  }
+
   function installWheelHandler() {
     addEventListener('wheel', e => {
       try {
@@ -791,7 +878,10 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
           // IG gesture feed native pixels desync the reel state: claim
           // and translate them into synthetic swipes.
           if (!e.shiftKey && e.deltaY
-              && preciseFeedScroll(e.target, e.deltaY)) e.preventDefault();
+              && preciseFeedScroll(e.target, e.deltaY)) { e.preventDefault(); return; }
+          // Elsewhere they stay native unless the engine's precise
+          // path is provably dead (see rescueScroll).
+          if (rescueScroll(e)) e.preventDefault();
           return;
         }
 
@@ -1484,7 +1574,9 @@ mod tests {
         // reconciliation can resume a wrongly-paused active reel.
         assert!(body.contains("if (v === inc || v.paused || rampTarget(v) === 0) continue;"));
         assert!(body.contains("rampVolume(v, 0, RAMP_OUT_MS"));
-        assert!(body.contains("handoffPaused.add(v); v.pause(); v.volume = ov; ownVolume.delete(v);"));
+        assert!(
+            body.contains("handoffPaused.add(v); v.pause(); v.volume = ov; ownVolume.delete(v);")
+        );
         // Incoming pick floor: 15% of a viewport ahead of center. The
         // old 40% floor overshot on the synthetic-swipe path (feed
         // already dragged ~65% at pointerup) and started the reel
@@ -1558,7 +1650,58 @@ mod tests {
             .unwrap();
         let arm = handler.split("let dx = e.deltaX").next().unwrap();
         assert!(arm.contains("!isDiscrete(e)"));
-        assert!(arm.contains("preciseFeedScroll(e.target, e.deltaY)) e.preventDefault()"));
+        assert!(
+            arm.contains("preciseFeedScroll(e.target, e.deltaY)) { e.preventDefault(); return; }")
+        );
+    }
+
+    /// Precise deltas everywhere else must stay engine-native unless
+    /// the engine's precise path is provably dead: the rescue only
+    /// claims after an unclaimed burst accumulated real travel AND the
+    /// target scroller did not move a pixel by the deferred check. It
+    /// must never trip on a healthy engine, and once tripped it must
+    /// track the finger on both axes (zoomed-page side pan) and fling
+    /// through the animator on release.
+    #[test]
+    fn precise_rescue_shape() {
+        assert!(SMOOTH_WHEEL_JS.contains("function rescueScroll"));
+        assert!(SMOOTH_WHEEL_JS.contains("function rescueFling"));
+        let body = SMOOTH_WHEEL_JS
+            .split("function rescueScroll")
+            .nth(1)
+            .unwrap();
+        let body = body.split("function installWheelHandler").next().unwrap();
+        // The probe is evidence-gated: travel floor + unmoved scroller,
+        // judged on a deferred timer, and a stale timer cannot judge a
+        // newer burst.
+        assert!(SMOOTH_WHEEL_JS.contains("RESCUE_MIN_TRAVEL"));
+        assert!(body.contains("p.travel >= RESCUE_MIN_TRAVEL"));
+        assert!(body.contains("Math.abs(getPos(p.el, p.horiz) - p.pos) < 1"));
+        assert!(body.contains("if (probe !== p) return;"));
+        // Unrescued events stay native (return false before any claim).
+        assert!(body.contains("return false;"));
+        // Claimed deltas pan both axes 1:1 — this is what makes a
+        // pinch-zoomed page side-pannable.
+        assert!(body.contains("el.scrollBy({ left: dx, top: dy, behavior: 'instant' })"));
+        // Release fling reuses the Chromium-curve animator.
+        let fling = SMOOTH_WHEEL_JS
+            .split("function rescueFling")
+            .nth(1)
+            .unwrap()
+            .split("function rescueScroll")
+            .next()
+            .unwrap();
+        assert!(fling.contains("animateBy(el, horiz,"));
+        // The wheel handler consults the rescue inside the precise arm,
+        // after the IG feed guard, and preventDefaults claimed events.
+        let handler = SMOOTH_WHEEL_JS
+            .split("addEventListener('wheel'")
+            .nth(1)
+            .unwrap();
+        let arm = handler.split("let dx = e.deltaX").next().unwrap();
+        let feed = arm.find("preciseFeedScroll").unwrap();
+        let rescue = arm.find("rescueScroll(e)) e.preventDefault()").unwrap();
+        assert!(feed < rescue);
     }
 
     /// Hi-res wheels (MX Master-style) emit sub-notch deltas that are
