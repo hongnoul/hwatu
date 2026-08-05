@@ -452,6 +452,31 @@ fn parse_feature_overrides(raw: &str) -> Vec<(String, bool)> {
         .collect()
 }
 
+/// Push a closing window onto the reopen stack (ctrl+shift+t), capped
+/// at 10 like mainstream browsers keep reachable by key. Headless
+/// windows belong to an agent's verification run, and blank/launcher
+/// pages are not worth resurrecting; none are recorded.
+fn remember_recently_closed(stack: &RefCell<Vec<crate::session::SessionEntry>>, info: WindowInfo) {
+    if info.mode == OpenMode::Headless
+        || info.url.is_empty()
+        || info.url == "about:blank"
+        || crate::launcher::is_launcher(&info.url)
+    {
+        return;
+    }
+    let mut closed = stack.borrow_mut();
+    closed.push(crate::session::SessionEntry {
+        url: info.url,
+        title: info.title,
+        app_id: info.app_id,
+        mode: info.mode,
+    });
+    let overflow = closed.len().saturating_sub(10);
+    if overflow > 0 {
+        closed.drain(..overflow);
+    }
+}
+
 /// Set the Wayland xdg_toplevel app_id for one window, overriding the
 /// GTK-derived application id. No-op on X11 (WM_CLASS stays global to
 /// the GTK app; per-window class on X11 is not worth the unsafe Xlib).
@@ -907,31 +932,8 @@ impl BrowserWindow {
             window.connect_close_request(move |_| {
                 this.cancel_discard_timer();
                 // Remember the page for ctrl+shift+t before the window
-                // leaves the registry. Headless windows belong to an
-                // agent's verification run, and blank/launcher pages
-                // are not worth resurrecting.
-                {
-                    let info = this.info();
-                    if info.mode != OpenMode::Headless
-                        && !info.url.is_empty()
-                        && info.url != "about:blank"
-                        && !crate::launcher::is_launcher(&info.url)
-                    {
-                        let mut closed = daemon.recently_closed.borrow_mut();
-                        closed.push(crate::session::SessionEntry {
-                            url: info.url,
-                            title: info.title,
-                            app_id: info.app_id,
-                            mode: info.mode,
-                        });
-                        // Cap the stack: 10 reopens deep matches what
-                        // mainstream browsers keep reachable by key.
-                        let overflow = closed.len().saturating_sub(10);
-                        if overflow > 0 {
-                            closed.drain(..overflow);
-                        }
-                    }
-                }
+                // leaves the registry.
+                remember_recently_closed(&daemon.recently_closed, this.info());
                 // The GTK toplevel dying does not kill the web process:
                 // WebKit caches it for reuse, and a cached process keeps
                 // running its page — an autoplaying video's audio audibly
@@ -2365,8 +2367,56 @@ impl BrowserWindow {
 mod tests {
     use super::{
         external_uri_scheme, is_ctrl_click_link, load_was_cancelled, parse_feature_overrides,
-        recovery_url, termination_info,
+        recovery_url, remember_recently_closed, termination_info,
     };
+
+    /// The reopen stack (ctrl+shift+t) records user windows newest
+    /// last, skips headless/blank/launcher pages, and caps at 10 so
+    /// the key can't dredge up the whole session's history.
+    #[test]
+    fn reopen_stack_records_user_windows_and_caps() {
+        use hwatu_ipc::{OpenMode, WindowInfo};
+        let info = |url: &str, mode| WindowInfo {
+            id: 1,
+            url: url.into(),
+            title: "t".into(),
+            focused: false,
+            suspended: false,
+            app_id: None,
+            mode,
+            web_process_terminated: None,
+        };
+        let stack = std::cell::RefCell::new(Vec::new());
+        // Recorded: a normal page, and a background window too (the
+        // reopen key should bring back agent-opened pages the user
+        // closed by hand).
+        remember_recently_closed(&stack, info("https://a.example/", OpenMode::Normal));
+        remember_recently_closed(&stack, info("https://b.example/", OpenMode::Background));
+        // Skipped: headless, blank, launcher.
+        remember_recently_closed(&stack, info("https://c.example/", OpenMode::Headless));
+        remember_recently_closed(&stack, info("", OpenMode::Normal));
+        remember_recently_closed(&stack, info("about:blank", OpenMode::Normal));
+        remember_recently_closed(&stack, info(crate::launcher::URI, OpenMode::Normal));
+        {
+            let closed = stack.borrow();
+            assert_eq!(closed.len(), 2);
+            // Newest last: pop() must return the most recent close.
+            assert_eq!(closed[0].url, "https://a.example/");
+            assert_eq!(closed[1].url, "https://b.example/");
+        }
+        // Cap at 10, evicting oldest first: 2 seeds + 12 pushes = 14,
+        // so a/b and n0/n1 fall off and n2 is the oldest survivor.
+        for i in 0..12 {
+            remember_recently_closed(
+                &stack,
+                info(&format!("https://n{i}.example/"), OpenMode::Normal),
+            );
+        }
+        let closed = stack.borrow();
+        assert_eq!(closed.len(), 10);
+        assert_eq!(closed[0].url, "https://n2.example/");
+        assert_eq!(closed[9].url, "https://n11.example/");
+    }
 
     #[test]
     fn baseline_enables_the_complete_opfs_feature_bundle() {
