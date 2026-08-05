@@ -16,7 +16,7 @@ use crate::launcher;
 use crate::prompts::{self, Prompt, Prompts};
 use crate::Daemon;
 use gtk::prelude::*;
-use hwatu_ipc::{OpenMode, WindowInfo};
+use hwatu_ipc::{OpenMode, WebProcessTerminationInfo, WindowInfo};
 use std::cell::RefCell;
 use std::rc::Rc;
 use webkit6::prelude::*;
@@ -228,6 +228,31 @@ struct SavedState {
     title: String,
 }
 
+fn termination_info(
+    reason: webkit6::WebProcessTerminationReason,
+    url: String,
+) -> WebProcessTerminationInfo {
+    let (reason, message) = match reason {
+        webkit6::WebProcessTerminationReason::Crashed => ("crashed", "crashed"),
+        webkit6::WebProcessTerminationReason::ExceededMemoryLimit => {
+            ("oom", "was killed (out of memory)")
+        }
+        _ => ("terminated", "terminated unexpectedly"),
+    };
+    WebProcessTerminationInfo {
+        reason: reason.to_string(),
+        message: message.to_string(),
+        url,
+    }
+}
+
+fn recovery_url(live_url: Option<&str>, last_url: &str) -> Option<String> {
+    live_url
+        .filter(|url| !url.is_empty())
+        .or((!last_url.is_empty()).then_some(last_url))
+        .map(str::to_string)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RecoveryOverlay {
     Loading,
@@ -320,6 +345,16 @@ pub struct BrowserWindow {
     /// stale prewarm `about:blank` commit from a genuine navigation
     /// to about:blank.
     nav_target: RefCell<Option<String>>,
+    /// Last non-empty URL observed or requested for this window. WebKit can
+    /// return an empty URI after web-process termination; keep enough state
+    /// for diagnostics and recovery instead of reporting a blank page.
+    last_url: RefCell<String>,
+    /// Last non-empty title, for the same post-termination fallback as URL.
+    last_title: RefCell<String>,
+    /// Last web-process termination diagnostic. Kept in the window model so
+    /// `hwatu list --json` exposes the reason even when hwatud was auto-
+    /// spawned with stdout/stderr discarded.
+    web_process_terminated: RefCell<Option<WebProcessTerminationInfo>>,
     /// True once the current load has Committed: the new document has
     /// replaced the old one. Together with `nav_pending` this lets
     /// stage-aware waits (`wait-load --until committed|dom`) know
@@ -549,12 +584,14 @@ impl BrowserWindow {
         let target = match url.or_else(home_page) {
             Some(url) => {
                 this.mark_nav_pending(&url);
+                this.remember_url(&url);
                 webview.load_uri(&url);
                 url
             }
             None => {
                 let uri = launcher::deal_uri(daemon.take_deal());
                 this.mark_nav_pending(&uri);
+                this.remember_url(&uri);
                 webview.load_uri(&uri);
                 if mode == OpenMode::Normal {
                     this.bar.open_url("");
@@ -571,6 +608,7 @@ impl BrowserWindow {
             suspended: false,
             app_id,
             mode,
+            web_process_terminated: None,
         }
     }
 
@@ -745,6 +783,9 @@ impl BrowserWindow {
             viewport: std::cell::Cell::new(None),
             nav_pending: RefCell::new(None),
             nav_target: RefCell::new(None),
+            last_url: RefCell::new(String::new()),
+            last_title: RefCell::new(String::new()),
+            web_process_terminated: RefCell::new(None),
             load_committed: std::cell::Cell::new(true),
             snapshot_baseline: RefCell::new(None),
             console: crate::console::Buffer::default(),
@@ -897,8 +938,12 @@ impl BrowserWindow {
         crate::console::attach(&self.console, &webview);
         crate::net::attach(&self.net, &webview);
         let win = self.window.clone();
+        let this = self.clone();
         webview.connect_title_notify(move |wv| {
             let title = wv.title().unwrap_or_default();
+            if !title.is_empty() {
+                this.last_title.replace(title.to_string());
+            }
             win.set_title(Some(if title.is_empty() {
                 "hwatu"
             } else {
@@ -909,7 +954,11 @@ impl BrowserWindow {
         // (debounced in the daemon).
         {
             let daemon = self.daemon.clone();
-            webview.connect_uri_notify(move |_| daemon.schedule_session_save());
+            let this = self.clone();
+            webview.connect_uri_notify(move |wv| {
+                this.remember_webview_url(wv);
+                daemon.schedule_session_save();
+            });
         }
         // A gray WebKit surface during a slow or wedged load used to look
         // like hwatu itself had broken. Surface a low-priority overlay if
@@ -921,6 +970,7 @@ impl BrowserWindow {
             webview.connect_load_changed(move |wv, event| match event {
                 webkit6::LoadEvent::Started => {
                     this.note_load_engaged(wv);
+                    this.web_process_terminated.replace(None);
                     this.turnstile_handoff_offered.set(false);
                     this.load_committed.set(false);
                     this.clear_recovery_overlay();
@@ -1051,17 +1101,32 @@ impl BrowserWindow {
                 if this.webview.borrow().as_ref() != Some(wv) {
                     return;
                 }
-                let reason = match reason {
-                    webkit6::WebProcessTerminationReason::Crashed => "crashed",
-                    webkit6::WebProcessTerminationReason::ExceededMemoryLimit => {
-                        "was killed (out of memory)"
-                    }
-                    _ => "terminated unexpectedly",
-                };
-                eprintln!("hwatud: web process for window {} {reason}", this.id);
+                let url = wv
+                    .uri()
+                    .map(|u| u.to_string())
+                    .filter(|u| !u.is_empty())
+                    .unwrap_or_else(|| this.last_url.borrow().clone());
+                let info = termination_info(reason, url.clone());
+                this.web_process_terminated.replace(Some(info.clone()));
+                this.daemon.events.emit(
+                    "web_process",
+                    Some(this.id),
+                    serde_json::json!({
+                        "state": "terminated",
+                        "reason": info.reason,
+                        "message": info.message,
+                        "url": info.url,
+                    }),
+                );
+                eprintln!(
+                    "hwatud: web process for window {} {} at {}",
+                    this.id,
+                    info.message,
+                    if url.is_empty() { "(unknown URL)" } else { &url }
+                );
                 this.show_recovery_overlay(
                     "Page crashed",
-                    &format!("The web process {reason}. Press Ctrl+r or F5 to reload, or Ctrl+l to open a URL."),
+                    &format!("The web process {}. Press Ctrl+r or F5 to reload, or Ctrl+l to open a URL.", info.message),
                     RecoveryOverlay::Failure,
                 );
             });
@@ -1426,6 +1491,11 @@ impl BrowserWindow {
     /// need for a human (not focused, no bar prompt, no CAPTCHA)
     /// demotes itself instead of squatting in the WM forever.
     pub fn present(self: &Rc<Self>) {
+        // Do not depend on the compositor granting activation (and emitting
+        // is-active-notify) to preserve the promoted page. Cancel a pending
+        // discard and restore before mapping the window.
+        self.cancel_discard_timer();
+        self.restore();
         let prev = self.mode.get();
         if prev != OpenMode::Normal && self.promoted_from.get().is_none() {
             self.promoted_from.set(Some(prev));
@@ -1534,15 +1604,31 @@ impl BrowserWindow {
 
     pub fn info(&self) -> WindowInfo {
         match &*self.webview.borrow() {
-            Some(wv) => WindowInfo {
-                id: self.id,
-                url: wv.uri().map(|u| u.to_string()).unwrap_or_default(),
-                title: wv.title().map(|t| t.to_string()).unwrap_or_default(),
-                focused: self.window.is_active(),
-                suspended: false,
-                app_id: self.app_id.clone(),
-                mode: self.mode.get(),
-            },
+            Some(wv) => {
+                let url = wv.uri().map(|u| u.to_string()).unwrap_or_default();
+                WindowInfo {
+                    id: self.id,
+                    url: if url.is_empty() {
+                        self.last_url.borrow().clone()
+                    } else {
+                        url
+                    },
+                    title: wv
+                        .title()
+                        .map(|t| t.to_string())
+                        .filter(|title| !title.is_empty())
+                        .unwrap_or_else(|| self.last_title.borrow().clone()),
+                    focused: self.window.is_active(),
+                    suspended: false,
+                    app_id: self.app_id.clone(),
+                    mode: self.mode.get(),
+                    web_process_terminated: self
+                        .web_process_terminated
+                        .borrow()
+                        .clone()
+                        .map(Box::new),
+                }
+            }
             None => {
                 let saved = self.saved.borrow();
                 let (url, title) = saved
@@ -1551,12 +1637,25 @@ impl BrowserWindow {
                     .unwrap_or_default();
                 WindowInfo {
                     id: self.id,
-                    url,
-                    title,
+                    url: if url.is_empty() {
+                        self.last_url.borrow().clone()
+                    } else {
+                        url
+                    },
+                    title: if title.is_empty() {
+                        self.last_title.borrow().clone()
+                    } else {
+                        title
+                    },
                     focused: false,
                     suspended: true,
                     app_id: self.app_id.clone(),
                     mode: self.mode.get(),
+                    web_process_terminated: self
+                        .web_process_terminated
+                        .borrow()
+                        .clone()
+                        .map(Box::new),
                 }
             }
         }
@@ -1597,6 +1696,18 @@ impl BrowserWindow {
     /// adblock toggle to re-apply filters across all windows.
     pub fn live_webview(&self) -> Option<webkit6::WebView> {
         self.webview.borrow().clone()
+    }
+
+    fn remember_webview_url(&self, webview: &webkit6::WebView) {
+        if let Some(uri) = webview.uri().filter(|uri| !uri.is_empty()) {
+            self.remember_url(uri.as_str());
+        }
+    }
+
+    fn remember_url(&self, url: &str) {
+        if !url.is_empty() {
+            self.last_url.replace(url.to_string());
+        }
     }
 
     /// Re-assert the offscreen viewport of a headless window. The
@@ -1833,6 +1944,14 @@ impl BrowserWindow {
         let Some(webview) = self.live_webview() else {
             return;
         };
+        if webview.uri().is_none_or(|uri| uri.is_empty()) {
+            let last_url = self.last_url.borrow().clone();
+            if let Some(url) = recovery_url(None, &last_url) {
+                self.mark_nav_pending(&url);
+                webview.load_uri(&url);
+            }
+            return;
+        }
         if bypass_cache {
             webview.reload_bypass_cache();
         } else {
@@ -2089,6 +2208,7 @@ impl BrowserWindow {
         if let Some(webview) = self.live_webview() {
             let url = crate::ipc_server::normalize_url(input.to_string());
             self.mark_nav_pending(&url);
+            self.remember_url(&url);
             webview.load_uri(&url);
         }
     }
@@ -2200,6 +2320,7 @@ impl BrowserWindow {
 mod tests {
     use super::{
         external_uri_scheme, is_ctrl_click_link, load_was_cancelled, parse_feature_overrides,
+        recovery_url, termination_info,
     };
 
     #[test]
@@ -2397,5 +2518,34 @@ mod tests {
         assert_eq!(external_uri_scheme("hwatu://launcher"), None);
         assert_eq!(external_uri_scheme("not a uri"), None);
         assert_eq!(external_uri_scheme("1invalid:value"), None);
+    }
+
+    #[test]
+    fn recovery_url_prefers_live_and_falls_back_to_last_non_empty_url() {
+        assert_eq!(
+            recovery_url(Some("https://live.test/"), "https://last.test/"),
+            Some("https://live.test/".into())
+        );
+        assert_eq!(
+            recovery_url(Some(""), "https://last.test/"),
+            Some("https://last.test/".into())
+        );
+        assert_eq!(recovery_url(None, ""), None);
+    }
+
+    #[test]
+    fn web_process_termination_reasons_are_stable_and_keep_url() {
+        let url = "https://example.test/sign-up".to_string();
+        let crashed = termination_info(webkit6::WebProcessTerminationReason::Crashed, url.clone());
+        let oom = termination_info(
+            webkit6::WebProcessTerminationReason::ExceededMemoryLimit,
+            url.clone(),
+        );
+
+        assert_eq!(crashed.reason, "crashed");
+        assert_eq!(crashed.message, "crashed");
+        assert_eq!(crashed.url, url);
+        assert_eq!(oom.reason, "oom");
+        assert_eq!(oom.message, "was killed (out of memory)");
     }
 }

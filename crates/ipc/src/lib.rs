@@ -999,6 +999,20 @@ pub struct WindowInfo {
     /// promotes a window to normal.
     #[serde(default, skip_serializing_if = "is_normal")]
     pub mode: OpenMode,
+    /// Last WebKit web-process termination observed for this window, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_process_terminated: Option<Box<WebProcessTerminationInfo>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WebProcessTerminationInfo {
+    /// Stable, machine-readable reason: crashed, oom, or terminated.
+    pub reason: String,
+    /// Human-readable description suitable for diagnostics.
+    pub message: String,
+    /// Best-known URL at the time the web process died.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub url: String,
 }
 
 fn is_normal(mode: &OpenMode) -> bool {
@@ -1064,6 +1078,40 @@ mod tests {
         };
         assert_eq!(render.as_deref(), Some("<h1>hi</h1>"));
         assert_eq!(base.as_deref(), Some("http://localhost:3000/"));
+    }
+
+    #[test]
+    fn old_window_info_defaults_recovery_fields() {
+        let old = r#"{"id":7,"url":"","title":"","focused":false,"suspended":false}"#;
+        let info: WindowInfo = serde_json::from_str(old).expect("old WindowInfo parses");
+
+        assert_eq!(info.web_process_terminated, None);
+    }
+
+    #[test]
+    fn window_info_serializes_recoverable_crash_state() {
+        let info = WindowInfo {
+            id: 7,
+            url: "https://example.test/sign-up".into(),
+            title: String::new(),
+            focused: true,
+            suspended: false,
+            app_id: None,
+            mode: OpenMode::Normal,
+            web_process_terminated: Some(Box::new(WebProcessTerminationInfo {
+                reason: "oom".into(),
+                message: "was killed (out of memory)".into(),
+                url: "https://example.test/sign-up".into(),
+            })),
+        };
+
+        let json = serde_json::to_value(&info).expect("WindowInfo serializes");
+
+        assert_eq!(json["web_process_terminated"]["reason"], "oom");
+        assert_eq!(
+            json["web_process_terminated"]["url"],
+            "https://example.test/sign-up"
+        );
     }
 
     /// A viewport-sweep check roundtrips through the wire format; an
