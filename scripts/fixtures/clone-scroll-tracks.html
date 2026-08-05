@@ -1,0 +1,49 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>hwatu issue 46 scroll tracks fixture</title>
+<style>
+  body { margin:0; font-family:sans-serif; height:5200px; background:#111; color:white; }
+  .spacer { height:900px; }
+  #visual { position:relative; margin:0 auto; width:70vw; height:260px; background:#7c3aed; opacity:.2; transform:scale(.8) translate(0px, 40px); clip-path:inset(0% 70% 0% 0% round 10px); border-radius:16px; }
+  #pin-section { position:relative; height:1500px; margin-top:500px; background:#222; }
+  #pin-root { width:60vw; height:220px; background:#10b981; position:sticky; top:120px; margin:auto; transform:scale(.97); }
+  #pinned { width:100%; height:100%; background:linear-gradient(135deg,#10b981,#0ea5e9); }
+  #timed { margin-top:600px; opacity:0; transform:translate(30px,0) scale(.95); color:rgb(0, 255, 128); font-size:42px; }
+</style>
+<div class="spacer"></div>
+<div id="visual"></div>
+<section id="pin-section"><div id="pin-root"><div id="pinned"></div></div></section>
+<div id="timed">threshold timed reveal</div>
+<script>
+  const visual = document.querySelector('#visual');
+  const timed = document.querySelector('#timed');
+  let played = false;
+  let timer = 0;
+  function update() {
+    const y = scrollY;
+    const t = Math.max(0, Math.min(1, (y - 400) / 900));
+    visual.style.opacity = String(.2 + .6 * t);
+    visual.style.transform = `scale(${.8 + .2 * t}) translate(0px, ${40 - 40*t}px)`;
+    visual.style.clipPath = `inset(0% ${70 - 70*t}% 0% 0% round 10px)`;
+    visual.style.borderRadius = `${16 - 16*t}px`;
+    if (y > 2600 && !played) {
+      played = true;
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        if (!played) return;
+        timed.style.opacity = '1';
+        timed.style.transform = 'translate(0px,0) scale(1)';
+        timed.style.color = 'rgb(180, 120, 255)';
+      }, 120);
+    }
+    if (y < 2500 && played) {
+      played = false;
+      clearTimeout(timer);
+      timed.style.opacity = '0';
+      timed.style.transform = 'translate(30px,0) scale(.95)';
+      timed.style.color = 'rgb(0, 255, 128)';
+    }
+  }
+  addEventListener('scroll', update, {passive:true});
+  update();
+</script>
