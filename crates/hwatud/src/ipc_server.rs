@@ -282,6 +282,18 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
                 timeout_ms, reply,
             );
         }
+        Request::Paste {
+            id,
+            selector,
+            nth,
+            contains,
+            r#ref,
+            timeout_ms,
+        } => {
+            return automation::paste(
+                daemon, id, selector, nth, contains, r#ref, timeout_ms, reply,
+            );
+        }
         Request::Motion {
             id,
             observe,
@@ -439,6 +451,7 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
         | Request::Snapshot { .. }
         | Request::Click { .. }
         | Request::Type { .. }
+        | Request::Paste { .. }
         | Request::Motion { .. }
         | Request::Seek { .. }
         | Request::Clock { .. }

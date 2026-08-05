@@ -72,6 +72,45 @@ fn load_was_cancelled(error: &glib::Error) -> bool {
         || error.matches(gtk::gio::IOErrorEnum::Cancelled)
 }
 
+/// Whether a navigation action is a conventional Ctrl+click on a link.
+/// WebKit reports modifiers as GDK bits but leaves tab creation to the
+/// embedder, so without this check Ctrl+click navigates the current view.
+fn is_ctrl_click_link(
+    navigation_type: webkit6::NavigationType,
+    mouse_button: u32,
+    modifiers: u32,
+) -> bool {
+    navigation_type == webkit6::NavigationType::LinkClicked
+        && mouse_button == 1
+        && modifiers & gtk::gdk::ModifierType::CONTROL_MASK.bits() != 0
+}
+
+/// Return the scheme for a URI that should leave the browser.
+///
+/// WebKit does not launch desktop handlers for custom schemes on behalf of
+/// embedders. Keep browser-owned schemes in the WebView and hand protocols
+/// such as `zoommtg:`, `mailto:`, and `tel:` to GIO instead. Callers must also
+/// require a user gesture so a page cannot launch native applications merely
+/// by loading.
+fn external_uri_scheme(uri: &str) -> Option<String> {
+    let (scheme, _) = uri.split_once(':')?;
+    if scheme.is_empty()
+        || !scheme.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_alphabetic()
+                || (index > 0 && (byte.is_ascii_digit() || matches!(byte, b'+' | b'-' | b'.')))
+        })
+    {
+        return None;
+    }
+
+    let scheme = scheme.to_ascii_lowercase();
+    match scheme.as_str() {
+        "http" | "https" | "about" | "data" | "blob" | "file" | "javascript" | "ws" | "wss"
+        | "hwatu" => None,
+        _ => Some(scheme),
+    }
+}
+
 /// Media autoplay policy for every WebView. WebKit's own default is
 /// ALLOW_WITHOUT_SOUND, which is why video sites autoplay muted: their
 /// unmuted-play probe is rejected, so they fall back to a muted player.
@@ -343,6 +382,15 @@ fn feature_overrides() -> Vec<(String, bool)> {
 /// correct pixels until the fixes ship in a stable WebKitGTK.
 const BASELINE_FEATURE_OVERRIDES: &[(&str, bool)] = &[("PropagateDamagingInformation", false)];
 
+/// `HWATU_MEDIA_STREAM=1|on|true` re-enables the MediaStream API
+/// (getUserMedia/enumerateDevices), which is off by default; see the
+/// wedge documented at the call site in `apply_view_settings`.
+fn media_stream_enabled() -> bool {
+    std::env::var("HWATU_MEDIA_STREAM")
+        .map(|v| matches!(v.trim(), "1" | "on" | "true"))
+        .unwrap_or(false)
+}
+
 fn parse_feature_overrides(raw: &str) -> Vec<(String, bool)> {
     raw.split(',')
         .filter_map(|entry| {
@@ -411,6 +459,27 @@ fn apply_view_settings(view: &webkit6::WebView) {
         // entirely so automation against such pages stays responsive.
         if std::env::var("HWATU_DISABLE_MEDIA").is_ok_and(|v| !v.is_empty() && v != "0") {
             settings.set_enable_media(false);
+        }
+
+        // MediaStream (getUserMedia/enumerateDevices) is off unless
+        // explicitly requested. On WebKitGTK 2.52.5 + GStreamer 1.28
+        // (pipewire provider), a page calling
+        // navigator.mediaDevices.enumerateDevices() wedges the web
+        // process main thread inside
+        // GStreamerVideoCaptureDeviceManager::computeCaptureDevices —
+        // a nested g_main_context_iteration loop that never completes,
+        // pinning one core at 100% and starving JS/paint/IPC for the
+        // life of the process (reproduced on example.com with a bare
+        // enumerateDevices() call; observed in the wild via
+        // doordash.com's fingerprinting SDK, which probes devices on
+        // every page). Chromium-family browsers answer the same probe
+        // in microseconds, which is why the same sites feel fine
+        // there. With the API disabled, navigator.mediaDevices is
+        // simply absent and such probes fall through their error
+        // paths instantly. HWATU_MEDIA_STREAM=1 re-enables for actual
+        // camera/mic use.
+        if !media_stream_enabled() {
+            settings.set_enable_media_stream(false);
         }
 
         // Scrolling must hit the GPU compositor path. The default
@@ -997,12 +1066,68 @@ impl BrowserWindow {
             let this = self.clone();
             webview.connect_close(move |_| this.window.close());
         }
-        // Non-displayable responses (Content-Disposition: attachment,
-        // MIME types WebKit can't render) become downloads instead of
-        // dead ends. Main-document responses also pass through the
-        // per-site UA switcher (mobile UI for reels-style sites),
-        // which may restart the load under the right user-agent.
-        webview.connect_decide_policy(|wv, decision, decision_type| {
+        // Ctrl+click follows the same client-tab path as Ctrl+t instead of
+        // replacing the current page. Non-displayable responses
+        // (Content-Disposition: attachment, MIME types WebKit can't render)
+        // become downloads instead of dead ends. Main-document responses
+        // also pass through the per-site UA switcher (mobile UI for
+        // reels-style sites), which may restart the load under the right
+        // user-agent.
+        let this = self.clone();
+        webview.connect_decide_policy(move |wv, decision, decision_type| {
+            if matches!(
+                decision_type,
+                webkit6::PolicyDecisionType::NavigationAction
+                    | webkit6::PolicyDecisionType::NewWindowAction
+            ) {
+                let Some(navigation) =
+                    decision.dynamic_cast_ref::<webkit6::NavigationPolicyDecision>()
+                else {
+                    return false;
+                };
+                let Some(mut action) = navigation.navigation_action() else {
+                    return false;
+                };
+                let Some(uri) = action.request().and_then(|request| request.uri()) else {
+                    return false;
+                };
+
+                // Native-app links need explicit embedder handling. Only
+                // honor them during a user gesture, and only when the desktop
+                // has a registered handler for the scheme. This covers Zoom's
+                // `zoommtg:` join button without allowing pages to launch
+                // arbitrary programs on load.
+                if action.is_user_gesture()
+                    && external_uri_scheme(&uri).is_some_and(|scheme| {
+                        gtk::gio::AppInfo::default_for_uri_scheme(&scheme).is_some()
+                    })
+                {
+                    decision.ignore();
+                    if let Err(error) = gtk::gio::AppInfo::launch_default_for_uri(
+                        &uri,
+                        None::<&gtk::gio::AppLaunchContext>,
+                    ) {
+                        eprintln!("hwatud: could not open external URI: {error}");
+                        this.flash_bar("could not open external application", 4);
+                    }
+                    return true;
+                }
+
+                if decision_type == webkit6::PolicyDecisionType::NewWindowAction {
+                    return false;
+                }
+
+                if !is_ctrl_click_link(
+                    action.navigation_type(),
+                    action.mouse_button(),
+                    action.modifiers(),
+                ) {
+                    return false;
+                }
+                decision.ignore();
+                Self::open(&this.daemon, Some(uri.to_string()), None, OpenMode::Normal);
+                return true;
+            }
             if decision_type != webkit6::PolicyDecisionType::Response {
                 return false; // default handling
             }
@@ -2059,7 +2184,9 @@ impl BrowserWindow {
 
 #[cfg(test)]
 mod tests {
-    use super::{load_was_cancelled, parse_feature_overrides};
+    use super::{
+        external_uri_scheme, is_ctrl_click_link, load_was_cancelled, parse_feature_overrides,
+    };
 
     #[test]
     fn parses_on_off_pairs() {
@@ -2083,6 +2210,24 @@ mod tests {
     #[test]
     fn empty_input_is_empty() {
         assert!(parse_feature_overrides("").is_empty());
+    }
+
+    /// MediaStream stays off unless the env opt-in is exact: the
+    /// default guards against the enumerateDevices() main-thread wedge
+    /// (see apply_view_settings), so a sloppy value must not enable it.
+    #[test]
+    fn media_stream_env_gate() {
+        std::env::remove_var("HWATU_MEDIA_STREAM");
+        assert!(!super::media_stream_enabled());
+        std::env::set_var("HWATU_MEDIA_STREAM", "1");
+        assert!(super::media_stream_enabled());
+        std::env::set_var("HWATU_MEDIA_STREAM", "on");
+        assert!(super::media_stream_enabled());
+        std::env::set_var("HWATU_MEDIA_STREAM", "0");
+        assert!(!super::media_stream_enabled());
+        std::env::set_var("HWATU_MEDIA_STREAM", "yes");
+        assert!(!super::media_stream_enabled());
+        std::env::remove_var("HWATU_MEDIA_STREAM");
     }
 
     #[test]
@@ -2165,5 +2310,60 @@ mod tests {
     fn genuine_network_error_remains_a_page_failure() {
         let error = glib::Error::new(webkit6::NetworkError::Failed, "Connection failed");
         assert!(!load_was_cancelled(&error));
+    }
+
+    #[test]
+    fn only_ctrl_primary_link_clicks_open_new_tabs() {
+        let ctrl = gtk::gdk::ModifierType::CONTROL_MASK.bits();
+        let shift = gtk::gdk::ModifierType::SHIFT_MASK.bits();
+
+        assert!(is_ctrl_click_link(
+            webkit6::NavigationType::LinkClicked,
+            1,
+            ctrl
+        ));
+        assert!(is_ctrl_click_link(
+            webkit6::NavigationType::LinkClicked,
+            1,
+            ctrl | shift
+        ));
+        assert!(!is_ctrl_click_link(
+            webkit6::NavigationType::LinkClicked,
+            1,
+            shift
+        ));
+        assert!(!is_ctrl_click_link(
+            webkit6::NavigationType::LinkClicked,
+            3,
+            ctrl
+        ));
+        assert!(!is_ctrl_click_link(webkit6::NavigationType::Other, 1, ctrl));
+    }
+
+    #[test]
+    fn native_app_schemes_are_external_but_browser_schemes_are_not() {
+        assert_eq!(
+            external_uri_scheme("zoommtg://zoom.us/join"),
+            Some("zoommtg".into())
+        );
+        assert_eq!(
+            external_uri_scheme("mailto:person@example.com"),
+            Some("mailto".into())
+        );
+        assert_eq!(
+            external_uri_scheme("ZOOMMTG://zoom.us/join"),
+            Some("zoommtg".into())
+        );
+        assert_eq!(
+            external_uri_scheme("web+notes:42"),
+            Some("web+notes".into())
+        );
+
+        assert_eq!(external_uri_scheme("https://zoom.us/join"), None);
+        assert_eq!(external_uri_scheme("HTTP://example.com"), None);
+        assert_eq!(external_uri_scheme("javascript:alert(1)"), None);
+        assert_eq!(external_uri_scheme("hwatu://launcher"), None);
+        assert_eq!(external_uri_scheme("not a uri"), None);
+        assert_eq!(external_uri_scheme("1invalid:value"), None);
     }
 }

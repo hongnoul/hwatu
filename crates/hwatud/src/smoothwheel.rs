@@ -90,6 +90,14 @@
 //! the handler is swallowed before `preventDefault`, so a bug degrades
 //! to engine-native scrolling, never to a dead wheel.
 //!
+//! Sensitivity: WebKitGTK synthesizes ~100px per discrete wheel notch
+//! while Chromium on Linux moves 120px (3 lines x 40px), so an
+//! otherwise identical curve still reads as "stiffer" — every click
+//! travels ~17% less. Discrete deltas are therefore scaled by
+//! `HWATU_WHEEL_SENSITIVITY` (default 1.2, matching Chromium) before
+//! entering the animator. Precise touchpad deltas are untouched: they
+//! are real hardware pixel values, not synthesized line steps.
+//!
 //! `HWATU_SMOOTH_WHEEL=0` disables the whole thing.
 
 /// See module docs. Constants mirror Chromium
@@ -106,6 +114,13 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
   const SLOPE = (MIN_DUR - MAX_DUR) / (RAMP_END - RAMP_START);
   const OFFSET = MAX_DUR - RAMP_START * SLOPE;
   const EPS = 0.01;
+
+  // Discrete-notch multiplier, substituted at injection time from
+  // HWATU_WHEEL_SENSITIVITY. Default 1.2: WebKitGTK synthesizes ~100px
+  // per notch where Chromium moves 120px, and matching Chromium's
+  // travel-per-click is what kills the "stiff" feel. Precise touchpad
+  // deltas are never scaled (real hardware values).
+  const SENS = /*HWATU_WHEEL_SENSITIVITY*/1.2;
 
   function durationMs(delta) {
     const frames = Math.min(Math.max(OFFSET + Math.abs(delta) * SLOPE, MIN_DUR), MAX_DUR);
@@ -654,6 +669,9 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
       let dx = e.deltaX, dy = e.deltaY;
       if (e.deltaMode === 1) { dx *= 40; dy *= 40; }
       else if (e.deltaMode === 2) { dx *= innerWidth; dy *= innerHeight; }
+      // Sensitivity applies to synthesized notch deltas (pixel/line
+      // modes); page-mode deltas are already viewport-sized.
+      if (e.deltaMode !== 2) { dx *= SENS; dy *= SENS; }
       if (e.shiftKey && !dx) { dx = dy; dy = 0; }
 
       const horiz = Math.abs(dx) > Math.abs(dy);
@@ -956,6 +974,29 @@ fn enabled() -> bool {
     )
 }
 
+/// Discrete-notch multiplier from `HWATU_WHEEL_SENSITIVITY`.
+/// Default 1.2 (Chromium's 120px per notch vs WebKitGTK's ~100px).
+/// Unparseable or non-positive values fall back to the default;
+/// the value is clamped to [0.1, 10] so a typo can't produce a
+/// dead or teleporting wheel.
+fn sensitivity() -> f64 {
+    const DEFAULT: f64 = 1.2;
+    std::env::var("HWATU_WHEEL_SENSITIVITY")
+        .ok()
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .map(|v| v.clamp(0.1, 10.0))
+        .unwrap_or(DEFAULT)
+}
+
+/// The injected script with the sensitivity constant substituted.
+fn script_source() -> String {
+    SMOOTH_WHEEL_JS.replace(
+        "/*HWATU_WHEEL_SENSITIVITY*/1.2",
+        &format!("{}", sensitivity()),
+    )
+}
+
 /// Inject the wheel animator into a WebView. Must run on every view
 /// (prewarm pool and popups) before page content loads, same contract
 /// as `console::wire_view`.
@@ -968,7 +1009,7 @@ pub fn wire_view(view: &webkit6::WebView) {
         return;
     };
     let script = webkit6::UserScript::new(
-        SMOOTH_WHEEL_JS,
+        &script_source(),
         webkit6::UserContentInjectedFrames::AllFrames,
         webkit6::UserScriptInjectionTime::Start,
         &[],
@@ -995,6 +1036,57 @@ mod tests {
         std::env::set_var("HWATU_SMOOTH_WHEEL", "1");
         assert!(enabled());
         std::env::remove_var("HWATU_SMOOTH_WHEEL");
+    }
+
+    /// Sensitivity: default 1.2 (Chromium's per-notch travel), env
+    /// override honored, garbage and out-of-range values fail safe,
+    /// and the templating substitutes the constant into the script.
+    /// One test because parallel tests must not race the env var.
+    #[test]
+    fn sensitivity_env_semantics() {
+        std::env::remove_var("HWATU_WHEEL_SENSITIVITY");
+        assert_eq!(sensitivity(), 1.2);
+        let src = script_source();
+        assert!(src.contains("const SENS = 1.2;"));
+        assert!(!src.contains("/*HWATU_WHEEL_SENSITIVITY*/"));
+        std::env::set_var("HWATU_WHEEL_SENSITIVITY", "1.0");
+        assert_eq!(sensitivity(), 1.0);
+        std::env::set_var("HWATU_WHEEL_SENSITIVITY", "2.5");
+        assert_eq!(sensitivity(), 2.5);
+        std::env::set_var("HWATU_WHEEL_SENSITIVITY", "1.5");
+        assert!(script_source().contains("const SENS = 1.5;"));
+        // Clamped, not rejected: stays usable.
+        std::env::set_var("HWATU_WHEEL_SENSITIVITY", "50");
+        assert_eq!(sensitivity(), 10.0);
+        std::env::set_var("HWATU_WHEEL_SENSITIVITY", "0.01");
+        assert_eq!(sensitivity(), 0.1);
+        // Garbage / non-positive fall back to the default.
+        for bad in ["", "abc", "0", "-1", "nan", "inf"] {
+            std::env::set_var("HWATU_WHEEL_SENSITIVITY", bad);
+            assert_eq!(sensitivity(), 1.2, "value {bad:?} must fall back");
+        }
+        std::env::remove_var("HWATU_WHEEL_SENSITIVITY");
+    }
+
+    /// The scale must apply to discrete pixel/line deltas but never to
+    /// page-mode deltas or the precise-touchpad path.
+    #[test]
+    fn sensitivity_script_shape() {
+        // Scaling happens after page-mode normalization and skips it,
+        // and before the shift-key axis swap so both axes are scaled.
+        let handler = SMOOTH_WHEEL_JS
+            .split("addEventListener('wheel'")
+            .nth(1)
+            .unwrap();
+        let page = handler.find("e.deltaMode === 2").unwrap();
+        let sens = handler
+            .find("if (e.deltaMode !== 2) { dx *= SENS; dy *= SENS; }")
+            .unwrap();
+        let swap = handler.find("if (e.shiftKey && !dx)").unwrap();
+        assert!(page < sens && sens < swap);
+        // The precise arm returns before the scaling line.
+        let precise = handler.find("!isDiscrete(e)").unwrap();
+        assert!(precise < sens);
     }
 
     /// The injected script must keep its fail-open shape: bail on
