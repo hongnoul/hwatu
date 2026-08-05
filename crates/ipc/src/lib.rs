@@ -10,6 +10,7 @@
 //! does not accept further request lines.
 
 use serde::{Deserialize, Serialize};
+use std::net::ToSocketAddrs;
 #[cfg(unix)]
 use std::path::PathBuf;
 
@@ -34,6 +35,80 @@ pub fn socket_path() -> PathBuf {
 extern "C" {
     #[link_name = "geteuid"]
     fn libc_geteuid() -> u32;
+}
+
+/// Default TCP port for the optional TCP transport (see
+/// `docs/ipc-tcp.md`). Unregistered, chosen to avoid the common dev
+/// server ports (3000/5173/8000/8080/8545/9000).
+pub const HWATU_TCP_PORT: u16 = 8741;
+
+/// Where the client reaches the daemon: the classic Unix socket, or a
+/// TCP endpoint selected by `HWATU_ENDPOINT` (remote / tunneled use).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Endpoint {
+    /// Unix domain socket (see [`socket_path`], or an explicit
+    /// `unix:///path` `HWATU_ENDPOINT` value).
+    Unix(PathBuf),
+    /// TCP socket: loopback for tunnels, or a remote host directly.
+    Tcp(std::net::SocketAddr),
+}
+
+/// Resolve the transport endpoint. Order:
+///
+/// 1. `HWATU_ENDPOINT` (new): `tcp://host:port`, scheme-less
+///    `host:port`, `unix:///path`; any other value names a Unix
+///    socket path directly.
+/// 2. `HWATU_SOCKET` (existing): Unix path only — unchanged.
+/// 3. default: [`socket_path`] — unchanged.
+///
+/// `HWATU_ENDPOINT` beats `HWATU_SOCKET` when both are set.
+pub fn endpoint() -> Endpoint {
+    if let Ok(value) = std::env::var("HWATU_ENDPOINT") {
+        if !value.trim().is_empty() {
+            return parse_endpoint_value(value.trim());
+        }
+    }
+    Endpoint::Unix(socket_path())
+}
+
+/// Parse one `HWATU_ENDPOINT` value. Never returns the default
+/// resolution: a set-but-weird value still wins over `HWATU_SOCKET`
+/// (a typo'd endpoint fails loudly at connect time instead of
+/// silently reaching a different daemon).
+fn parse_endpoint_value(value: &str) -> Endpoint {
+    let value = value.trim();
+    if let Some(rest) = value.strip_prefix("tcp://") {
+        if let Some(addr) = parse_tcp(rest) {
+            return Endpoint::Tcp(addr);
+        }
+    } else if let Some(path) = value.strip_prefix("unix://") {
+        if !path.is_empty() {
+            return Endpoint::Unix(PathBuf::from(path));
+        }
+    } else if let Some(addr) = parse_tcp(value) {
+        // Scheme-less convenience: `host:port`.
+        return Endpoint::Tcp(addr);
+    }
+    // Anything else is a Unix socket path (the value names the
+    // socket; `HWATU_ENDPOINT` always wins over `HWATU_SOCKET`).
+    Endpoint::Unix(PathBuf::from(value))
+}
+
+/// `host:port` → socket address, std only. Numeric addresses parse
+/// directly; hostnames (and bracket-less IPv6) resolve via
+/// `ToSocketAddrs`, which is what makes `tcp://laptop.local:8741`
+/// work without any DNS dependency.
+fn parse_tcp(value: &str) -> Option<std::net::SocketAddr> {
+    if let Ok(addr) = value.parse::<std::net::SocketAddr>() {
+        return Some(addr);
+    }
+    let (host, port) = value.rsplit_once(':')?;
+    let port: u16 = port.parse().ok()?;
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if host.is_empty() {
+        return None;
+    }
+    (host, port).to_socket_addrs().ok()?.next()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1680,3 +1755,103 @@ mod tests {
         assert!(!wire.contains("data"));
     }
 }
+
+    // ---- endpoint resolution (docs/ipc-tcp.md §5) -------------------
+
+    /// Pure parsing of `HWATU_ENDPOINT` values, no env involved.
+    #[test]
+    fn endpoint_value_grammar() {
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+
+        // tcp:// forms
+        assert_eq!(
+            parse_endpoint_value("tcp://127.0.0.1:8741"),
+            Endpoint::Tcp(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+                8741
+            ))
+        );
+        assert_eq!(
+            parse_endpoint_value("tcp://[::1]:8741"),
+            Endpoint::Tcp(SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 8741))
+        );
+        assert_eq!(
+            parse_endpoint_value("tcp://10.0.0.5:8741"),
+            Endpoint::Tcp(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5)),
+                8741
+            ))
+        );
+        // scheme-less convenience
+        assert_eq!(
+            parse_endpoint_value("127.0.0.1:8741"),
+            Endpoint::Tcp(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+                8741
+            ))
+        );
+        // explicit unix path
+        assert_eq!(
+            parse_endpoint_value("unix:///run/user/1000/hwatu.sock"),
+            Endpoint::Unix(PathBuf::from("/run/user/1000/hwatu.sock"))
+        );
+        // anything else is a Unix socket path (HWATU_ENDPOINT always wins)
+        assert_eq!(
+            parse_endpoint_value("/tmp/custom.sock"),
+            Endpoint::Unix(PathBuf::from("/tmp/custom.sock"))
+        );
+        assert_eq!(
+            parse_endpoint_value("not-an-endpoint"),
+            Endpoint::Unix(PathBuf::from("not-an-endpoint"))
+        );
+    }
+
+    /// Hostnames resolve through `ToSocketAddrs` (std only). The
+    /// test asserts on the resolved port and that the host resolved,
+    /// not on a specific address (localhost may be v4 or v6).
+    #[test]
+    fn endpoint_value_resolves_hostnames() {
+        match parse_endpoint_value("tcp://localhost:8741") {
+            Endpoint::Tcp(addr) => assert_eq!(addr.port(), 8741),
+            other => panic!("hostname should resolve to Tcp, got {other:?}"),
+        }
+    }
+
+    /// Endpoint resolution order: HWATU_ENDPOINT beats HWATU_SOCKET,
+    /// and neither set means the default socket path. Env is
+    /// global, so all env manipulation lives in this one test.
+    #[test]
+    fn endpoint_precedence_and_defaults() {
+        // Save and restore the two env vars around the test.
+        let saved_endpoint = std::env::var_os("HWATU_ENDPOINT");
+        let saved_socket = std::env::var_os("HWATU_SOCKET");
+
+        // Default: socket_path() resolution.
+        std::env::remove_var("HWATU_ENDPOINT");
+        std::env::remove_var("HWATU_SOCKET");
+        assert_eq!(endpoint(), Endpoint::Unix(socket_path()));
+
+        // HWATU_SOCKET honored when HWATU_ENDPOINT is unset.
+        std::env::set_var("HWATU_SOCKET", "/tmp/alt.sock");
+        assert_eq!(
+            endpoint(),
+            Endpoint::Unix(PathBuf::from("/tmp/alt.sock"))
+        );
+
+        // HWATU_ENDPOINT beats HWATU_SOCKET.
+        std::env::set_var("HWATU_ENDPOINT", "tcp://127.0.0.1:9999");
+        assert!(matches!(endpoint(), Endpoint::Tcp(a) if a.port() == 9999));
+
+        std::env::set_var("HWATU_ENDPOINT", "unix:///tmp/e.sock");
+        assert_eq!(endpoint(), Endpoint::Unix(PathBuf::from("/tmp/e.sock")));
+
+        // Restore.
+        match saved_endpoint {
+            Some(v) => std::env::set_var("HWATU_ENDPOINT", v),
+            None => std::env::remove_var("HWATU_ENDPOINT"),
+        }
+        match saved_socket {
+            Some(v) => std::env::set_var("HWATU_SOCKET", v),
+            None => std::env::remove_var("HWATU_SOCKET"),
+        }
+    }
