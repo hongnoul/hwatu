@@ -367,8 +367,8 @@ fn feature_overrides() -> Vec<(String, bool)> {
 }
 
 /// Features hwatu flips away from the engine default. Env overrides
-/// (`HWATU_WEBKIT_FEATURES`) win over these, so
-/// `PropagateDamagingInformation:on` re-enables it for testing.
+/// (`HWATU_WEBKIT_FEATURES`) win over these, so any baseline can still be
+/// reversed for testing.
 ///
 /// `PropagateDamagingInformation` (default on since WebKitGTK 2.52)
 /// makes the compositor upload only damaged regions. On some stacks
@@ -380,7 +380,19 @@ fn feature_overrides() -> Vec<(String, bool)> {
 /// Chromium-family browsers don't share this path, which is why the
 /// same pages look fine elsewhere. Trade a little GPU bandwidth for
 /// correct pixels until the fixes ship in a stable WebKitGTK.
-const BASELINE_FEATURE_OVERRIDES: &[(&str, bool)] = &[("PropagateDamagingInformation", false)];
+///
+/// WebKitGTK 2.52 ships the Storage API and File System Access API but keeps
+/// them disabled by default. Together these features provide the Origin
+/// Private File System exposed by `navigator.storage.getDirectory()`. Modern
+/// local-first applications use OPFS for private, origin-scoped persistence,
+/// so a general-purpose browser should expose WebKit's native implementation.
+const BASELINE_FEATURE_OVERRIDES: &[(&str, bool)] = &[
+    ("PropagateDamagingInformation", false),
+    ("StorageAPI", true),
+    ("StorageAPIEstimate", true),
+    ("FileSystem", true),
+    ("FileSystemWritableStream", true),
+];
 
 /// `HWATU_MEDIA_STREAM=1|on|true` re-enables the MediaStream API
 /// (getUserMedia/enumerateDevices), which is off by default; see the
@@ -438,6 +450,7 @@ pub fn build_webview(daemon: &Daemon) -> webkit6::WebView {
     crate::focusshield::wire_view(&view);
     crate::blurshield::wire_view(&view);
     crate::mediashim::wire_view(&view);
+    crate::opfs::wire_view(&view);
     crate::trusted_input::wire_view(&view);
     view
 }
@@ -644,6 +657,7 @@ impl BrowserWindow {
         crate::clock::wire_view(&webview);
         crate::smoothwheel::wire_view(&webview);
         crate::focusshield::wire_view(&webview);
+        crate::opfs::wire_view(&webview);
         crate::trusted_input::wire_view(&webview);
         self.daemon.adblock.apply_to(&webview);
         let popup = Self::build(
@@ -2187,6 +2201,24 @@ mod tests {
     use super::{
         external_uri_scheme, is_ctrl_click_link, load_was_cancelled, parse_feature_overrides,
     };
+
+    #[test]
+    fn baseline_enables_the_complete_opfs_feature_bundle() {
+        for identifier in [
+            "StorageAPI",
+            "StorageAPIEstimate",
+            "FileSystem",
+            "FileSystemWritableStream",
+        ] {
+            assert_eq!(
+                super::BASELINE_FEATURE_OVERRIDES
+                    .iter()
+                    .find(|(name, _)| *name == identifier),
+                Some(&(identifier, true)),
+                "{identifier} must be enabled for navigator.storage.getDirectory()"
+            );
+        }
+    }
 
     #[test]
     fn parses_on_off_pairs() {

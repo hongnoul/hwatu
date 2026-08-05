@@ -25,6 +25,7 @@ mod launcher;
 mod mediashim;
 mod net;
 mod observe;
+mod opfs;
 mod palette;
 mod prompts;
 mod search;
