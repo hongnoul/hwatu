@@ -382,6 +382,15 @@ fn feature_overrides() -> Vec<(String, bool)> {
 /// correct pixels until the fixes ship in a stable WebKitGTK.
 const BASELINE_FEATURE_OVERRIDES: &[(&str, bool)] = &[("PropagateDamagingInformation", false)];
 
+/// `HWATU_MEDIA_STREAM=1|on|true` re-enables the MediaStream API
+/// (getUserMedia/enumerateDevices), which is off by default; see the
+/// wedge documented at the call site in `apply_view_settings`.
+fn media_stream_enabled() -> bool {
+    std::env::var("HWATU_MEDIA_STREAM")
+        .map(|v| matches!(v.trim(), "1" | "on" | "true"))
+        .unwrap_or(false)
+}
+
 fn parse_feature_overrides(raw: &str) -> Vec<(String, bool)> {
     raw.split(',')
         .filter_map(|entry| {
@@ -450,6 +459,27 @@ fn apply_view_settings(view: &webkit6::WebView) {
         // entirely so automation against such pages stays responsive.
         if std::env::var("HWATU_DISABLE_MEDIA").is_ok_and(|v| !v.is_empty() && v != "0") {
             settings.set_enable_media(false);
+        }
+
+        // MediaStream (getUserMedia/enumerateDevices) is off unless
+        // explicitly requested. On WebKitGTK 2.52.5 + GStreamer 1.28
+        // (pipewire provider), a page calling
+        // navigator.mediaDevices.enumerateDevices() wedges the web
+        // process main thread inside
+        // GStreamerVideoCaptureDeviceManager::computeCaptureDevices —
+        // a nested g_main_context_iteration loop that never completes,
+        // pinning one core at 100% and starving JS/paint/IPC for the
+        // life of the process (reproduced on example.com with a bare
+        // enumerateDevices() call; observed in the wild via
+        // doordash.com's fingerprinting SDK, which probes devices on
+        // every page). Chromium-family browsers answer the same probe
+        // in microseconds, which is why the same sites feel fine
+        // there. With the API disabled, navigator.mediaDevices is
+        // simply absent and such probes fall through their error
+        // paths instantly. HWATU_MEDIA_STREAM=1 re-enables for actual
+        // camera/mic use.
+        if !media_stream_enabled() {
+            settings.set_enable_media_stream(false);
         }
 
         // Scrolling must hit the GPU compositor path. The default
@@ -2180,6 +2210,24 @@ mod tests {
     #[test]
     fn empty_input_is_empty() {
         assert!(parse_feature_overrides("").is_empty());
+    }
+
+    /// MediaStream stays off unless the env opt-in is exact: the
+    /// default guards against the enumerateDevices() main-thread wedge
+    /// (see apply_view_settings), so a sloppy value must not enable it.
+    #[test]
+    fn media_stream_env_gate() {
+        std::env::remove_var("HWATU_MEDIA_STREAM");
+        assert!(!super::media_stream_enabled());
+        std::env::set_var("HWATU_MEDIA_STREAM", "1");
+        assert!(super::media_stream_enabled());
+        std::env::set_var("HWATU_MEDIA_STREAM", "on");
+        assert!(super::media_stream_enabled());
+        std::env::set_var("HWATU_MEDIA_STREAM", "0");
+        assert!(!super::media_stream_enabled());
+        std::env::set_var("HWATU_MEDIA_STREAM", "yes");
+        assert!(!super::media_stream_enabled());
+        std::env::remove_var("HWATU_MEDIA_STREAM");
     }
 
     #[test]
