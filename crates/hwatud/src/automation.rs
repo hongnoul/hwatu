@@ -2807,7 +2807,18 @@ if (el instanceof HTMLSelectElement) {{
   setter.call(el, clear ? text : el.value + text);
   fire('input'); fire('change');
 }} else if (el.isContentEditable) {{
-  if (clear) el.textContent = '';
+  if (clear) {{
+    // Select the existing editor contents instead of mutating textContent.
+    // Rich editors such as Google Sheets keep an internal model that only
+    // observes editing commands; direct DOM clearing desynchronizes it and
+    // causes the replacement text to be appended to the old value.
+    const doc = el.ownerDocument;
+    const selection = doc.getSelection();
+    const range = doc.createRange();
+    range.selectNodeContents(el);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }}
   el.dispatchEvent(new InputEvent('beforeinput', {{ bubbles: true, cancelable: true, inputType: 'insertText', data: text }}));
   document.execCommand ? document.execCommand('insertText', false, text) : el.textContent += text;
   fire('input');
@@ -2817,6 +2828,7 @@ if (el instanceof HTMLSelectElement) {{
 if (enter) {{
   const key = {{ bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', keyCode: 13, which: 13 }};
   const handled = !el.dispatchEvent(new KeyboardEvent('keydown', key));
+  el.dispatchEvent(new KeyboardEvent('keypress', key));
   el.dispatchEvent(new KeyboardEvent('keyup', key));
   if (!handled && el.form) el.form.requestSubmit ? el.form.requestSubmit() : el.form.submit();
 }}
