@@ -54,7 +54,11 @@
 //! (or, on the synthetic-swipe path, as the old reel's audio playing
 //! over the transition). Deliberately no crossfade: the native apps
 //! hard-cut audio at gesture commit too, and overlapping reel audio
-//! is universally perceived as a bug.
+//! is universally perceived as a bug. Because the commit-time pick is
+//! a mid-transition guess, a settle-time reconcile runs after each
+//! page: only the front-and-center video may keep playing, everything
+//! else is paused — a wrong guess otherwise leaked an off-screen
+//! reel's audio under the watched one indefinitely.
 //!
 //! Keyboard scrolling (Arrow/Page/Space) goes through the same
 //! animator, because WebKit's keydown scroll has the identical
@@ -478,23 +482,34 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
     if (!ownVolume.has(v)) ownVolume.set(v, v.volume);
     return ownVolume.get(v);
   }
+  // Videos the handoff itself paused, so settle-time reconciliation
+  // can tell "we silenced it" apart from "the user paused it" and only
+  // resume the former.
+  const handoffPaused = new WeakSet();
   function handoffPlayback(dir) {
     if (!shortformSite()) return;
-    // The incoming card is still ~one viewport away in the paging
-    // direction at commit time: nearest video at least 40% of a
-    // viewport from center. None found (virtualized card not mounted
-    // yet) fails open — the site's observer handles it as before.
+    // Pick the incoming card: nearest video ahead of center in the
+    // paging direction. On the synthetic-swipe path the feed has
+    // already been dragged ~65% of a viewport at pointerup, leaving
+    // the real incoming reel only ~35% from center — a 40% floor
+    // skipped it and started the reel AFTER it instead (next-next
+    // reel's audio under the one being watched). 15% still safely
+    // excludes the outgoing reel: its center sits behind mid in the
+    // paging direction (d <= 0) throughout the transition. None found
+    // (virtualized card not mounted yet) fails open — the site's
+    // observer handles it as before.
     const mid = innerHeight / 2;
     let inc = null, best = Infinity;
     for (const v of document.querySelectorAll('video')) {
       const r = v.getBoundingClientRect();
       if (r.width < 1 || r.height < 1) continue;
       const d = ((r.top + r.bottom) / 2 - mid) * dir;
-      if (d < innerHeight * 0.4) continue;
+      if (d < innerHeight * 0.15) continue;
       if (d < best) { best = d; inc = v; }
     }
     if (inc) {
       const iv = ownVol(inc);
+      handoffPaused.delete(inc);
       if (inc.paused) {
         try { inc.volume = 0; } catch (_) {}
         const p = inc.play();
@@ -516,8 +531,41 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
         // Restore the element's own volume after the pause so a
         // scroll-back (or the site recycling the element) never
         // inherits a silenced video.
-        try { v.pause(); v.volume = ov; ownVolume.delete(v); } catch (_) {}
+        try { handoffPaused.add(v); v.pause(); v.volume = ov; ownVolume.delete(v); } catch (_) {}
       });
+    }
+  }
+  // Settle-time reconciliation: the commit-time handoff guesses the
+  // incoming card mid-transition. When the guess was wrong (the feed
+  // rubber-banded back, or the mounted-cards geometry mid-drag fooled
+  // the pick), a reel that is NOT on screen keeps playing audio under
+  // the one being watched — indefinitely, because the site's observer
+  // never pauses a video it didn't start. Once the transition has
+  // settled, the front-and-center video is the only one allowed to
+  // play: every other playing video ramps out and pauses, and a video
+  // the handoff itself paused is resumed if it ended up active (a
+  // snapped-back swipe must not leave the current reel frozen).
+  function reconcilePlayback() {
+    if (!shortformSite()) return;
+    // A newer swipe in flight owns playback: its own settle-time
+    // reconcile is already scheduled, and running now would judge
+    // mid-transition geometry.
+    if (performance.now() < swipeUntil) return;
+    const active = activeShortformVideo();
+    for (const v of document.querySelectorAll('video')) {
+      if (v === active || v.paused || rampTarget(v) === 0) continue;
+      const ov = ownVol(v);
+      rampVolume(v, 0, RAMP_OUT_MS, () => {
+        try { handoffPaused.add(v); v.pause(); v.volume = ov; ownVolume.delete(v); } catch (_) {}
+      });
+    }
+    if (active && active.paused && handoffPaused.has(active)) {
+      handoffPaused.delete(active);
+      const iv = ownVol(active);
+      try { active.volume = 0; } catch (_) {}
+      const p = active.play();
+      if (p && p.catch) p.catch(() => {});
+      rampVolume(active, iv, RAMP_IN_MS, () => ownVolume.delete(active));
     }
   }
 
@@ -577,6 +625,11 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
           // Gesture commit: start the incoming reel's playback now
           // instead of waiting out IG's settle + observer.
           handoffPlayback(dir);
+          // And reconcile once IG's own snap animation has settled:
+          // the commit-time pick is a mid-transition guess, and a
+          // wrong guess leaks an off-screen reel's audio forever.
+          // (+50ms so this fires past its own swipeUntil guard.)
+          setTimeout(reconcilePlayback, SWIPE_ABSORB_MS + 50);
         }
       } catch (_) {
         clearInterval(iv);
@@ -673,8 +726,12 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
     if (target == null) return true;
     animateTo(el, horiz, target);
     // Page commit on a snap/card feed: same handoff as the swipe
-    // path. handoffPlayback gates itself to shortform sites.
-    if (!horiz) handoffPlayback(dir);
+    // path. handoffPlayback gates itself to shortform sites; the
+    // settle-time reconcile corrects a wrong mid-transition pick.
+    if (!horiz) {
+      handoffPlayback(dir);
+      setTimeout(reconcilePlayback, SNAP_DUR + 150);
+    }
     return true;
   }
 
@@ -1423,10 +1480,17 @@ mod tests {
         assert!(body.contains("if (!shortformSite()) return;"));
         // Outgoing: every other playing video ramps to zero, pauses,
         // then restores its own volume so scroll-back never inherits
-        // a silenced video.
+        // a silenced video. The pause is marked so settle-time
+        // reconciliation can resume a wrongly-paused active reel.
         assert!(body.contains("if (v === inc || v.paused || rampTarget(v) === 0) continue;"));
         assert!(body.contains("rampVolume(v, 0, RAMP_OUT_MS"));
-        assert!(body.contains("v.pause(); v.volume = ov; ownVolume.delete(v);"));
+        assert!(body.contains("handoffPaused.add(v); v.pause(); v.volume = ov; ownVolume.delete(v);"));
+        // Incoming pick floor: 15% of a viewport ahead of center. The
+        // old 40% floor overshot on the synthetic-swipe path (feed
+        // already dragged ~65% at pointerup) and started the reel
+        // AFTER the incoming one — its audio then played under the
+        // reel being watched.
+        assert!(body.contains("innerHeight * 0.15"));
         // Incoming: starts muted-by-volume and ramps in; the play()
         // rejection is swallowed (autoplay policy).
         assert!(body.contains("inc.volume = 0;"));
@@ -1439,6 +1503,34 @@ mod tests {
         let ps = SMOOTH_WHEEL_JS.split("function pageSnap").nth(1).unwrap();
         let ps_body = ps.split("function animateBy").next().unwrap();
         assert!(ps_body.contains("handoffPlayback(dir)"));
+    }
+
+    /// After the transition settles, only the front-and-center video
+    /// may keep playing: a wrong commit-time pick otherwise leaks an
+    /// off-screen reel's audio under the watched one indefinitely.
+    /// Both commit paths schedule the reconcile past their settle
+    /// window, it skips while a newer swipe is in flight, and it
+    /// resumes only videos the handoff itself paused.
+    #[test]
+    fn settle_time_reconcile_shape() {
+        assert!(SMOOTH_WHEEL_JS.contains("function reconcilePlayback"));
+        let body = SMOOTH_WHEEL_JS
+            .split("function reconcilePlayback")
+            .nth(1)
+            .unwrap();
+        let body = body.split("function swipeFeed").next().unwrap();
+        // Gated to shortform sites, and defers to a newer in-flight swipe.
+        assert!(body.contains("if (!shortformSite()) return;"));
+        assert!(body.contains("if (performance.now() < swipeUntil) return;"));
+        // Only the active video keeps playing; others ramp out + pause.
+        assert!(body.contains("activeShortformVideo()"));
+        assert!(body.contains("rampVolume(v, 0, RAMP_OUT_MS"));
+        // Resumes the active video only when the handoff paused it —
+        // a user pause stays a pause.
+        assert!(body.contains("handoffPaused.has(active)"));
+        // Scheduled on both commit paths, past each settle window.
+        assert!(SMOOTH_WHEEL_JS.contains("setTimeout(reconcilePlayback, SWIPE_ABSORB_MS + 50)"));
+        assert!(SMOOTH_WHEEL_JS.contains("setTimeout(reconcilePlayback, SNAP_DUR + 150)"));
     }
 
     /// Precise touchpad deltas on the Instagram gesture feed must be
