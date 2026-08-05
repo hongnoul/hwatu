@@ -54,6 +54,8 @@ pub enum Action {
     Fullscreen,
     /// Toggle page audio mute.
     Mute,
+    /// Reopen the most recently closed window (ctrl+shift+t).
+    ReopenClosed,
     /// Open the command palette (fuzzy action search in the bar).
     CommandPalette,
 }
@@ -80,6 +82,7 @@ impl Action {
         Action::ZoomReset,
         Action::Fullscreen,
         Action::Mute,
+        Action::ReopenClosed,
         Action::CommandPalette,
     ];
 
@@ -105,6 +108,7 @@ impl Action {
             Action::ZoomReset => "zoom_reset",
             Action::Fullscreen => "fullscreen",
             Action::Mute => "mute",
+            Action::ReopenClosed => "reopen_closed",
             Action::CommandPalette => "command_palette",
         }
     }
@@ -132,6 +136,7 @@ impl Action {
             Action::ZoomReset => "reset zoom",
             Action::Fullscreen => "toggle fullscreen",
             Action::Mute => "toggle video mute",
+            Action::ReopenClosed => "reopen last closed tab",
             Action::CommandPalette => "command palette",
         }
     }
@@ -170,6 +175,8 @@ impl Action {
             // Bare key, so it dispatches in the bubble phase: an `m`
             // typed into a page text box still reaches the page.
             Action::Mute => "m",
+            // The mainstream browser convention for "undo close tab".
+            Action::ReopenClosed => "ctrl+shift+t",
             // ctrl+shift+p mirrors VS Code; ctrl+k is unclaimed in
             // browsers and one chord shorter for daily use.
             Action::CommandPalette => "ctrl+k, ctrl+shift+p",
@@ -566,6 +573,12 @@ mod tests {
         // Bare m toggles mute; it must bubble so page inputs keep it.
         assert_eq!(map.lookup(Phase::Bubble, Key::m, NONE), Some(Action::Mute));
         assert_eq!(map.lookup(Phase::Capture, Key::m, NONE), None);
+        // Undo close tab, the chord everyone knows. Shift matters:
+        // bare ctrl+t opens a new window instead.
+        assert_eq!(
+            map.lookup(Phase::Capture, Key::T, CTRL | SHIFT),
+            Some(Action::ReopenClosed)
+        );
     }
 
     #[test]

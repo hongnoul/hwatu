@@ -76,6 +76,11 @@ pub struct Daemon {
     /// and none is focused, so an agent that opened or drove a window
     /// can keep addressing it without repeating `id`.
     pub last_target: RefCell<Option<u64>>,
+    /// Recently closed user windows, newest last, capped small.
+    /// `ctrl+shift+t` (Action::ReopenClosed) pops from here. Headless
+    /// windows (agent verification runs) and blank/launcher pages are
+    /// never recorded.
+    pub recently_closed: RefCell<Vec<session::SessionEntry>>,
     /// Idle headless windows kept for reuse by `hwatu check`, so
     /// back-to-back checks navigate a warm window instead of paying
     /// window construction + prewarm-refill per check. Entries carry
@@ -141,6 +146,7 @@ impl Daemon {
             prompt_memory: prompts::Memory::default(),
             keymap: keys::Keymap::load(),
             last_target: RefCell::new(None),
+            recently_closed: RefCell::new(Vec::new()),
             check_pool: RefCell::new(Vec::new()),
             prefetch_pool: RefCell::new(Vec::new()),
             session_save_timer: RefCell::new(None),

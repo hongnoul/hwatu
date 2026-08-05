@@ -906,6 +906,32 @@ impl BrowserWindow {
             let this = this.clone();
             window.connect_close_request(move |_| {
                 this.cancel_discard_timer();
+                // Remember the page for ctrl+shift+t before the window
+                // leaves the registry. Headless windows belong to an
+                // agent's verification run, and blank/launcher pages
+                // are not worth resurrecting.
+                {
+                    let info = this.info();
+                    if info.mode != OpenMode::Headless
+                        && !info.url.is_empty()
+                        && info.url != "about:blank"
+                        && !crate::launcher::is_launcher(&info.url)
+                    {
+                        let mut closed = daemon.recently_closed.borrow_mut();
+                        closed.push(crate::session::SessionEntry {
+                            url: info.url,
+                            title: info.title,
+                            app_id: info.app_id,
+                            mode: info.mode,
+                        });
+                        // Cap the stack: 10 reopens deep matches what
+                        // mainstream browsers keep reachable by key.
+                        let overflow = closed.len().saturating_sub(10);
+                        if overflow > 0 {
+                            closed.drain(..overflow);
+                        }
+                    }
+                }
                 // The GTK toplevel dying does not kill the web process:
                 // WebKit caches it for reuse, and a cached process keeps
                 // running its page — an autoplaying video's audio audibly
@@ -1841,6 +1867,7 @@ impl BrowserWindow {
                 }
             }
             Action::Mute => self.toggle_mute(),
+            Action::ReopenClosed => self.reopen_closed(),
             Action::CommandPalette => self.open_palette(),
         }
         glib::Propagation::Stop
@@ -1977,6 +2004,24 @@ impl BrowserWindow {
         };
         webview.set_zoom_level(1.0);
         self.flash_bar("zoom 100%", 1);
+    }
+
+    /// Reopen the most recently closed window (ctrl+shift+t), popping
+    /// the daemon's recently-closed stack. Reopened windows always
+    /// take focus regardless of how the original was opened: the user
+    /// pressed a key asking for the page back.
+    fn reopen_closed(self: &Rc<Self>) {
+        let entry = self.daemon.recently_closed.borrow_mut().pop();
+        let Some(entry) = entry else {
+            self.flash_bar("nothing to reopen", 1);
+            return;
+        };
+        Self::open(
+            &self.daemon,
+            Some(entry.url),
+            entry.app_id,
+            OpenMode::Normal,
+        );
     }
 
     /// Back/forward through this window's history. Restores a
