@@ -1083,6 +1083,29 @@ impl Response {
     }
 }
 
+/// The one new wire message of the TCP transport (see
+/// `docs/ipc-tcp.md` §7.3): a TCP connection authenticates once,
+/// before any request, when the daemon runs with `--token` /
+/// `HWATU_TOKEN`. Unix socket connections never send it — kernel
+/// peer identity is the auth there.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AuthRequest {
+    /// The bearer token. Empty when the client has no `HWATU_TOKEN`;
+    /// the daemon answers "auth required" so the operator learns to
+    /// set it on both sides.
+    pub auth: String,
+}
+
+/// Daemon's answer to [`AuthRequest`]. `{"status":"ok"}` admits the
+/// connection to the normal protocol; `{"status":"err","message":…}`
+/// is followed by a close.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum AuthReply {
+    Ok,
+    Err { message: String },
+}
+
 /// Event kinds the daemon emits (see [`Event::event`]; `subscribed`
 /// is the ack, not a filterable kind). Shared so client-side filter
 /// validation cannot drift from the daemon.
@@ -1854,4 +1877,42 @@ mod tests {
             Some(v) => std::env::set_var("HWATU_SOCKET", v),
             None => std::env::remove_var("HWATU_SOCKET"),
         }
+    }
+
+    /// The TCP auth handshake round-trips: the request carries the
+    /// token, and both reply variants serialize under the `status`
+    /// tag with snake_case names.
+    #[test]
+    fn auth_handshake_wire_shape() {
+        let req = AuthRequest {
+            auth: "sekret".into(),
+        };
+        assert_eq!(
+            serde_json::to_string(&req).unwrap(),
+            r#"{"auth":"sekret"}"#
+        );
+
+        assert_eq!(
+            serde_json::to_string(&AuthReply::Ok).unwrap(),
+            r#"{"status":"ok"}"#
+        );
+        let err = AuthReply::Err {
+            message: "invalid token".into(),
+        };
+        assert_eq!(
+            serde_json::to_string(&err).unwrap(),
+            r#"{"status":"err","message":"invalid token"}"#
+        );
+
+        // Round-trip both directions.
+        let back: AuthReply = serde_json::from_str(r#"{"status":"ok"}"#).unwrap();
+        assert!(matches!(back, AuthReply::Ok));
+        let back: AuthReply =
+            serde_json::from_str(r#"{"status":"err","message":"nope"}"#).unwrap();
+        match back {
+            AuthReply::Err { message } => assert_eq!(message, "nope"),
+            _ => panic!("expected err"),
+        }
+        let req: AuthRequest = serde_json::from_str(r#"{"auth":""}"#).unwrap();
+        assert_eq!(req.auth, "");
     }
