@@ -98,6 +98,26 @@
 //! entering the animator. Precise touchpad deltas are untouched: they
 //! are real hardware pixel values, not synthesized line steps.
 //!
+//! Hi-res wheels (Logitech MX Master and friends) report sub-notch
+//! motion: WebKitGTK hands the page non-integer pixel deltas that are
+//! all multiples of one hardware quantum (observed 6.8px = 1/15 of
+//! the 102px notch on an MX Master 4). `isDiscrete` misses most of
+//! them, but the multiples that happen to land on integers >= 24
+//! (34, 68, ...) it claims — one physical gesture split between the
+//! animator and the engine's instant path, two scrolling systems
+//! fighting over the same wheel, which reads as broken sensitivity.
+//! The quantized stream is detected by an approximate GCD over recent
+//! event magnitudes (touchpad deltas are continuous finger motion, so
+//! their GCD collapses toward zero) and claimed wholesale for the
+//! animator, scaled and glided exactly like classic discrete ticks.
+//!
+//! Sites in `nativeWheelSite` skip the non-passive wheel listener. A
+//! root listener makes WebKitGTK route touchpad gestures through the web
+//! process instead of its async scrolling thread even when the handler
+//! ultimately leaves precise deltas alone. Animation-heavy pages such as
+//! Baseten can then appear not to scroll at all. Keyboard enhancements
+//! remain installed; only wheel input returns to the engine-native path.
+//!
 //! `HWATU_SMOOTH_WHEEL=0` disables the whole thing.
 
 /// See module docs. Constants mirror Chromium
@@ -243,6 +263,49 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
     if (e.deltaMode !== 0) return true;
     return Number.isInteger(e.deltaY) && Number.isInteger(e.deltaX)
         && Math.abs(e.deltaY || e.deltaX) >= 24;
+  }
+
+  // Hi-res wheels (Logitech MX Master and friends) report sub-notch
+  // motion: WebKitGTK hands the page non-integer pixel deltas that are
+  // all multiples of one hardware quantum (observed 6.8px = 1/15 notch
+  // on an MX Master 4). isDiscrete misses them, but the multiples that
+  // happen to land on integers >= 24 (34, 68, ...) it claims — one
+  // physical gesture split between the animator and the engine's
+  // instant path. Detect the quantized stream with an approximate
+  // float GCD over recent magnitudes (touchpad deltas are continuous
+  // finger motion, so their GCD collapses toward zero) and claim it
+  // wholesale. The verdict is briefly sticky so a stream is never
+  // split mid-gesture while the window refills.
+  const HIRES_WIN = 8, HIRES_MIN_EVENTS = 4, HIRES_MIN_Q = 3, HIRES_MAX_Q = 24,
+        HIRES_STICKY_MS = 400;
+  const hiresMags = [];
+  let hiresUntil = 0;
+  // Approximate GCD for floats: fold remainders near either end of
+  // [0, b] to tolerate float32 quantization from the input stack.
+  function fgcd(a, b) {
+    while (b > 0.75) {
+      let r = a % b;
+      if (r > b / 2) r = b - r;
+      a = b; b = r;
+    }
+    return a;
+  }
+  function isHiresWheel(e) {
+    if (e.deltaMode !== 0) return false;
+    const m = Math.abs(e.deltaY || e.deltaX);
+    if (!m) return false;
+    hiresMags.push(m);
+    if (hiresMags.length > HIRES_WIN) hiresMags.shift();
+    const now = performance.now();
+    if (now < hiresUntil) return true;
+    if (hiresMags.length < HIRES_MIN_EVENTS) return false;
+    let q = hiresMags[0];
+    for (let i = 1; i < hiresMags.length && q > 0.75; i++) q = fgcd(hiresMags[i], q);
+    // Quantum bounds: below MIN_Q the stream is effectively continuous
+    // (native precise handling is right); at or above MAX_Q it's a
+    // classic notch wheel, which isDiscrete already claims.
+    if (q >= HIRES_MIN_Q && q < HIRES_MAX_Q) { hiresUntil = now + HIRES_STICKY_MS; return true; }
+    return false;
   }
 
   // True when `el` snaps mandatorily on this axis. The root scroller's
@@ -653,49 +716,60 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
     ensureRaf();
   }
 
-  addEventListener('wheel', e => {
-    try {
-      if (e.defaultPrevented || !e.cancelable) return;
-      if (e.ctrlKey || e.altKey || e.metaKey) return; // zoom & friends
-      if (!isDiscrete(e)) {
-        // Precise touchpad deltas normally stay native, but on the
-        // IG gesture feed native pixels desync the reel state: claim
-        // and translate them into synthetic swipes.
-        if (!e.shiftKey && e.deltaY
-            && preciseFeedScroll(e.target, e.deltaY)) e.preventDefault();
-        return;
+  // A non-passive root wheel listener marks the whole viewport as a
+  // synchronous wheel-event region in WebKitGTK. Keep known pages that
+  // need the engine's async touchpad path out of that region entirely.
+  function nativeWheelSite() {
+    const host = location.hostname.toLowerCase().replace(/^www\./, '');
+    return host === 'baseten.co' || host.endsWith('.baseten.co');
+  }
+
+  function installWheelHandler() {
+    addEventListener('wheel', e => {
+      try {
+        if (e.defaultPrevented || !e.cancelable) return;
+        if (e.ctrlKey || e.altKey || e.metaKey) return; // zoom & friends
+        if (!isDiscrete(e) && !isHiresWheel(e)) {
+          // Precise touchpad deltas normally stay native, but on the
+          // IG gesture feed native pixels desync the reel state: claim
+          // and translate them into synthetic swipes.
+          if (!e.shiftKey && e.deltaY
+              && preciseFeedScroll(e.target, e.deltaY)) e.preventDefault();
+          return;
+        }
+
+        let dx = e.deltaX, dy = e.deltaY;
+        if (e.deltaMode === 1) { dx *= 40; dy *= 40; }
+        else if (e.deltaMode === 2) { dx *= innerWidth; dy *= innerHeight; }
+        // Sensitivity applies to synthesized notch deltas (pixel/line
+        // modes); page-mode deltas are already viewport-sized.
+        if (e.deltaMode !== 2) { dx *= SENS; dy *= SENS; }
+        if (e.shiftKey && !dx) { dx = dy; dy = 0; }
+
+        const horiz = Math.abs(dx) > Math.abs(dy);
+        const delta = horiz ? dx : dy;
+        if (!delta) return;
+
+        const el = scrollTarget(e.target, horiz, delta > 0 ? 1 : -1);
+        if (!el) {
+          // IG's transform-virtualized feed can be unscrollable by
+          // extent (see gestureFeed) while still swipeable.
+          const feed = !horiz && gestureFeed(e.target);
+          if (feed && swipeFeed(feed, delta > 0 ? 1 : -1)) e.preventDefault();
+          return; // nothing scrollable: stay native
+        }
+
+        // Snap paging decides before preventDefault so an exception in
+        // it degrades to native scrolling, not a dead wheel.
+        if (pageSnap(el, horiz, delta > 0 ? 1 : -1)) { e.preventDefault(); return; }
+        e.preventDefault();
+        animateBy(el, horiz, delta);
+      } catch (_) {
+        // Fail open: native scrolling still works if we blow up.
       }
-
-      let dx = e.deltaX, dy = e.deltaY;
-      if (e.deltaMode === 1) { dx *= 40; dy *= 40; }
-      else if (e.deltaMode === 2) { dx *= innerWidth; dy *= innerHeight; }
-      // Sensitivity applies to synthesized notch deltas (pixel/line
-      // modes); page-mode deltas are already viewport-sized.
-      if (e.deltaMode !== 2) { dx *= SENS; dy *= SENS; }
-      if (e.shiftKey && !dx) { dx = dy; dy = 0; }
-
-      const horiz = Math.abs(dx) > Math.abs(dy);
-      const delta = horiz ? dx : dy;
-      if (!delta) return;
-
-      const el = scrollTarget(e.target, horiz, delta > 0 ? 1 : -1);
-      if (!el) {
-        // IG's transform-virtualized feed can be unscrollable by
-        // extent (see gestureFeed) while still swipeable.
-        const feed = !horiz && gestureFeed(e.target);
-        if (feed && swipeFeed(feed, delta > 0 ? 1 : -1)) e.preventDefault();
-        return; // nothing scrollable: stay native
-      }
-
-      // Snap paging decides before preventDefault so an exception in
-      // it degrades to native scrolling, not a dead wheel.
-      if (pageSnap(el, horiz, delta > 0 ? 1 : -1)) { e.preventDefault(); return; }
-      e.preventDefault();
-      animateBy(el, horiz, delta);
-    } catch (_) {
-      // Fail open: native scrolling still works if we blow up.
-    }
-  }, { passive: false });
+    }, { passive: false });
+  }
+  if (!nativeWheelSite()) installWheelHandler();
 
   // Keyboard scrolling through the same animator. WebKit's keydown
   // scroller has the identical isolated-pulse problem as its wheel
@@ -1110,6 +1184,26 @@ mod tests {
         assert!(target < pd);
     }
 
+    /// Baseten's animation-heavy homepage needs WebKitGTK's asynchronous
+    /// touchpad path. Installing any non-passive root wheel listener would
+    /// mark the whole viewport for synchronous web-process scrolling.
+    #[test]
+    fn baseten_keeps_native_wheel_path() {
+        assert!(SMOOTH_WHEEL_JS.contains("function nativeWheelSite"));
+        assert!(SMOOTH_WHEEL_JS.contains("host === 'baseten.co'"));
+        assert!(SMOOTH_WHEEL_JS.contains("host.endsWith('.baseten.co')"));
+        let install = SMOOTH_WHEEL_JS
+            .find("function installWheelHandler")
+            .expect("wheel listener installer");
+        let gate = SMOOTH_WHEEL_JS
+            .find("if (!nativeWheelSite()) installWheelHandler();")
+            .expect("native-wheel host gate");
+        assert!(
+            install < gate,
+            "listener must only install behind the host gate"
+        );
+    }
+
     /// ArrowLeft must select the close control before falling back to the
     /// comment opener, otherwise pressing it twice only opens the sheet.
     #[test]
@@ -1373,5 +1467,74 @@ mod tests {
         let arm = handler.split("let dx = e.deltaX").next().unwrap();
         assert!(arm.contains("!isDiscrete(e)"));
         assert!(arm.contains("preciseFeedScroll(e.target, e.deltaY)) e.preventDefault()"));
+    }
+
+    /// Hi-res wheels (MX Master-style) emit sub-notch deltas that are
+    /// exact multiples of a hardware quantum; the stream must be
+    /// detected (approximate GCD) and claimed for the animator so one
+    /// physical gesture is never split between the animator and the
+    /// engine's instant path. Touchpads (continuous deltas, GCD -> 0)
+    /// and classic notch wheels (quantum >= 24, isDiscrete territory)
+    /// must stay out of the hi-res arm.
+    #[test]
+    fn hires_wheel_detection_shape() {
+        assert!(SMOOTH_WHEEL_JS.contains("function isHiresWheel"));
+        assert!(SMOOTH_WHEEL_JS.contains("function fgcd"));
+        let body = SMOOTH_WHEEL_JS
+            .split("function isHiresWheel")
+            .nth(1)
+            .unwrap();
+        // Pixel-mode only: line/page modes are classic discrete input.
+        assert!(body.contains("e.deltaMode !== 0"));
+        // Quantum bounds keep touchpads (low) and notch wheels (high) out.
+        assert!(SMOOTH_WHEEL_JS.contains("HIRES_MIN_Q = 3"));
+        assert!(SMOOTH_WHEEL_JS.contains("HIRES_MAX_Q = 24"));
+        // Sticky verdict so a gesture is never split mid-stream.
+        assert!(body.contains("now < hiresUntil"));
+        // The handler claims hi-res streams alongside discrete ticks,
+        // before the precise-touchpad arm.
+        let handler = SMOOTH_WHEEL_JS
+            .split("addEventListener('wheel'")
+            .nth(1)
+            .unwrap();
+        assert!(handler.contains("!isDiscrete(e) && !isHiresWheel(e)"));
+
+        // The detector's math, mirrored in Rust: MX Master 4 deltas
+        // (multiples of 6.8 as float32) must yield a quantum in
+        // bounds; continuous touchpad-like deltas must not.
+        fn fgcd(mut a: f64, mut b: f64) -> f64 {
+            while b > 0.75 {
+                let mut r = a % b;
+                if r > b / 2.0 {
+                    r = b - r;
+                }
+                a = b;
+                b = r;
+            }
+            a
+        }
+        let mx: Vec<f64> = [
+            81.5999984741211,
+            54.400001525878906,
+            88.4000015258789,
+            27.200000762939453,
+            13.600000381469727,
+            34.0,
+            47.599998474121094,
+            68.0,
+        ]
+        .into_iter()
+        .collect();
+        let mut q = mx[0];
+        for &m in &mx[1..] {
+            q = fgcd(m, q);
+        }
+        assert!((3.0..24.0).contains(&q), "MX quantum detected, got {q}");
+        let pad = [7.3, 12.1, 18.9, 23.4, 9.7, 15.2, 21.8, 11.3];
+        let mut qp = pad[0];
+        for &m in &pad[1..] {
+            qp = fgcd(m, qp);
+        }
+        assert!(qp < 3.0, "touchpad stream must stay native, got {qp}");
     }
 }
