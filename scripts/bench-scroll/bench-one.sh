@@ -17,7 +17,7 @@ id=$(echo "$out" | grep -oP 'window \K[0-9]+' | head -1)
 run wait-load --id "$id" --until settled >/dev/null
 sleep 1
 
-result=$(run eval --id "$id" --timeout-ms 20000 '
+result=$(run eval --id "$id" --timeout-ms 60000 '
 (async () => {
   const stats = arr => {
     const d = arr.slice().sort((a,b)=>a-b);

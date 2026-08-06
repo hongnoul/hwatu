@@ -369,6 +369,24 @@ fn main() -> glib::ExitCode {
     if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
     }
+    // Keep GTK's scene-graph renderer on OpenGL. GTK 4.22 auto-picks
+    // its Vulkan renderer on "the best" Vulkan device, which on hybrid
+    // Intel+NVIDIA laptops is the discrete GPU — while WebKit's frames
+    // render on the integrated GPU the Wayland EGL platform selects.
+    // Every composited frame then crosses GPUs (or bounces through the
+    // CPU), and scrolling collapses to ~22fps: measured 45ms/frame
+    // scroll under GSK vulkan vs 12-17ms under GSK ngl on the same
+    // fixture (144Hz niri, i7-12650H + RTX 4050; stock MiniBrowser
+    // matches the ngl number). Vulkan is no faster even pinned to the
+    // iGPU (GDK_VULKAN_DEVICE=1: 48ms), so this is the renderer's
+    // upload path, not device selection. ngl follows the EGL platform,
+    // keeping composite on the same GPU WebKit paints with. Explicit
+    // user env always wins (GSK_RENDERER=vulkan restores GTK's pick).
+    // "gl" is the unified OpenGL renderer name on GTK 4.22+ (the
+    // 4.14-era split into gl/ngl is gone; ngl now warns and aliases).
+    if std::env::var_os("GSK_RENDERER").is_none() {
+        std::env::set_var("GSK_RENDERER", "gl");
+    }
     // Display-free operation (roadmap G4): with no usable
     // WAYLAND_DISPLAY/DISPLAY, spawn a managed headless child
     // compositor and point GTK at it. Must run before any GTK/GDK
