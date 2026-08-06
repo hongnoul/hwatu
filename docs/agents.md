@@ -565,6 +565,69 @@ backend (unless `GDK_BACKEND` is already set) and exports
 clean X server (Xvfb); `resize` replies always report the dpr the
 page actually sees.
 
+## Remote daemon (TCP)
+
+hwatu can drive a daemon on a different host over TCP. The typical
+scenario: an agent runs in a container (workstation) while the daemon
+runs on a laptop with a display and WebKitGTK.
+
+### Setup
+
+1. **Start the daemon with TCP listening and a token:**
+   ```sh
+   hwatud --listen 127.0.0.1:8741 --token my-secret-token
+   ```
+   The Unix socket is always bound too (unchanged). Non-loopback
+   binds (0.0.0.0, [::]) require `--token`; the daemon refuses to
+   start without it.
+
+2. **Tunnel or expose the port.** Direct TCP or via ssh:
+   ```sh
+   ssh -L 8741:127.0.0.1:8741 laptop
+   ```
+
+3. **Point the client at the daemon:**
+   ```sh
+   HWATU_ENDPOINT=tcp://127.0.0.1:8741 HWATU_TOKEN=my-secret-token hwatu check https://example.com
+   ```
+   The client sends an auth handshake on connect. Empty token → the
+   daemon's "auth required" error.
+
+### Paths are daemon-host paths
+
+Every path field (screenshot, baseline, heatmap, upload) refers to
+the **daemon's** filesystem. A remote client cannot read laptop paths.
+Use inline payload fields instead:
+
+| Field | Direction | Use |
+|-------|-----------|-----|
+| `screenshot { data: true }` | daemon → client | base64 PNG in reply |
+| `check { shot_data: true }` | daemon → client | `"shot_data"` in reply value |
+| `check { baseline_data: "..." }` | client → daemon | base64 baseline PNG |
+| `diff { baseline_data: "..." }` | client → daemon | base64 baseline PNG |
+| `upload { data: "..." }` | client → daemon | base64 file bytes |
+
+CLI flags: `--stdout` (shot to base64), `--shot-data`,
+`--baseline-data <b64>`, `--file <path>` (read file for upload).
+
+### Limits
+
+- **24 MiB decoded** per inline payload (`INLINE_MAX_BYTES`).
+- **32 MiB** max wire frame (enforced by daemon).
+- **64** concurrent TCP connections max.
+- **No TLS** — use ssh tunnel or WireGuard for confidentiality.
+- **`quit` kills the daemon** — a remote client can send `quit`.
+
+### Env vars
+
+| Var | Side | Purpose |
+|-----|------|---------|
+| `HWATU_ENDPOINT` | client | `tcp://host:port` or `unix:///path` |
+| `HWATU_TOKEN` | both | auth secret (client sends, daemon verifies) |
+| `HWATU_LISTEN` | daemon | `[host:]port` (alternative to `--listen`) |
+| `HWATU_SOCKET` | client | Unix socket path (ignored if `HWATU_ENDPOINT` set) |
+
+## Agent integrations
 ## Agent integrations
 
 ### Guided setup
