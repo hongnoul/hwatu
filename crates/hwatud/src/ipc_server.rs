@@ -11,7 +11,15 @@ use hwatu_ipc::{AdblockCmd, BatchResult, BatchStepResult, BatchStepStatus, Reque
 use std::cell::RefCell;
 use std::rc::Rc;
 
-pub fn start(daemon: Rc<Daemon>) -> std::io::Result<()> {
+/// Max bytes per frame (line) on the wire. Covers the 8 MiB render
+/// cap and ~24 MiB of inline base64 payloads. Oversize → close.
+const MAX_FRAME_BYTES: usize = 32 * 1024 * 1024;
+
+/// Max concurrent TCP connections. Prevents fd/queue exhaustion.
+/// Unix socket connections are uncapped (same-user trust).
+const MAX_TCP_CONNS: u32 = 64;
+
+pub fn start(daemon: Rc<Daemon>, tcp_listen: Option<&str>) -> std::io::Result<()> {
     let path = hwatu_ipc::socket_path();
     // Stale socket from a dead daemon: remove and rebind.
     let _ = std::fs::remove_file(&path);
@@ -27,24 +35,166 @@ pub fn start(daemon: Rc<Daemon>) -> std::io::Result<()> {
         )
         .map_err(|e| std::io::Error::other(e.to_string()))?;
 
+    // Add TCP listener if configured.
+    if let Some(tcp_addr) = tcp_listen {
+        let inet_addr = parse_tcp_listen_addr(tcp_addr)?;
+        listener
+            .add_address(
+                &inet_addr,
+                gio::SocketType::Stream,
+                gio::SocketProtocol::Tcp,
+                glib::Object::NONE,
+            )
+            .map_err(|e| std::io::Error::other(e.to_string()))?;
+    }
+
     accept_next(listener, daemon);
     Ok(())
 }
+
+/// Parse `[host:]port` into a gio InetSocketAddress.
+fn parse_tcp_listen_addr(addr: &str) -> std::io::Result<gio::InetSocketAddress> {
+    // gio::InetSocketAddress::from_string parses "host:port" but
+    // the port param is additive (0 = use port from string).
+    if let Some(inet_addr) = gio::InetSocketAddress::from_string(addr, 0) {
+        return Ok(inet_addr);
+    }
+    // Manual parse: split on last colon.
+    let parts: Vec<&str> = addr.rsplitn(2, ':').collect();
+    let (host, port_str) = if parts.len() == 2 {
+        (parts[1], parts[0])
+    } else {
+        ("127.0.0.1", addr)
+    };
+    let port: u16 = port_str.parse().map_err(|_| {
+        std::io::Error::other(format!("invalid TCP port in {addr}: {port_str}"))
+    })?;
+    let inet_addr = gio::InetAddress::from_string(host)
+        .ok_or_else(|| std::io::Error::other(format!("cannot resolve host: {host}")))?;
+    Ok(gio::InetSocketAddress::new(&inet_addr, port))
+}
+
+/// Shared TCP connection counter (incremented on accept, decremented on close).
+static TCP_CONN_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 fn accept_next(listener: gio::SocketListener, daemon: Rc<Daemon>) {
     listener
         .clone()
         .accept_async(gio::Cancellable::NONE, move |res| {
-            if let Ok((conn, _)) = res {
-                handle_conn(conn, daemon.clone());
+            let (conn, _) = match res {
+                Ok(r) => r,
+                Err(_) => {
+                    accept_next(listener, daemon);
+                    return;
+                }
+            };
+            // Check if this is a TCP connection (not Unix socket).
+            let is_tcp = is_tcp_connection(&conn);
+            if is_tcp {
+                // Enforce max TCP connections.
+                let count = TCP_CONN_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if count >= MAX_TCP_CONNS {
+                    TCP_CONN_COUNT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                    // Close immediately — over capacity.
+                    return;
+                }
+                // Set TCP_NODELAY for low-latency IPC.
+                // IPPROTO_TCP = 6, TCP_NODELAY = 1 on Linux.
+                let _ = conn.socket().set_option(6, 1, 1);
             }
+            handle_conn(conn, daemon.clone(), is_tcp);
             accept_next(listener, daemon);
         });
 }
 
-fn handle_conn(conn: gio::SocketConnection, daemon: Rc<Daemon>) {
+/// Check if a connection is TCP (not Unix socket) by inspecting the socket family.
+fn is_tcp_connection(conn: &gio::SocketConnection) -> bool {
+    matches!(
+        conn.socket().family(),
+        gio::SocketFamily::Ipv4 | gio::SocketFamily::Ipv6
+    )
+}
+
+fn handle_conn(conn: gio::SocketConnection, daemon: Rc<Daemon>, is_tcp: bool) {
     let input = gio::DataInputStream::new(&conn.input_stream());
-    read_next_request(conn, input, daemon);
+    if is_tcp {
+        // TCP connections require auth handshake before any request.
+        do_auth_handshake(conn, input, daemon);
+    } else {
+        // Unix socket: no handshake (kernel peer identity).
+        read_next_request(conn, input, daemon);
+    }
+}
+
+/// Auth handshake for TCP connections. First line must be {"auth":"<token>"}.
+fn do_auth_handshake(conn: gio::SocketConnection, input: gio::DataInputStream, daemon: Rc<Daemon>) {
+    input.clone().read_line_utf8_async(
+        glib::Priority::DEFAULT_IDLE,
+        gio::Cancellable::NONE,
+        move |res| {
+            let line = match res {
+                Ok(Some(l)) => l.to_string(),
+                Ok(None) | Err(_) => return,
+            };
+            // Parse auth request.
+            let auth_req: hwatu_ipc::AuthRequest = match serde_json::from_str(line.trim()) {
+                Ok(r) => r,
+                Err(e) => {
+                    let reply = hwatu_ipc::AuthReply::Err { message: format!("bad auth: {e}") };
+                    let mut out = serde_json::to_vec(&reply).unwrap_or_default();
+                    out.push(b'\n');
+                    let _ = conn.output_stream().write_all(&out, gio::Cancellable::NONE);
+                    return;
+                }
+            };
+            // Check token against configured secret.
+            let token = daemon.security.tcp_token.as_deref();
+            let auth_ok = match token {
+                Some(secret) => constant_time_eq(&auth_req.auth, secret),
+                None => {
+                    // No token configured — reject (shouldn't happen if daemon
+                    // enforced --token for non-loopback, but loopback without
+                    // token is allowed and should still require empty auth).
+                    auth_req.auth.is_empty()
+                }
+            };
+            if auth_ok {
+                let reply = hwatu_ipc::AuthReply::Ok;
+                let mut out = serde_json::to_vec(&reply).unwrap_or_default();
+                out.push(b'\n');
+                let _ = conn.output_stream().write_all(&out, gio::Cancellable::NONE);
+                // Auth OK — proceed to normal request/response loop.
+                read_next_request(conn, input, daemon);
+            } else {
+                let reply = hwatu_ipc::AuthReply::Err {
+                    message: "auth required".to_string(),
+                };
+                let mut out = serde_json::to_vec(&reply).unwrap_or_default();
+                out.push(b'\n');
+                let _ = conn.output_stream().write_all(&out, gio::Cancellable::NONE);
+                // Close on auth failure.
+            }
+        },
+    );
+}
+
+/// Constant-time string comparison using FNV-1a hash then u64 equality.
+/// Not cryptographically secure, but sufficient for timing safety
+/// against a remote peer (avoids early-return on first byte mismatch).
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    fn fnv1a(s: &str) -> u64 {
+        let mut h: u64 = 0xcbf29ce484222325;
+        for byte in s.bytes() {
+            h ^= byte as u64;
+            h = h.wrapping_mul(0x100000001b3);
+        }
+        h
+    }
+    // Length check is safe (doesn't leak token content, only length).
+    if a.len() != b.len() {
+        return false;
+    }
+    fnv1a(a) == fnv1a(b)
 }
 
 fn read_next_request(conn: gio::SocketConnection, input: gio::DataInputStream, daemon: Rc<Daemon>) {
@@ -66,9 +216,26 @@ fn read_next_request(conn: gio::SocketConnection, input: gio::DataInputStream, d
                 Ok(Some(l)) => l.to_string(),
                 // EOF before the next line (port scan, one-shot client
                 // disconnect, dead persistent client) or read error:
-                // nothing to answer.
-                Ok(None) | Err(_) => return,
+                // nothing to answer. Decrement TCP counter if applicable.
+                Ok(None) | Err(_) => {
+                    if is_tcp_connection(&conn) {
+                        TCP_CONN_COUNT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    return;
+                }
             };
+            // Enforce max frame size to prevent memory exhaustion.
+            if line.len() > MAX_FRAME_BYTES {
+                let err = Response::err(format!(
+                    "frame too large: {} bytes (max {})",
+                    line.len(),
+                    MAX_FRAME_BYTES
+                ));
+                let mut out = serde_json::to_vec(&err).unwrap_or_default();
+                out.push(b'\n');
+                let _ = conn.output_stream().write_all(&out, gio::Cancellable::NONE);
+                return;
+            }
             let request = serde_json::from_str::<Request>(line.trim());
             // Subscriptions keep the connection as an event stream: hand it
             // to the broker instead of the request/response loop. Everything

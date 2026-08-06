@@ -135,10 +135,14 @@ pub struct Daemon {
     pub profiles: RefCell<HashMap<String, webkit6::NetworkSession>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SecurityConfig {
     pub eval_enabled: bool,
     pub ephemeral_profile: bool,
+    /// TCP listen address (host:port) from `--listen` or `HWATU_LISTEN`.
+    pub tcp_listen: Option<String>,
+    /// Auth token for TCP connections from `--token` or `HWATU_TOKEN`.
+    pub tcp_token: Option<String>,
 }
 
 /// One queued human hand-off (platform items 10-11).
@@ -157,6 +161,8 @@ impl Default for SecurityConfig {
         Self {
             eval_enabled: true,
             ephemeral_profile: false,
+            tcp_listen: None,
+            tcp_token: None,
         }
     }
 }
@@ -471,12 +477,12 @@ fn main() -> glib::ExitCode {
     let security = match parse_security_args(std::env::args().skip(1)) {
         Ok(ParseSecurity::Run(security)) => security,
         Ok(ParseSecurity::Help) => {
-            println!("usage: hwatud [--no-eval] [--ephemeral-profile]");
+            println!("usage: hwatud [--no-eval] [--ephemeral-profile] [--listen [host:]port] [--token <secret>]");
             return glib::ExitCode::SUCCESS;
         }
         Err(message) => {
             eprintln!("hwatud: {message}");
-            eprintln!("usage: hwatud [--no-eval] [--ephemeral-profile]");
+            eprintln!("usage: hwatud [--no-eval] [--ephemeral-profile] [--listen [host:]port] [--token <secret>]");
             return glib::ExitCode::FAILURE;
         }
     };
@@ -556,20 +562,51 @@ fn main() -> glib::ExitCode {
     let _hold = app.hold();
 
     app.connect_activate(|_| {});
+    // Resolve TCP listen address before the closure (avoids moving
+    // SecurityConfig into an Fn closure). Default loopback.
+    let tcp_addr = security.tcp_listen.as_deref().map(|addr| {
+        // --listen with no port → default 8741.
+        let addr = if addr.contains(':') {
+            addr.to_string()
+        } else {
+            format!("{addr}:{}", hwatu_ipc::HWATU_TCP_PORT)
+        };
+        // Default to loopback if no host specified.
+        let addr = if addr.starts_with(':') {
+            format!("127.0.0.1{addr}")
+        } else {
+            addr
+        };
+        // Non-loopback without token is a hard error.
+        let parts: Vec<&str> = addr.rsplitn(2, ':').collect();
+        let host = parts.get(1).unwrap_or(&"");
+        let is_loopback = *host == "127.0.0.1" || *host == "::1" || *host == "localhost";
+        if !is_loopback && security.tcp_token.is_none() {
+            eprintln!("hwatud: --listen on non-loopback requires --token (or HWATU_TOKEN)");
+            eprintln!("  Non-loopback TCP exposes eval (RCE), screenshots, upload, click/type");
+            std::process::exit(1);
+        }
+        addr
+    });
+    if let Some(ref addr) = tcp_addr {
+        let token_req = security.tcp_token.is_some();
+        println!("hwatud: listening on {addr} (token required: {token_req})");
+    }
+
     app.connect_startup(move |app| {
         bar::install_css();
         // Reclaim session blobs orphaned by a crashed/killed daemon.
         if !security.ephemeral_profile {
             window::sweep_discard_dir();
         }
-        let daemon = Daemon::new(app.clone(), security);
+        let daemon = Daemon::new(app.clone(), security.clone());
         // Cookies persist across daemon restarts. WebKit's default
         // network session keeps its jar in RAM only until told
         // otherwise, which makes every restart look like a brand-new
         // browser: logins vanish, and sites like GitHub answer the
         // fresh jar with their strictest anti-bot login path (device
         // verification, captcha). Must run before any WebView exists.
-        persist_cookies(security);
+        persist_cookies(security.clone());
         // Local media playback needs the web-process sandbox to see
         // the files. Before any web process exists (hard requirement).
         open_sandbox_for_media();
@@ -582,7 +619,7 @@ fn main() -> glib::ExitCode {
         launcher::register_scheme();
         adblock::Adblock::init(&daemon);
         daemon.schedule_prewarm();
-        if let Err(e) = ipc_server::start(daemon.clone()) {
+        if let Err(e) = ipc_server::start(daemon.clone(), tcp_addr.as_deref()) {
             eprintln!("hwatud: failed to start IPC server: {e}");
             std::process::exit(1);
         }
@@ -656,7 +693,7 @@ fn parse_dpr(raw: Option<&str>) -> Option<i32> {
     raw?.trim().parse::<i32>().ok().filter(|&n| n > 0)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ParseSecurity {
     Run(SecurityConfig),
     Help,
@@ -676,10 +713,35 @@ where
         config.ephemeral_profile = true;
     }
 
-    for arg in args {
+    // Env overrides for TCP (daemon-side).
+    if config.tcp_listen.is_none() {
+        if let Ok(v) = std::env::var("HWATU_LISTEN") {
+            if !v.is_empty() {
+                config.tcp_listen = Some(v);
+            }
+        }
+    }
+    if config.tcp_token.is_none() {
+        if let Ok(v) = std::env::var("HWATU_TOKEN") {
+            if !v.is_empty() {
+                config.tcp_token = Some(v);
+            }
+        }
+    }
+
+    let mut iter = args.into_iter().peekable();
+    while let Some(arg) = iter.next() {
         match arg.as_ref() {
             "--no-eval" => config.eval_enabled = false,
             "--ephemeral-profile" | "--ephemeral" => config.ephemeral_profile = true,
+            "--listen" => {
+                let addr = iter.next().ok_or("--listen requires [host:]port")?;
+                config.tcp_listen = Some(addr.as_ref().to_string());
+            }
+            "--token" => {
+                let token = iter.next().ok_or("--token requires <secret>")?;
+                config.tcp_token = Some(token.as_ref().to_string());
+            }
             "--help" | "-h" => return Ok(ParseSecurity::Help),
             other => return Err(format!("unknown argument `{other}`")),
         }
