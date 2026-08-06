@@ -32,6 +32,25 @@ pub(crate) fn resolve_path(path: Option<String>) -> Option<String> {
     })
 }
 
+/// Read a local file into an inline base64 payload (`--baseline-data`,
+/// `upload --file`). These fields carry file bytes to a *remote*
+/// daemon that cannot see this host's filesystem; the size cap
+/// (`INLINE_MAX_BYTES`) is checked here so a too-big file fails fast
+/// client-side instead of being rejected by the daemon.
+pub(crate) fn read_inline_file(path: &str, flag: &str) -> Result<String, String> {
+    let bytes =
+        std::fs::read(path).map_err(|e| format!("{flag}: cannot read {path}: {e}"))?;
+    if bytes.len() > hwatu_ipc::INLINE_MAX_BYTES {
+        return Err(format!(
+            "{flag}: {path} is {} bytes; the inline cap is {} (24 MiB) \
+             — copy it to the daemon host and pass a path instead",
+            bytes.len(),
+            hwatu_ipc::INLINE_MAX_BYTES
+        ));
+    }
+    Ok(hwatu_ipc::base64::encode(&bytes))
+}
+
 pub(crate) fn normalize_request_paths(request: &mut Request) {
     match request {
         Request::Screenshot { path, .. } => *path = resolve_path(path.take()),
@@ -130,6 +149,7 @@ fn main() {
             adblock,
             value,
             path,
+            data,
         }) => {
             if let Some(w) = window {
                 if json {
@@ -190,6 +210,12 @@ fn main() {
             }
             if let Some(p) = path {
                 println!("{p}");
+            }
+            if let Some(d) = data {
+                // `hwatu shot --stdout`: raw base64 PNG on stdout, for
+                // `hwatu shot --stdout | base64 -d > x.png`. Only the
+                // screenshot command produces `data` today.
+                println!("{d}");
             }
         }
         Ok(Response::Err { message }) => {
@@ -366,6 +392,10 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
     let mut eval_js: Option<String> = None;
     let mut shot = false;
     let mut shot_path: Option<String> = None;
+    let mut shot_data = false;
+    let mut baseline_data: Option<String> = None;
+    let mut upload_file: Option<String> = None;
+    let mut to_stdout = false;
     let mut keep = false;
     let mut diff = false;
     let mut rect = false;
@@ -517,6 +547,28 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                     .ok_or("usage: --baseline <png-path>")?
                     .clone(),
             );
+        } else if arg == "--baseline-data" {
+            let file = it
+                .next()
+                .filter(|v| !v.is_empty())
+                .ok_or("usage: --baseline-data <file>")?;
+            baseline_data = Some(read_inline_file(file, "--baseline-data")?);
+        } else if let Some(v) = arg.strip_prefix("--baseline-data=") {
+            if v.trim().is_empty() {
+                return Err("usage: --baseline-data=<file>".into());
+            }
+            baseline_data = Some(read_inline_file(v, "--baseline-data")?);
+        } else if arg == "--file" {
+            let file = it
+                .next()
+                .filter(|v| !v.is_empty())
+                .ok_or("usage: --file <path>")?;
+            upload_file = Some(file.clone());
+        } else if arg == "--shot-data" {
+            shot_data = true;
+            shot = true;
+        } else if arg == "--stdout" {
+            to_stdout = true;
         } else if arg == "--base" {
             base = Some(
                 it.next()
@@ -695,6 +747,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             id,
             path: rest.get(1).map(|s| s.to_string()),
             full,
+            data: to_stdout,
         }),
         Some("wait-load") => Ok(Request::WaitLoad {
             id,
@@ -758,6 +811,13 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                         .into(),
                 );
             }
+            if baseline.is_some() && baseline_data.is_some() {
+                return Err(
+                    "--baseline and --baseline-data are mutually exclusive \
+                     (baseline-data sends the PNG inline from your filesystem)"
+                        .into(),
+                );
+            }
             Ok(Request::Check {
                 url: Some(url),
                 render: None,
@@ -766,7 +826,9 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 shot,
                 shot_path,
                 full,
+                shot_data,
                 baseline,
+                baseline_data,
                 tolerance,
                 heatmap,
                 until: until.unwrap_or_default(),
@@ -817,6 +879,13 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                     hwatu_ipc::RENDER_MAX_BYTES
                 ));
             }
+            if baseline.is_some() && baseline_data.is_some() {
+                return Err(
+                    "--baseline and --baseline-data are mutually exclusive \
+                     (baseline-data sends the PNG inline from your filesystem)"
+                        .into(),
+                );
+            }
             Ok(Request::Check {
                 url: None,
                 render: Some(html),
@@ -825,7 +894,9 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 shot,
                 shot_path,
                 full,
+                shot_data,
                 baseline,
+                baseline_data,
                 tolerance,
                 heatmap,
                 until: until.unwrap_or_default(),
@@ -863,16 +934,30 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
         Some("upload") => {
             let selector = rest
                 .get(1)
-                .ok_or("usage: hwatu upload [--id <id>] <selector> <path>")?
+                .ok_or("usage: hwatu upload [--id <id>] <selector> (--file <path> | <path>)")?
                 .to_string();
-            let path = rest
-                .get(2)
-                .ok_or("usage: hwatu upload [--id <id>] <selector> <path>")?
-                .to_string();
+            let path = match (&upload_file, rest.get(2)) {
+                // --file <path>: the file lives on *our* filesystem;
+                // it is sent inline as base64 (`data`); `path` is
+                // kept as a label the daemon ignores.
+                (Some(file), _) => file.clone(),
+                (None, Some(path)) => path.to_string(),
+                (None, None) => {
+                    return Err(
+                        "usage: hwatu upload [--id <id>] <selector> (--file <path> | <path>)"
+                            .into(),
+                    )
+                }
+            };
+            let data = match upload_file {
+                Some(file) => Some(read_inline_file(&file, "--file")?),
+                None => None,
+            };
             Ok(Request::Upload {
                 id,
                 selector,
                 path,
+                data,
                 timeout_ms,
             })
         }
@@ -959,15 +1044,25 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 timeout_ms,
             })
         }
-        Some("diff") => Ok(Request::Diff {
-            id: id.ok_or("usage: hwatu diff --id <id> (--other <id> | --baseline <png>) [--tolerance <n>] [--heatmap <png>] [--full]")?,
-            other,
-            baseline,
-            tolerance,
-            heatmap,
-            full,
-            timeout_ms,
-        }),
+        Some("diff") => {
+            if baseline.is_some() && baseline_data.is_some() {
+                return Err(
+                    "--baseline and --baseline-data are mutually exclusive \
+                     (baseline-data sends the PNG inline from your filesystem)"
+                        .into(),
+                );
+            }
+            Ok(Request::Diff {
+                id: id.ok_or("usage: hwatu diff --id <id> (--other <id> | --baseline <png> | --baseline-data <file>) [--tolerance <n>] [--heatmap <png>] [--full]")?,
+                other,
+                baseline,
+                baseline_data,
+                tolerance,
+                heatmap,
+                full,
+                timeout_ms,
+            })
+        }
         Some("click") => {
             let selector = rest.get(1).map(|s| s.to_string());
             if selector.is_none() && r#ref.is_none() {

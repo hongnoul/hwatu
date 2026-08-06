@@ -188,6 +188,13 @@ pub enum Request {
         /// use this instead of scroll-and-shoot loops.
         #[serde(default)]
         full: bool,
+        /// Capture to memory and return the PNG base64-encoded in
+        /// [`Response::Ok::data`] instead of writing `path` — for
+        /// remote clients (TCP) that cannot write the daemon host's
+        /// filesystem. Absent on the wire means `false`, so old
+        /// daemons keep writing files for old clients.
+        #[serde(default, skip_serializing_if = "is_false")]
+        data: bool,
     },
     /// Block until the window's load reaches `until` (default:
     /// settled) or `timeout_ms` expires.
@@ -235,6 +242,16 @@ pub enum Request {
         /// Screenshot destination; implies `shot`.
         #[serde(default)]
         shot_path: Option<String>,
+        /// Include `"shot_data":"<base64>"` in the reply `value` next
+        /// to `"shot"` — pixels for remote clients that cannot read
+        /// the daemon host's screenshot path.
+        #[serde(default, skip_serializing_if = "is_false")]
+        shot_data: bool,
+        /// Base64 baseline PNG (mutually exclusive with `baseline`);
+        /// diffed exactly like a path baseline. Lets a remote client
+        /// diff against a file that lives on *its* filesystem.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        baseline_data: Option<String>,
         /// Screenshot the full document instead of the viewport.
         #[serde(default)]
         full: bool,
@@ -313,7 +330,14 @@ pub enum Request {
         #[serde(default)]
         id: Option<u64>,
         selector: String,
+        /// Daemon-host path of the file to inject. With `data` set,
+        /// the daemon ignores this (remote clients cannot read the
+        /// daemon host's filesystem).
         path: String,
+        /// File bytes from the client, base64-encoded; wins over
+        /// `path` when both are set.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data: Option<String>,
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
@@ -539,6 +563,11 @@ pub enum Request {
         /// ...or a baseline PNG on disk (exactly one of the two).
         #[serde(default)]
         baseline: Option<String>,
+        /// Base64 baseline PNG (mutually exclusive with `baseline`);
+        /// diffed exactly like a path baseline. Lets a remote client
+        /// diff against a file that lives on *its* filesystem.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        baseline_data: Option<String>,
         /// Per-channel tolerance 0-255 before a pixel counts as
         /// different (default 8, forgiving of AA/compression noise).
         #[serde(default)]
@@ -1025,6 +1054,11 @@ pub enum Response {
         /// File path produced by a screenshot.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<String>,
+        /// Base64 payload (PNG for screenshots captured with
+        /// `data: true`), for remote clients that cannot read
+        /// daemon-host paths.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data: Option<String>,
     },
     Err {
         message: String,
@@ -1039,6 +1073,7 @@ impl Response {
             adblock: None,
             value: None,
             path: None,
+            data: None,
         }
     }
     pub fn window(w: WindowInfo) -> Self {
@@ -1066,6 +1101,14 @@ impl Response {
         let mut r = Response::ok();
         if let Response::Ok { value, .. } = &mut r {
             *value = Some(v);
+        }
+        r
+    }
+    /// Base64 payload reply (screenshot captured with `data: true`).
+    pub fn data(d: impl Into<String>) -> Self {
+        let mut r = Response::ok();
+        if let Response::Ok { data, .. } = &mut r {
+            *data = Some(d.into());
         }
         r
     }
@@ -1104,6 +1147,96 @@ pub struct AuthRequest {
 pub enum AuthReply {
     Ok,
     Err { message: String },
+}
+
+/// Cap on one inline base64 payload (screenshots, baselines, uploads)
+/// after decoding, shared by client and daemon. ≈ 32 MiB base64 on
+/// the wire — inside the daemon's 32 MiB frame cap. The client checks before
+/// sending for a fast, clear error; the daemon checks again because
+/// clients are not trusted (same pattern as [`RENDER_MAX_BYTES`]).
+pub const INLINE_MAX_BYTES: usize = 24 * 1024 * 1024;
+
+/// Hand-rolled standard base64 (RFC 4648 alphabet, with padding), so
+/// the client stays dependency-free and the daemon does not need the
+/// `base64` crate for the inline payload fields (see `docs/ipc-tcp.md`
+/// §8.3). ~40 lines, unit-tested against the RFC vectors.
+pub mod base64 {
+    /// Encode bytes as standard base64 with padding.
+    pub fn encode(data: &[u8]) -> String {
+        const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+        for chunk in data.chunks(3) {
+            let b = [
+                chunk[0],
+                *chunk.get(1).unwrap_or(&0),
+                *chunk.get(2).unwrap_or(&0),
+            ];
+            let n = u32::from_be_bytes([0, b[0], b[1], b[2]]);
+            out.push(T[(n >> 18) as usize & 63] as char);
+            out.push(T[(n >> 12) as usize & 63] as char);
+            out.push(if chunk.len() > 1 {
+                T[(n >> 6) as usize & 63] as char
+            } else {
+                '='
+            });
+            out.push(if chunk.len() > 2 {
+                T[n as usize & 63] as char
+            } else {
+                '='
+            });
+        }
+        out
+    }
+
+    /// Decode standard base64 (padding required). Rejects bad
+    /// characters, non-multiple-of-4 lengths, and malformed padding.
+    pub fn decode(input: &str) -> Result<Vec<u8>, String> {
+        if input.is_empty() {
+            return Ok(Vec::new());
+        }
+        fn val(c: u8) -> Option<u32> {
+            match c {
+                b'A'..=b'Z' => Some((c - b'A') as u32),
+                b'a'..=b'z' => Some((c - b'a' + 26) as u32),
+                b'0'..=b'9' => Some((c - b'0' + 52) as u32),
+                b'+' => Some(62),
+                b'/' => Some(63),
+                _ => None,
+            }
+        }
+        let bytes = input.as_bytes();
+        if bytes.len() % 4 != 0 {
+            return Err(format!(
+                "invalid base64: length {} is not a multiple of 4",
+                bytes.len()
+            ));
+        }
+        let mut out = Vec::with_capacity(bytes.len() / 4 * 3);
+        let mut i = 0;
+        while i < bytes.len() {
+            let chunk = &bytes[i..i + 4];
+            i += 4;
+            let a = val(chunk[0]).ok_or("invalid base64: bad character")?;
+            let b = val(chunk[1]).ok_or("invalid base64: bad character")?;
+            let (c, d): (Option<u32>, Option<u32>) = match (chunk[2], chunk[3]) {
+                (b'=', b'=') => (None, None),
+                (c, b'=') => (Some(val(c).ok_or("invalid base64: bad character")?), None),
+                (c, d) => (
+                    Some(val(c).ok_or("invalid base64: bad character")?),
+                    Some(val(d).ok_or("invalid base64: bad character")?),
+                ),
+            };
+            let n = (a << 18) | (b << 12) | (c.unwrap_or(0) << 6) | d.unwrap_or(0);
+            out.push((n >> 16) as u8);
+            if c.is_some() {
+                out.push((n >> 8) as u8);
+            }
+            if d.is_some() {
+                out.push(n as u8);
+            }
+        }
+        Ok(out)
+    }
 }
 
 /// Event kinds the daemon emits (see [`Event::event`]; `subscribed`
@@ -1230,7 +1363,9 @@ mod tests {
             shot: false,
             shot_path: None,
             full: false,
+            shot_data: false,
             baseline: None,
+            baseline_data: None,
             tolerance: None,
             heatmap: None,
             until: LoadStage::Dom,
@@ -1299,7 +1434,9 @@ mod tests {
             shot: false,
             shot_path: None,
             full: false,
+            shot_data: false,
             baseline: None,
+            baseline_data: None,
             tolerance: None,
             heatmap: None,
             until: LoadStage::default(),
@@ -1335,7 +1472,9 @@ mod tests {
             shot: false,
             shot_path: None,
             full: false,
+            shot_data: false,
             baseline: None,
+            baseline_data: None,
             tolerance: None,
             heatmap: None,
             until: LoadStage::default(),
@@ -1544,7 +1683,9 @@ mod tests {
             shot: false,
             shot_path: None,
             full: false,
+            shot_data: false,
             baseline: None,
+            baseline_data: None,
             tolerance: None,
             heatmap: None,
             until: LoadStage::default(),
@@ -1915,4 +2056,96 @@ mod tests {
         }
         let req: AuthRequest = serde_json::from_str(r#"{"auth":""}"#).unwrap();
         assert_eq!(req.auth, "");
+    }
+
+    // ---- base64 (docs/ipc-tcp.md §8.3) -----------------------------
+
+    /// RFC 4648 test vectors, plus the standard padding rule.
+    #[test]
+    fn base64_rfc_vectors() {
+        use crate::base64;
+        assert_eq!(base64::encode(b""), "");
+        assert_eq!(base64::encode(b"f"), "Zg==");
+        assert_eq!(base64::encode(b"fo"), "Zm8=");
+        assert_eq!(base64::encode(b"foo"), "Zm9v");
+        assert_eq!(base64::encode(b"foob"), "Zm9vYg==");
+        assert_eq!(base64::encode(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64::encode(b"foobar"), "Zm9vYmFy");
+
+        assert_eq!(base64::decode("").unwrap(), b"");
+        assert_eq!(base64::decode("Zg==").unwrap(), b"f");
+        assert_eq!(base64::decode("Zm8=").unwrap(), b"fo");
+        assert_eq!(base64::decode("Zm9v").unwrap(), b"foo");
+        assert_eq!(base64::decode("Zm9vYg==").unwrap(), b"foob");
+        assert_eq!(base64::decode("Zm9vYmE=").unwrap(), b"fooba");
+        assert_eq!(base64::decode("Zm9vYmFy").unwrap(), b"foobar");
+    }
+
+    /// Round-trips on arbitrary bytes (including 0xff and embedded
+    /// NULs — the inline payloads are PNGs, not text).
+    #[test]
+    fn base64_roundtrips_arbitrary_bytes() {
+        use crate::base64;
+        let samples: Vec<Vec<u8>> = vec![
+            vec![],
+            vec![0],
+            vec![0xff, 0x00, 0x80],
+            (0..255).collect(),
+            (0..1000).map(|i| (i * 7 % 251) as u8).collect(),
+        ];
+        for bytes in samples {
+            assert_eq!(base64::decode(&base64::encode(&bytes)).unwrap(), bytes);
+        }
+    }
+
+    /// Decode rejects malformed input instead of guessing.
+    #[test]
+    fn base64_decode_rejects_invalid_input() {
+        use crate::base64;
+        // Wrong length (not a multiple of 4).
+        assert!(base64::decode("Zm9vYg").is_err());
+        // Bad characters (space, '!', '=' in a data position).
+        assert!(base64::decode("Zm 9v").is_err());
+        assert!(base64::decode("Zm9v!").is_err());
+        assert!(base64::decode("Z===").is_err());
+        assert!(base64::decode("====").is_err());
+        // Padding in the wrong position (2nd char can never be '=').
+        assert!(base64::decode("Z=9v").is_err());
+    }
+
+    /// A hand-rolled encoder must agree with the reference the daemon
+    /// already ships (RFC vectors are covered above; this pins the
+    /// shared module against the in-repo implementations).
+    #[test]
+    fn base64_encode_matches_reference_impl() {
+        use crate::base64;
+        let input: Vec<u8> = (0..97).map(|i| (i * 13 % 256) as u8).collect();
+        // Reference: the daemon's automation.rs base64, same algorithm.
+        let expected = {
+            const T: &[u8; 64] =
+                b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            let mut out = String::new();
+            for chunk in input.chunks(3) {
+                let b = [
+                    chunk[0],
+                    *chunk.get(1).unwrap_or(&0),
+                    *chunk.get(2).unwrap_or(&0),
+                ];
+                let n = u32::from_be_bytes([0, b[0], b[1], b[2]]);
+                out.push(T[(n >> 18) as usize & 63] as char);
+                out.push(T[(n >> 12) as usize & 63] as char);
+                out.push(if chunk.len() > 1 {
+                    T[(n >> 6) as usize & 63] as char
+                } else {
+                    '='
+                });
+                out.push(if chunk.len() > 2 {
+                    T[n as usize & 63] as char
+                } else {
+                    '='
+                });
+            }
+            out
+        };
+        assert_eq!(base64::encode(&input), expected);
     }

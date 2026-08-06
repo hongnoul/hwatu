@@ -267,6 +267,7 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
             id,
             path: opt_str(args, "path"),
             full: opt_bool(args, "full").unwrap_or(false),
+            data: opt_bool(args, "data").unwrap_or(false),
         }),
         "wait_load" => Ok(Request::WaitLoad {
             id,
@@ -307,7 +308,9 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
                 shot: opt_bool(args, "shot").unwrap_or(false),
                 shot_path: opt_str(args, "shot_path"),
                 full: opt_bool(args, "full").unwrap_or(false),
+                shot_data: opt_bool(args, "shot_data").unwrap_or(false),
                 baseline: opt_str(args, "baseline"),
+                baseline_data: opt_str(args, "baseline_data"),
                 tolerance: opt_u64(args, "tolerance").map(|v| v.min(255) as u8),
                 heatmap: opt_str(args, "heatmap"),
                 until: parse_until(args)?,
@@ -339,7 +342,9 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
                 shot: opt_bool(args, "shot").unwrap_or(false),
                 shot_path: opt_str(args, "shot_path"),
                 full: opt_bool(args, "full").unwrap_or(false),
+                shot_data: opt_bool(args, "shot_data").unwrap_or(false),
                 baseline: opt_str(args, "baseline"),
+                baseline_data: opt_str(args, "baseline_data"),
                 tolerance: opt_u64(args, "tolerance").map(|v| v.min(255) as u8),
                 heatmap: opt_str(args, "heatmap"),
                 until: parse_until(args)?,
@@ -443,6 +448,7 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
             id,
             selector: req_str(args, "selector")?,
             path: req_str(args, "path")?,
+            data: opt_str(args, "data"),
             timeout_ms,
         }),
         "challenge" => Ok(Request::Challenge {
@@ -504,13 +510,18 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
         "diff" => {
             let other = opt_u64(args, "other");
             let baseline = opt_str(args, "baseline");
-            if other.is_none() && baseline.is_none() {
-                return Err("diff needs `other` (window id) or `baseline` (PNG path)".into());
+            let baseline_data = opt_str(args, "baseline_data");
+            if other.is_none() && baseline.is_none() && baseline_data.is_none() {
+                return Err(
+                    "diff needs `other` (window id), `baseline` (PNG path), or `baseline_data` (PNG inline)"
+                        .into(),
+                );
             }
             Ok(Request::Diff {
                 id: opt_u64(args, "id").ok_or("missing required argument: id")?,
                 other,
                 baseline,
+                baseline_data,
                 tolerance: opt_u64(args, "tolerance").map(|v| v.min(255) as u8),
                 heatmap: opt_str(args, "heatmap"),
                 full: opt_bool(args, "full").unwrap_or(false),

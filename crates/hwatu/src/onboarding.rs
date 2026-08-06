@@ -210,6 +210,7 @@ fn smoke_test() -> Result<String, String> {
             id: Some(id),
             path: Some(shot.to_string_lossy().into_owned()),
             full: false,
+            data: false,
         }) {
             Ok(Response::Ok { .. }) => match fs::metadata(&shot) {
                 Ok(meta) if meta.len() > 0 => {
@@ -686,6 +687,7 @@ fn demo(args: &[String]) -> i32 {
         id: Some(id),
         path: None,
         full: false,
+        data: false,
     }) {
         Ok(Response::Ok { path: Some(p), .. }) => println!("demo: screenshot -> {p}"),
         other => {

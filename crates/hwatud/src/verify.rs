@@ -415,6 +415,31 @@ impl Frame {
             .map_err(|e| format!("cannot read baseline {path}: {e}"))?;
         Ok(Frame::from_texture(&texture))
     }
+
+    /// Decode an inline base64 baseline (a remote client's file) to
+    /// pixels. The bytes go through a temp file because
+    /// `gdk::Texture::from_filename` is the one synchronous decoder
+    /// the daemon has; the file is removed before returning.
+    fn from_base64(b64: &str) -> Result<Frame, String> {
+        let png = hwatu_ipc::base64::decode(b64).map_err(|e| format!("bad baseline_data: {e}"))?;
+        if png.len() > hwatu_ipc::INLINE_MAX_BYTES {
+            return Err(format!(
+                "baseline_data is {} bytes; the inline cap is {}",
+                png.len(),
+                hwatu_ipc::INLINE_MAX_BYTES
+            ));
+        }
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path = std::env::temp_dir()
+            .join(format!("hwatu-baseline-{}-{ts}.png", std::process::id()));
+        std::fs::write(&path, &png).map_err(|e| format!("cannot stage baseline_data: {e}"))?;
+        let result = Frame::from_png(&path.to_string_lossy());
+        let _ = std::fs::remove_file(&path);
+        result
+    }
 }
 
 /// Compare two frames. Overlapping area is diffed pixel-by-pixel with
@@ -677,18 +702,33 @@ pub fn diff_against_baseline(
     done: Box<dyn FnOnce(Result<serde_json::Value, String>)>,
 ) {
     let tolerance = tolerance.unwrap_or(8);
-    capture(
-        daemon,
-        id,
-        full,
-        Box::new(move |a| {
-            let value = a.and_then(|a| {
-                let b = Frame::from_png(&baseline)?;
-                diff_value(&a, &b, tolerance, heatmap, full)
-            });
-            done(value);
-        }),
-    );
+    capture(daemon, id, full, Box::new(move |a| {
+        let value = a.and_then(|a| {
+            let b = Frame::from_png(&baseline)?;
+            diff_value(&a, &b, tolerance, heatmap, full)
+        });
+        done(value);
+    }));
+}
+
+/// Diff a live window against an inline base64 PNG (remote client).
+pub fn diff_against_baseline_data(
+    daemon: &Rc<Daemon>,
+    id: u64,
+    baseline_b64: String,
+    tolerance: Option<u8>,
+    heatmap: Option<String>,
+    full: bool,
+    done: Box<dyn FnOnce(Result<serde_json::Value, String>)>,
+) {
+    let tolerance = tolerance.unwrap_or(8);
+    capture(daemon, id, full, Box::new(move |a| {
+        let value = a.and_then(|a| {
+            let b = Frame::from_base64(&baseline_b64)?;
+            diff_value(&a, &b, tolerance, heatmap, full)
+        });
+        done(value);
+    }));
 }
 
 /// Diff two windows (or one window against a baseline PNG): capture
@@ -699,15 +739,26 @@ pub fn diff(
     id: u64,
     other: Option<u64>,
     baseline: Option<String>,
+    baseline_data: Option<String>,
     tolerance: Option<u8>,
     heatmap: Option<String>,
     full: bool,
     reply: Reply,
 ) {
     let tolerance = tolerance.unwrap_or(8);
-    if other.is_some() == baseline.is_some() {
+    // Exactly one input: another window, a path baseline, or inline data.
+    let input_count = [other.is_some(), baseline.is_some(), baseline_data.is_some()]
+        .iter()
+        .filter(|b| **b)
+        .count();
+    if input_count == 0 {
         return reply(Response::err(
-            "pass exactly one of --other <window id> or --baseline <png path>",
+            "pass one of --other <id>, --baseline <path>, or --baseline-data <b64>",
+        ));
+    }
+    if input_count > 1 {
+        return reply(Response::err(
+            "--other, --baseline, and --baseline-data are mutually exclusive",
         ));
     }
 
@@ -718,19 +769,24 @@ pub fn diff(
         Err(e) => reply(Response::err(e)),
     };
 
-    match (other, baseline) {
-        (None, Some(path)) => {
-            capture(
-                daemon,
-                id,
-                full,
-                Box::new(move |a| match (a, Frame::from_png(&path)) {
+    match (other, baseline, baseline_data) {
+        (None, Some(path), None) => {
+            capture(daemon, id, full, Box::new(move |a| {
+                match (a, Frame::from_png(&path)) {
                     (Ok(a), Ok(b)) => finish(a, b, reply),
                     (Err(e), _) | (_, Err(e)) => reply(Response::err(e)),
-                }),
-            );
+                }
+            }));
         }
-        (Some(other_id), None) => {
+        (None, None, Some(b64)) => {
+            capture(daemon, id, full, Box::new(move |a| {
+                match (a, Frame::from_base64(&b64)) {
+                    (Ok(a), Ok(b)) => finish(a, b, reply),
+                    (Err(e), _) | (_, Err(e)) => reply(Response::err(e)),
+                }
+            }));
+        }
+        (Some(other_id), None, None) => {
             // Capture sequentially: both captures run on the GTK main
             // loop anyway, and sequencing keeps the state machine flat.
             let daemon2 = daemon.clone();

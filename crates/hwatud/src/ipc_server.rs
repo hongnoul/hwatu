@@ -347,8 +347,13 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
         } => {
             return automation::navigate(daemon, id, url, wait, until, timeout_ms, reply);
         }
-        Request::Screenshot { id, path, full } => {
-            return automation::screenshot(daemon, id, path, full, reply);
+        Request::Screenshot {
+            id,
+            path,
+            full,
+            data,
+        } => {
+            return automation::screenshot(daemon, id, path, full, data, reply);
         }
         Request::WaitLoad {
             id,
@@ -365,7 +370,9 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
             shot,
             shot_path,
             full,
+            shot_data,
             baseline,
+            baseline_data,
             tolerance,
             heatmap,
             until,
@@ -383,7 +390,9 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
                 shot,
                 shot_path,
                 full,
+                shot_data,
                 baseline,
+                baseline_data,
                 tolerance,
                 heatmap,
                 until,
@@ -411,9 +420,10 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
             id,
             selector,
             path,
+            data,
             timeout_ms,
         } => {
-            return automation::upload(daemon, id, selector, path, timeout_ms, reply);
+            return automation::upload(daemon, id, selector, path, data, timeout_ms, reply);
         }
         Request::Scroll {
             id,
@@ -536,13 +546,22 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
             id,
             other,
             baseline,
+            baseline_data,
             tolerance,
             heatmap,
             full,
             timeout_ms: _,
         } => {
             return crate::verify::diff(
-                daemon, id, other, baseline, tolerance, heatmap, full, reply,
+                daemon,
+                id,
+                other,
+                baseline,
+                baseline_data,
+                tolerance,
+                heatmap,
+                full,
+                reply,
             );
         }
         _ => {}

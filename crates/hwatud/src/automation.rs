@@ -747,7 +747,9 @@ pub fn check(
     shot: bool,
     shot_path: Option<String>,
     full: bool,
+    shot_data: bool,
     baseline: Option<String>,
+    baseline_data: Option<String>,
     tolerance: Option<u8>,
     heatmap: Option<String>,
     until: LoadStage,
@@ -773,10 +775,32 @@ pub fn check(
     if baseline_dir.is_some() && viewports.is_empty() {
         return reply.send(Response::err("`baseline_dir` requires `viewports`"));
     }
+    if baseline_data.is_some() && !viewports.is_empty() {
+        return reply.send(Response::err(
+            "pass `baseline_dir` (per-size baselines), not `baseline_data`, with `viewports`",
+        ));
+    }
     if baseline.is_some() && !viewports.is_empty() {
         return reply.send(Response::err(
             "pass `baseline_dir` (per-size baselines), not `baseline`, with `viewports`",
         ));
+    }
+    // Baseline inputs are mutually exclusive: a path baseline lives
+    // on the daemon host, an inline one on the client's filesystem.
+    if baseline.is_some() && baseline_data.is_some() {
+        return reply.send(Response::err(
+            "`baseline` and `baseline_data` are mutually exclusive",
+        ));
+    }
+    if let Some(b64) = &baseline_data {
+        // The client checks INLINE_MAX_BYTES; check again because
+        // clients are not trusted.
+        if b64.len() > hwatu_ipc::INLINE_MAX_BYTES * 4 / 3 + 4 {
+            return reply.send(Response::err(format!(
+                "baseline_data is too large (cap {} decoded bytes)",
+                hwatu_ipc::INLINE_MAX_BYTES
+            )));
+        }
     }
     if let Some(html) = &render {
         if html.len() > hwatu_ipc::RENDER_MAX_BYTES {
@@ -870,8 +894,9 @@ pub fn check(
                 win_id,
                 viewports: viewports.clone(),
                 eval_js: eval_js.clone(),
-                shot: shot || shot_path.is_some(),
+                shot: shot || shot_path.is_some() || shot_data,
                 shot_path: shot_path.clone(),
+                shot_data,
                 full,
                 baseline_dir: baseline_dir.clone(),
                 tolerance,
@@ -964,19 +989,26 @@ pub fn check(
                 }),
             );
         }
-        if shot || shot_path.is_some() {
+        if shot || shot_path.is_some() || shot_data {
             pending.set(pending.get() + 1);
             let finish = finish.clone();
             let result = result.clone();
+            // shot_data captures to memory and returns base64 for a
+            // remote client; `path` (and the `shot` reply field) keep
+            // their local meaning when the caller asked for a file.
             screenshot(
                 &daemon,
                 Some(win_id),
                 shot_path,
                 full,
+                shot_data,
                 Box::new(move |resp| {
                     match resp {
                         Response::Ok { path: Some(p), .. } => {
                             result.borrow_mut()["shot"] = serde_json::json!(p);
+                        }
+                        Response::Ok { data: Some(b64), .. } => {
+                            result.borrow_mut()["shot_data"] = serde_json::json!(b64);
                         }
                         Response::Err { message } => {
                             result.borrow_mut()["shot"] = serde_json::json!({ "error": message });
@@ -996,7 +1028,27 @@ pub fn check(
                 win_id,
                 png,
                 tolerance,
-                heatmap,
+                heatmap.clone(),
+                full,
+                Box::new(move |value| {
+                    result.borrow_mut()["diff"] = match value {
+                        Ok(v) => v,
+                        Err(e) => serde_json::json!({ "error": e }),
+                    };
+                    finish();
+                }),
+            );
+        }
+        if let Some(b64) = baseline_data {
+            pending.set(pending.get() + 1);
+            let finish = finish.clone();
+            let result = result.clone();
+            crate::verify::diff_against_baseline_data(
+                &daemon,
+                win_id,
+                b64,
+                tolerance,
+                heatmap.clone(),
                 full,
                 Box::new(move |value| {
                     result.borrow_mut()["diff"] = match value {
@@ -1055,6 +1107,7 @@ struct Sweep {
     eval_js: Option<String>,
     shot: bool,
     shot_path: Option<String>,
+    shot_data: bool,
     full: bool,
     baseline_dir: Option<String>,
     tolerance: Option<u8>,
@@ -1164,10 +1217,14 @@ fn sweep_pass(sweep: Rc<Sweep>, i: usize) {
                     Some(sweep.win_id),
                     path,
                     sweep.full,
+                    sweep.shot_data,
                     Box::new(move |resp| {
                         match resp {
                             Response::Ok { path: Some(p), .. } => {
                                 entry.borrow_mut()["shot"] = serde_json::json!(p);
+                            }
+                            Response::Ok { data: Some(b64), .. } => {
+                                entry.borrow_mut()["shot_data"] = serde_json::json!(b64);
                             }
                             Response::Err { message } => {
                                 entry.borrow_mut()["shot"] =
@@ -1546,6 +1603,7 @@ pub fn screenshot(
     id: Option<u64>,
     path: Option<String>,
     full: bool,
+    data: bool,
     reply: Reply,
 ) {
     let reply = OnceReply::new(reply);
@@ -1589,16 +1647,24 @@ pub fn screenshot(
                 let width = texture.width() as u32;
                 let height = texture.height() as u32;
                 glib::spawn_future_local(async move {
-                    let path = target.clone();
+                    let target_path = target.clone();
                     let encoded = gio::spawn_blocking(move || {
-                        write_png(&path, &bytes, stride, width, height)
+                        if data {
+                            encode_png(&bytes, stride, width, height)
+                        } else {
+                            write_png(&target, &bytes, stride, width, height)?;
+                            Ok(Vec::new())
+                        }
                     })
                     .await;
                     match encoded {
-                        Ok(Ok(())) => reply.send(Response::path(target.to_string_lossy())),
+                        Ok(Ok(png)) if data => {
+                            reply.send(Response::data(hwatu_ipc::base64::encode(&png)))
+                        }
+                        Ok(Ok(_)) => reply.send(Response::path(target_path.to_string_lossy())),
                         Ok(Err(e)) => reply.send(Response::err(format!(
                             "screenshot write to {} failed: {e}",
-                            target.display()
+                            target_path.display()
                         ))),
                         Err(_) => reply.send(Response::err("screenshot encode panicked")),
                     }
@@ -1609,18 +1675,18 @@ pub fn screenshot(
     );
 }
 
-/// Encode RGBA rows (possibly padded to `stride`) as a PNG. Fast
+/// Encode RGBA rows (possibly padded to `stride`) as PNG bytes. Fast
 /// compression + Sub filtering: screenshots are verification
 /// artifacts, so encode speed beats squeezing out the last few KB.
-fn write_png(
-    path: &std::path::Path,
+/// Shared by the file-writing path and the inline `data` path.
+fn encode_png(
     rgba: &[u8],
     stride: usize,
     width: u32,
     height: u32,
-) -> Result<(), String> {
-    let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
-    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
+) -> Result<Vec<u8>, String> {
+    let mut out = Vec::with_capacity(width as usize * height as usize * 4 / 2 + 64);
+    let mut encoder = png::Encoder::new(&mut out, width, height);
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     encoder.set_compression(png::Compression::Fast);
@@ -1636,36 +1702,62 @@ fn write_png(
         }
         writer.write_image_data(&tight).map_err(|e| e.to_string())?;
     }
-    writer.finish().map_err(|e| e.to_string())
+    writer.finish().map_err(|e| e.to_string())?;
+    Ok(out)
 }
 
-/// Set a file input's files from a path on disk. The bytes travel
-/// into the page as base64 inside a JS snippet, are decoded to a
-/// `File`, and assigned through `DataTransfer`, the same technique
-/// every automation harness uses, since engines allow assigning
-/// `input.files` but not opening the OS picker programmatically.
+/// Encode to PNG bytes and write them to `path`.
+fn write_png(
+    path: &std::path::Path,
+    rgba: &[u8],
+    stride: usize,
+    width: u32,
+    height: u32,
+) -> Result<(), String> {
+    let png = encode_png(rgba, stride, width, height)?;
+    std::fs::write(path, png).map_err(|e| e.to_string())
+}
+
+/// Set a file input's files from a path on disk (or inline bytes).
+/// The bytes travel into the page as base64 inside a JS snippet, are
+/// decoded to a `File`, and assigned through `DataTransfer`, the
+/// same technique every automation harness uses, since engines allow
+/// assigning `input.files` but not opening the OS picker
+/// programmatically.
 pub fn upload(
     daemon: &Rc<Daemon>,
     id: Option<u64>,
     selector: String,
     path: String,
+    data: Option<String>,
     timeout_ms: Option<u64>,
     reply: Reply,
 ) {
-    let bytes = match std::fs::read(&path) {
-        Ok(b) => b,
-        Err(e) => {
-            return OnceReply::new(reply).send(Response::err(format!("cannot read {path}: {e}")));
-        }
+    // `data` (inline base64 from a remote client) wins over `path`:
+    // the client cannot read the daemon host's filesystem. The
+    // client checks INLINE_MAX_BYTES before sending; check again
+    // here because clients are not trusted.
+    let bytes = match data {
+        Some(b64) => match hwatu_ipc::base64::decode(&b64) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                return OnceReply::new(reply)
+                    .send(Response::err(format!("upload: bad inline data: {e}")));
+            }
+        },
+        None => match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                return OnceReply::new(reply)
+                    .send(Response::err(format!("cannot read {path}: {e}")));
+            }
+        },
     };
-    // Keep IPC and JS-source sizes sane: 32 MiB of payload is ~43 MiB
-    // of base64 in a script string. Enough for fixtures and documents;
-    // bulk uploads should not go through a JS harness anyway.
-    const MAX: usize = 32 * 1024 * 1024;
-    if bytes.len() > MAX {
+    if bytes.len() > hwatu_ipc::INLINE_MAX_BYTES {
         return OnceReply::new(reply).send(Response::err(format!(
-            "{path} is {} bytes; upload supports at most {MAX} (32 MiB)",
-            bytes.len()
+            "{path} is {} bytes; upload supports at most {} (24 MiB)",
+            bytes.len(),
+            hwatu_ipc::INLINE_MAX_BYTES
         )));
     }
     let name = std::path::Path::new(&path)
