@@ -11,7 +11,7 @@ mod onboarding;
 mod update;
 
 use hwatu_ipc::{AdblockCmd, ClockAction, LoadStage, OpenMode, Request, Response, Viewport};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -1486,35 +1486,127 @@ fn expect_event_is_terminal_navigation(line: &str) -> bool {
             == Some(true)
 }
 
-pub(crate) fn connect_or_spawn() -> std::io::Result<UnixStream> {
-    let path = hwatu_ipc::socket_path();
-    if let Ok(s) = UnixStream::connect(&path) {
-        return Ok(s);
+/// IPC connection: Unix socket (local) or TCP (remote daemon).
+pub(crate) enum Connection {
+    Unix(UnixStream),
+    Tcp(std::net::TcpStream),
+}
+
+impl std::io::Read for Connection {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            Connection::Unix(s) => s.read(buf),
+            Connection::Tcp(s) => s.read(buf),
+        }
+    }
+}
+
+impl std::io::Write for Connection {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            Connection::Unix(s) => s.write(buf),
+            Connection::Tcp(s) => s.write(buf),
+        }
     }
 
-    // No daemon: spawn hwatud (sibling binary or PATH) and poll the socket.
-    let daemon = std::env::current_exe()
-        .ok()
-        .and_then(|p| p.parent().map(|d| d.join("hwatud")))
-        .filter(|p| p.exists())
-        .unwrap_or_else(|| "hwatud".into());
-    Command::new(daemon)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()?;
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            Connection::Unix(s) => s.flush(),
+            Connection::Tcp(s) => s.flush(),
+        }
+    }
+}
 
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if let Ok(s) = UnixStream::connect(&path) {
-            return Ok(s);
+pub(crate) fn connect_or_spawn() -> std::io::Result<Connection> {
+    match hwatu_ipc::endpoint() {
+        hwatu_ipc::Endpoint::Unix(path) => {
+            // Existing behavior: connect or spawn daemon.
+            if let Ok(s) = UnixStream::connect(&path) {
+                return Ok(Connection::Unix(s));
+            }
+
+            // No daemon: spawn hwatud (sibling binary or PATH) and poll.
+            let daemon = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.join("hwatud")))
+                .filter(|p| p.exists())
+                .unwrap_or_else(|| "hwatud".into());
+            Command::new(daemon)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()?;
+
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Ok(s) = UnixStream::connect(&path) {
+                    return Ok(Connection::Unix(s));
+                }
+                if Instant::now() > deadline {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "daemon did not come up within 10s",
+                    ));
+                }
+                std::thread::sleep(Duration::from_millis(15));
+            }
         }
-        if Instant::now() > deadline {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                "daemon did not come up within 10s",
-            ));
+        hwatu_ipc::Endpoint::Tcp(addr) => {
+            // TCP: connect with timeout, set nodelay, do auth handshake.
+            // Never spawn — the daemon lives on the laptop.
+            let mut stream = std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(5))
+                .map_err(|e| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::ConnectionRefused,
+                        format!(
+                            "cannot reach daemon at tcp://{addr}: {e}\n\
+                             is the daemon listening (hwatud --listen …) and is the tunnel up?"
+                        ),
+                    )
+                })?;
+            stream.set_nodelay(true)?;
+
+            // Auth handshake: send token, wait for reply.
+            let token = std::env::var("HWATU_TOKEN").unwrap_or_default();
+            let auth_req = hwatu_ipc::AuthRequest { auth: token };
+            let auth_line = serde_json::to_string(&auth_req).unwrap() + "\n";
+            stream.write_all(auth_line.as_bytes())?;
+
+            // Read reply line.
+            let mut reply_buf = Vec::new();
+            let mut buf = [0u8; 4096];
+            loop {
+                let n = stream.read(&mut buf)?;
+                if n == 0 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::UnexpectedEof,
+                        "daemon closed connection during auth",
+                    ));
+                }
+                reply_buf.extend_from_slice(&buf[..n]);
+                if reply_buf.contains(&b'\n') {
+                    break;
+                }
+            }
+            let reply_str = std::str::from_utf8(&reply_buf).unwrap_or("");
+            let reply: hwatu_ipc::AuthReply =
+                serde_json::from_str(reply_str.trim()).map_err(|e| {
+                    std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        format!("bad auth reply: {e}"),
+                    )
+                })?;
+            match reply {
+                hwatu_ipc::AuthReply::Ok => {}
+                hwatu_ipc::AuthReply::Err { message } => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!("daemon auth rejected: {message}"),
+                    ));
+                }
+            }
+
+            Ok(Connection::Tcp(stream))
         }
-        std::thread::sleep(Duration::from_millis(15));
     }
 }
 
