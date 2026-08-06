@@ -258,13 +258,6 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
             until: parse_until(args)?,
             timeout_ms,
         }),
-        "goto" => Ok(Request::Navigate {
-            id,
-            url: req_str(args, "url")?,
-            wait: opt_bool(args, "wait").unwrap_or(true),
-            until: parse_until(args)?,
-            timeout_ms,
-        }),
         "prefetch" => Ok(Request::Prefetch {
             url: req_str(args, "url")?,
         }),
@@ -443,11 +436,6 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
             to_y: opt_f64(args, "to_y"),
             by_pages: opt_f64(args, "by_pages"),
             timeout_ms,
-        }),
-        "console" => Ok(Request::Console {
-            id,
-            clear: opt_bool(args, "clear").unwrap_or(false),
-            limit: opt_u64(args, "limit").map(|v| v as usize),
         }),
         "console" => Ok(Request::Console {
             id,
