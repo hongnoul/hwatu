@@ -150,14 +150,15 @@ impl Opts {
 /// One request, one reply, one connection (the daemon protocol is
 /// one-shot per connection for everything except Subscribe).
 fn call(req: &Request) -> Result<Response, String> {
-    let mut stream = crate::connect_or_spawn().map_err(|e| format!("cannot reach daemon: {e}"))?;
+    let mut reader = crate::connect_or_spawn().map_err(|e| format!("cannot reach daemon: {e}"))?;
     let mut payload = serde_json::to_vec(req).expect("serialize request");
     payload.push(b'\n');
-    stream
+    reader
+        .get_mut()
         .write_all(&payload)
         .map_err(|e| format!("write: {e}"))?;
     let mut line = String::new();
-    BufReader::new(stream)
+    reader
         .read_line(&mut line)
         .map_err(|e| format!("read: {e}"))?;
     serde_json::from_str::<Response>(line.trim()).map_err(|e| format!("bad response: {e}"))

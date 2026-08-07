@@ -147,16 +147,16 @@ fn subscribe_events(args: &Value) -> Result<String, String> {
             .collect::<Vec<_>>()
     });
     let window = opt_u64(args, "window");
-    let mut stream =
+    let mut reader =
         crate::connect_or_spawn().map_err(|e| format!("cannot reach hwatu daemon: {e}"))?;
     let request = Request::Subscribe { kinds, window };
     let mut payload = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
     payload.push(b'\n');
-    stream
+    reader
+        .get_mut()
         .write_all(&payload)
         .map_err(|e| format!("write failed: {e}"))?;
     std::thread::spawn(move || {
-        let reader = std::io::BufReader::new(stream);
         for line in reader.lines() {
             let Ok(line) = line else { break };
             let Ok(event) = serde_json::from_str::<Value>(&line) else {
@@ -176,15 +176,16 @@ fn subscribe_events(args: &Value) -> Result<String, String> {
 
 /// One request per connection, like the CLI.
 fn transact(request: &Request) -> Result<Response, String> {
-    let mut stream =
+    let mut reader =
         crate::connect_or_spawn().map_err(|e| format!("cannot reach hwatu daemon: {e}"))?;
     let mut payload = serde_json::to_vec(request).map_err(|e| e.to_string())?;
     payload.push(b'\n');
-    stream
+    reader
+        .get_mut()
         .write_all(&payload)
         .map_err(|e| format!("write failed: {e}"))?;
     let mut line = String::new();
-    std::io::BufReader::new(stream)
+    reader
         .read_line(&mut line)
         .map_err(|e| format!("read failed: {e}"))?;
     serde_json::from_str(line.trim()).map_err(|e| format!("bad daemon response: {e} ({line:?})"))

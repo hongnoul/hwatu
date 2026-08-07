@@ -717,13 +717,13 @@ fn demo(args: &[String]) -> i32 {
 // ===================================================================
 
 fn send(request: &Request) -> Result<Response, String> {
-    use std::io::{BufRead, BufReader, Write};
-    let mut stream = crate::connect_or_spawn().map_err(|e| e.to_string())?;
+    use std::io::{BufRead, Write};
+    let mut reader = crate::connect_or_spawn().map_err(|e| e.to_string())?;
     let mut payload = serde_json::to_vec(request).expect("serialize request");
     payload.push(b'\n');
-    stream.write_all(&payload).map_err(|e| e.to_string())?;
+    reader.get_mut().write_all(&payload).map_err(|e| e.to_string())?;
     let mut line = String::new();
-    BufReader::new(stream)
+    reader
         .read_line(&mut line)
         .map_err(|e| e.to_string())?;
     serde_json::from_str(line.trim()).map_err(|e| format!("bad response: {e}"))
