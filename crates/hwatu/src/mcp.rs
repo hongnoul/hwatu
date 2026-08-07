@@ -12,7 +12,7 @@
 //! The daemon is autostarted on the first tool call, like every other
 //! `hwatu` invocation.
 
-use hwatu_ipc::{ClockAction, LoadStage, OpenMode, Request, Response, Viewport};
+use hwatu_ipc::{ClockAction, Endpoint, LoadStage, OpenMode, Request, Response, Viewport};
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -52,8 +52,8 @@ pub fn run() -> i32 {
             "ping" => jsonrpc_result(id, json!({})),
             "tools/list" => jsonrpc_result(id, json!({ "tools": tool_definitions() })),
             "tools/call" => match handle_tool_call(&params) {
-                Ok(text) => jsonrpc_result(id, tool_text(&text, false)),
-                Err(text) => jsonrpc_result(id, tool_text(&text, true)),
+                Ok(content) => jsonrpc_result(id, content),
+                Err(content) => jsonrpc_result(id, content),
             },
             // Optional capabilities we don't provide.
             "resources/list" => jsonrpc_result(id, json!({ "resources": [] })),
@@ -112,23 +112,99 @@ fn tool_text(text: &str, is_error: bool) -> Value {
     })
 }
 
+/// True when the IPC endpoint is TCP (remote daemon).
+fn is_tcp_endpoint() -> bool {
+    matches!(hwatu_ipc::endpoint(), Endpoint::Tcp(_))
+}
+
+/// Transform `shot_data` fields in a check/render response value into
+/// MCP image blocks. Walks the top-level object and any `viewports`
+/// array, converting `"shot_data": "<base64>"` to
+/// `"shot_image": { "type": "image", "data": "...", "mimeType": "image/png" }`.
+fn format_response_value(value: &Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let mut new_map = map.clone();
+            if let Some(shot_data) = new_map.remove("shot_data") {
+                new_map.insert(
+                    "shot_image".to_string(),
+                    json!({
+                        "type": "image",
+                        "data": shot_data,
+                        "mimeType": "image/png",
+                    }),
+                );
+            }
+            if let Some(Value::Array(ref viewports)) = new_map.get("viewports") {
+                let transformed: Vec<Value> = viewports
+                    .iter()
+                    .map(format_response_value)
+                    .collect();
+                new_map.insert("viewports".to_string(), Value::Array(transformed));
+            }
+            Value::Object(new_map)
+        }
+        _ => value.clone(),
+    }
+}
+
+/// Format a tool response as MCP content blocks.
+/// When the response carries `data` (screenshot base64), returns an
+/// image block + optional metadata text. Otherwise returns text.
+fn tool_content(text: &str, is_error: bool) -> Value {
+    // Try to parse as Response::Ok with a `data` field.
+    if let Ok(Response::Ok {
+        data: Some(ref data),
+        window,
+        ..
+    }) = serde_json::from_str::<Response>(text) {
+        let mut content = vec![json!({
+            "type": "image",
+            "data": data,
+            "mimeType": "image/png",
+        })];
+        if let Some(w) = window {
+            content.push(json!({
+                "type": "text",
+                "text": serde_json::to_string(&w).unwrap_or_default(),
+            }));
+        }
+        return json!({ "content": content, "isError": is_error });
+    }
+    tool_text(text, is_error)
+}
+
 /// `tools/call` -> daemon roundtrip -> response text.
-fn handle_tool_call(params: &Value) -> Result<String, String> {
+fn handle_tool_call(params: &Value) -> Result<Value, Value> {
     let name = params
         .get("name")
         .and_then(Value::as_str)
         .ok_or("missing tool name")?;
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
     if name == "subscribe_events" {
-        return subscribe_events(&args);
+        return match subscribe_events(&args) {
+            Ok(text) => Ok(tool_text(&text, false)),
+            Err(text) => Err(tool_text(&text, true)),
+        };
     }
     let mut request = build_request(name, &args)?;
     crate::normalize_request_paths(&mut request);
     let response = transact(&request)?;
-    match response {
-        Response::Err { message } => Err(message),
-        ok => serde_json::to_string(&ok).map_err(|e| e.to_string()),
-    }
+    let text = match response {
+        Response::Err { message } => return Err(tool_text(&message, true)),
+        ok => serde_json::to_string(&ok).map_err(|e| tool_text(&e.to_string(), true))?,
+    };
+    let transformed = if is_tcp_endpoint() {
+        if let Ok(mut v) = serde_json::from_str::<Value>(&text) {
+            v = format_response_value(&v);
+            serde_json::to_string(&v).unwrap_or(text)
+        } else {
+            text
+        }
+    } else {
+        text
+    };
+    Ok(tool_content(&transformed, false))
 }
 
 /// Start (once) a background thread that holds a subscribed
@@ -271,7 +347,7 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
             id,
             path: opt_str(args, "path"),
             full: opt_bool(args, "full").unwrap_or(false),
-            data: opt_bool(args, "data").unwrap_or(false),
+            data: is_tcp_endpoint() || opt_bool(args, "data").unwrap_or(false),
         }),
         "wait_load" => Ok(Request::WaitLoad {
             id,
@@ -312,7 +388,7 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
                 shot: opt_bool(args, "shot").unwrap_or(false),
                 shot_path: opt_str(args, "shot_path"),
                 full: opt_bool(args, "full").unwrap_or(false),
-                shot_data: opt_bool(args, "shot_data").unwrap_or(false),
+                shot_data: is_tcp_endpoint() || opt_bool(args, "shot_data").unwrap_or(false),
                 baseline: opt_str(args, "baseline"),
                 baseline_data: opt_str(args, "baseline_data"),
                 tolerance: opt_u64(args, "tolerance").map(|v| v.min(255) as u8),
@@ -346,7 +422,7 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
                 shot: opt_bool(args, "shot").unwrap_or(false),
                 shot_path: opt_str(args, "shot_path"),
                 full: opt_bool(args, "full").unwrap_or(false),
-                shot_data: opt_bool(args, "shot_data").unwrap_or(false),
+                shot_data: is_tcp_endpoint() || opt_bool(args, "shot_data").unwrap_or(false),
                 baseline: opt_str(args, "baseline"),
                 baseline_data: opt_str(args, "baseline_data"),
                 tolerance: opt_u64(args, "tolerance").map(|v| v.min(255) as u8),
@@ -643,6 +719,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
                 "eval": prop("string", "JS to run once loaded (expression or function body)."),
                 "shot": prop("boolean", "Take a screenshot to a temp file."),
                 "shot_path": prop("string", "Screenshot destination (implies shot)."),
+                "shot_data": prop("boolean", "Return screenshot as base64 image content (default true over TCP)."),
                 "full": prop("boolean", "Screenshot/diff the full document, not just the viewport."),
                 "baseline": prop("string", "Baseline PNG path: pixel-diff the loaded page against it and include match_percent + mismatch regions in the reply."),
                 "tolerance": prop("integer", "Per-channel diff tolerance 0-255 (default 8; only with baseline)."),
@@ -670,6 +747,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
                 "eval": prop("string", "JS to run once loaded (expression or function body)."),
                 "shot": prop("boolean", "Take a screenshot to a temp file."),
                 "shot_path": prop("string", "Screenshot destination (implies shot)."),
+                "shot_data": prop("boolean", "Return screenshot as base64 image content (default true over TCP)."),
                 "full": prop("boolean", "Screenshot/diff the full document, not just the viewport."),
                 "baseline": prop("string", "Baseline PNG path: pixel-diff the rendered page against it."),
                 "tolerance": prop("integer", "Per-channel diff tolerance 0-255 (default 8; only with baseline)."),
