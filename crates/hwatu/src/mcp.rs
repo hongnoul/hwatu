@@ -15,9 +15,10 @@
 use hwatu_ipc::{ClockAction, Endpoint, LoadStage, OpenMode, Request, Response, Viewport};
 use serde_json::{json, Value};
 use std::io::{BufRead, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 static EVENT_THREAD: AtomicBool = AtomicBool::new(false);
+static SHOT_SEQ: AtomicU64 = AtomicU64::new(0);
 
 const PROTOCOL_VERSION: &str = "2024-11-05";
 
@@ -117,61 +118,69 @@ fn is_tcp_endpoint() -> bool {
     matches!(hwatu_ipc::endpoint(), Endpoint::Tcp(_))
 }
 
-/// Transform `shot_data` fields in a check/render response value into
-/// MCP image blocks. Walks the top-level object and any `viewports`
-/// array, converting `"shot_data": "<base64>"` to
-/// `"shot_image": { "type": "image", "data": "...", "mimeType": "image/png" }`.
-fn format_response_value(value: &Value) -> Value {
-    match value {
-        Value::Object(map) => {
-            let mut new_map = map.clone();
-            if let Some(shot_data) = new_map.remove("shot_data") {
-                new_map.insert(
-                    "shot_image".to_string(),
-                    json!({
-                        "type": "image",
-                        "data": shot_data,
-                        "mimeType": "image/png",
-                    }),
-                );
-            }
-            if let Some(Value::Array(ref viewports)) = new_map.get("viewports") {
-                let transformed: Vec<Value> = viewports
-                    .iter()
-                    .map(format_response_value)
-                    .collect();
-                new_map.insert("viewports".to_string(), Value::Array(transformed));
-            }
-            Value::Object(new_map)
+/// Decode a base64 PNG, write it to a local temp file, return the path.
+/// Named `/tmp/hwatu-mcp-<pid>-<seq>.png` (bounded, orphaned on exit).
+fn write_shot(data: &str) -> Result<String, String> {
+    let bytes = hwatu_ipc::base64::decode(data)
+        .map_err(|e| format!("invalid shot data: {e}"))?;
+    let seq = SHOT_SEQ.fetch_add(1, Ordering::Relaxed);
+    let path = format!("/tmp/hwatu-mcp-{}-{}.png", std::process::id(), seq);
+    std::fs::write(&path, &bytes)
+        .map_err(|e| format!("cannot write shot to {path}: {e}"))?;
+    Ok(path)
+}
+
+/// Transform `shot_data` fields in a check/render response into local
+/// file paths. Decodes base64, writes temp file, replaces `shot` with
+/// the local path and removes `shot_data`. Walks `viewports` arrays
+/// recursively for multi-viewport sweeps.
+fn format_shot_data(text: &str) -> String {
+    let Ok(mut v) = serde_json::from_str::<Value>(text) else {
+        return text.to_string();
+    };
+    transform_shot_data(&mut v);
+    serde_json::to_string(&v).unwrap_or(text.to_string())
+}
+
+fn transform_shot_data(value: &mut Value) {
+    let Value::Object(map) = value else { return };
+    if let Some(shot_data) = map.get("shot_data").and_then(Value::as_str) {
+        if let Ok(path) = write_shot(shot_data) {
+            map.insert("shot".to_string(), json!(path));
+            map.remove("shot_data");
         }
-        _ => value.clone(),
+    }
+    if let Some(Value::Array(viewports)) = map.get_mut("viewports") {
+        for vp in viewports {
+            transform_shot_data(vp);
+        }
     }
 }
 
-/// Format a tool response as MCP content blocks.
-/// When the response carries `data` (screenshot base64), returns an
-/// image block + optional metadata text. Otherwise returns text.
+/// Format a tool response as MCP content.
+/// Over TCP: decodes inline `data` (base64 screenshot), writes a local
+/// temp file, and replaces `data` with `path` so the agent sees a
+/// readable file path (identical to the Unix socket flow).
+/// Over Unix: returns the text unchanged.
 fn tool_content(text: &str, is_error: bool) -> Value {
-    // Try to parse as Response::Ok with a `data` field.
-    if let Ok(Response::Ok {
+    let Ok(Response::Ok {
         data: Some(ref data),
-        window,
         ..
-    }) = serde_json::from_str::<Response>(text) {
-        let mut content = vec![json!({
-            "type": "image",
-            "data": data,
-            "mimeType": "image/png",
-        })];
-        if let Some(w) = window {
-            content.push(json!({
-                "type": "text",
-                "text": serde_json::to_string(&w).unwrap_or_default(),
-            }));
-        }
-        return json!({ "content": content, "isError": is_error });
+    }) = serde_json::from_str::<Response>(text) else {
+        return tool_text(text, is_error);
+    };
+    // Decode base64, write local temp file, replace data with path.
+    let Ok(path) = write_shot(data) else {
+        return tool_text(text, is_error);
+    };
+    let Ok(mut v) = serde_json::from_str::<Value>(text) else {
+        return tool_text(text, is_error);
+    };
+    if let Value::Object(map) = &mut v {
+        map.remove("data");
+        map.insert("path".to_string(), json!(path));
     }
-    tool_text(text, is_error)
+    tool_text(&serde_json::to_string(&v).unwrap_or(text.to_string()), is_error)
 }
 
 /// `tools/call` -> daemon roundtrip -> response text.
@@ -195,12 +204,7 @@ fn handle_tool_call(params: &Value) -> Result<Value, Value> {
         ok => serde_json::to_string(&ok).map_err(|e| tool_text(&e.to_string(), true))?,
     };
     let transformed = if is_tcp_endpoint() {
-        if let Ok(mut v) = serde_json::from_str::<Value>(&text) {
-            v = format_response_value(&v);
-            serde_json::to_string(&v).unwrap_or(text)
-        } else {
-            text
-        }
+        format_shot_data(&text)
     } else {
         text
     };
