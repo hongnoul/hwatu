@@ -610,6 +610,15 @@ Use inline payload fields instead:
 CLI flags: `--stdout` (shot to base64), `--shot-data`,
 `--baseline-data <b64>`, `--file <path>` (read file for upload).
 
+**MCP auto-handling.** When `hwatu mcp` connects to the daemon over
+TCP, it handles the inline fields automatically: `screenshot` and
+`check` with `shot` return local file paths (the base64 is decoded
+and written to a temp file on the client host). The agent sees the
+same path-based responses as with a local daemon — no `data` or
+`shot_data` arguments needed. Baseline and upload fields
+(`baseline_data`, `upload { data }`) remain explicit: the agent
+provides the base64 when it has a file on its own filesystem.
+
 ### Limits
 
 - **24 MiB decoded** per inline payload (`INLINE_MAX_BYTES`).

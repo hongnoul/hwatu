@@ -1,6 +1,6 @@
 # IPC over TCP: architecture specification
 
-Status: draft for review, not yet implemented.
+Status: implemented.
 
 Scope: expand the `hwatu` ↔ `hwatud` IPC from a same-machine Unix-domain
 socket to optionally run over TCP, so a client embedded next to an LLM agent
@@ -177,7 +177,8 @@ Rules:
   contract changes for remote use: every path field refers to the daemon's
   filesystem. Agents that need files on *their* side use the inline payload
   fields (§7). This is documented in `docs/agents.md`, not enforced in code.
-- `mcp.rs`, `clone.rs`, `watch`, `expect_watch` need no changes — they all
+- `mcp.rs` gains TCP-aware screenshot handling (§8.4).
+- `clone.rs`, `watch`, `expect_watch` need no changes — they all
   route through `connect_or_spawn()`.
 
 ---
@@ -331,6 +332,39 @@ construction; the alternative (adding the `base64` crate to `hwatu-ipc` only)
 is acceptable if a maintainer prefers a reviewed implementation — it does not
 leak into the client crate either way. Default is hand-rolled.
 
+### 8.4 MCP server: automatic path translation over TCP
+
+The `hwatu mcp` process (the MCP server) runs on the client side (container)
+and speaks the IPC protocol to the daemon. When the endpoint is TCP, it
+automatically bridges the filesystem gap so agents see local file paths,
+identical to the Unix socket flow. No agent-side changes needed.
+
+**Request side** — `build_request()` sets inline data flags when over TCP:
+
+| Tool | Field set | Effect |
+|------|-----------|--------|
+| screenshot | `data: true` | daemon returns base64 PNG in `Response::Ok::data` |
+| check | `shot_data: true` | daemon includes `shot_data` base64 in reply `value` |
+| render | `shot_data: true` | same as check |
+
+Explicit agent arguments (`data`, `shot_data`) still honored (OR'd with
+TCP detection). Over Unix socket, flags default to `false` — unchanged.
+
+**Response side** — `hwatu mcp` transforms the daemon's reply before
+forwarding to the agent:
+
+1. **Screenshot** — `Response::Ok::data` (base64) is decoded, written to
+   `/tmp/hwatu-mcp-<pid>-<seq>.png` on the client host, and `data` is
+   replaced with `path` in the response. The agent sees a local file path.
+2. **Check/render with shot** — `shot_data` (base64) inside the `value`
+   object is decoded, written to a temp file, `shot` is replaced with the
+   local path, and `shot_data` is removed. Multi-viewport sweeps are
+   handled recursively.
+
+The agent receives the same path-based response whether the daemon is
+local (Unix socket) or remote (TCP). The temp files are bounded
+(one per screenshot request) and orphaned on `hwatu mcp` process exit.
+
 ---
 
 ## 9. Security model
@@ -445,13 +479,13 @@ change, not a wire concern.
 
 ## 13. Rollout
 
-1. `hwatu-ipc`: endpoint abstraction, handshake types, inline fields, base64,
-   tests.
-2. Daemon: `--listen`/`--token`, bounds, `TCP_NODELAY`.
-3. Client: `connect_or_spawn` branch, CLI flags.
-4. Docs: this spec, plus a short "remote daemon" section in `docs/agents.md`
-   and a security paragraph in `SECURITY.md`.
-5. Single release; no staged wire migration needed (all additions optional).
+1. ~~`hwatu-ipc`: endpoint abstraction, handshake types, inline fields, base64,
+   tests.~~ ✅
+2. ~~Daemon: `--listen`/`--token`, bounds, `TCP_NODELAY`.~~ ✅
+3. ~~Client: `connect_or_spawn` branch, CLI flags.~~ ✅
+4. ~~MCP server: TCP-aware screenshot handling (§8.4).~~ ✅
+5. ~~Docs: this spec, `docs/agents.md`, `SECURITY.md`.~~ ✅
+6. Single release; no staged wire migration needed (all additions optional).
 
 ---
 
@@ -478,6 +512,7 @@ change, not a wire concern.
 3. Do we want `HWATU_TOKEN` honored on Unix sockets as an *optional* extra
    gate, or strictly transport-scoped as specified? (Proposal: Unix stays
    kernel-auth-only, zero behavior change.)
-4. Is `--stdout` the right surface for `shot`, or should the CLI default to
-   data mode when the endpoint is TCP? (Proposal: explicit flag — implicit
-   mode switches are worse than a flag for scriptability.)
+4. **ANSWERED** — The CLI keeps `--stdout` explicit (scriptability). The MCP
+   server defaults to data mode over TCP automatically (§8.4), because it
+   translates the base64 back to a local temp file before the agent sees it.
+   The agent never needs to know about `data` or `shot_data`.
