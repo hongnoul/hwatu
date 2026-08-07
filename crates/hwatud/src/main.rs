@@ -784,6 +784,8 @@ mod tests {
             ParseSecurity::Run(SecurityConfig {
                 eval_enabled: false,
                 ephemeral_profile: true,
+                tcp_listen: None,
+                tcp_token: None,
             })
         );
     }
