@@ -150,10 +150,15 @@ fn transform_shot_data(value: &mut Value) {
             map.remove("shot_data");
         }
     }
+    // Descend into nested objects that may carry shot_data:
+    // `value` (check/render result) and `viewports` (per-size entries).
     if let Some(Value::Array(viewports)) = map.get_mut("viewports") {
         for vp in viewports {
             transform_shot_data(vp);
         }
+    }
+    if let Some(nested) = map.get_mut("value") {
+        transform_shot_data(nested);
     }
 }
 
