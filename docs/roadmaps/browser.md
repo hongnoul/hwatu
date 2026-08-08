@@ -30,7 +30,22 @@ drivers.
 
 ### D0: silently broken or one-line-cheap (engine already does it)
 
-Each of these is small because WebKitGTK 2.52 already implements the
+**Shipped 2026-08-08** (all eight items, one pass; live checks in
+`scripts/test-d0.sh`). What shipped, against the original scope below:
+H1 file uploads via GTK FileDialog (MIME filter + multi-select
+honored); H2 WebRTC enabled behind the media-stream gate, which
+gained a persistent `"media_stream": true` config key; H3 as a
+`hwatu doctor` probe (gstreamer `va` plugin + render node) plus
+install docs; H4 via a direct D-Bus forwarder (notify.rs) with click
+routing to window focus and page-side close retraction; H5 as a
+write-through JSON site store (sitedata.rs) holding permission
+decisions and per-site zoom, applied on commit, RAM-only under
+ephemeral profiles; H6 with locale-derived language and
+`"spell_check"`/`"spell_check_languages"` keys; H7 on ctrl+p and the
+`print` signal (one dialog path for both); H8 verified live — the
+response policy handler already lets pdf.js render application/pdf.
+
+Each of these was small because WebKitGTK 2.52 already implements the
 hard part; hwatud just never connected the signal or flipped the
 setting.
 
@@ -70,6 +85,22 @@ H8. **PDF viewing.** WebKitGTK ships pdf.js enabled by default;
     into a download before the viewer sees it.
 
 ### D1: category-defining features (what the audience switches for)
+
+**Shipped 2026-08-08** (all five items). Against the original scope
+below: H9 as history.rs (SQLite, frecency ranking: ln(1+visits) x
+recency bucket x match-quality; host-prefix beats word-boundary beats
+substring), bar completions in URL mode with Down/Tab cycling, and a
+`hwatu history` CLI/protocol verb with `--clear`; headless windows,
+launcher pages, and blanks never recorded, in-memory under ephemeral
+profiles. H10 as hints.rs (`f` follow, `F` new-window, ctrl+shift+y
+yank-to-GDK-clipboard; visibility + elementFromPoint candidate
+filtering, capture-phase key consumption, fail-open). H11 as
+passfill.rs (pass + Bitwarden CLIs, worker-thread lookup, framework-
+safe fill JS; integrate-never-store held). H12 had already shipped
+2026-08-05 as ctrl+shift+t with the 10-deep reopen stack. H13 as
+search.conf keyword lines + quickmarks.conf (per-lookup reads, no
+restart). Live checks: test-history.sh, test-hints.sh,
+test-passfill.sh, test-search-keywords.sh.
 
 Ordered by user-testimony criticality crossed with implementation
 cost. These reverse specific entries in the old not-planned list;
