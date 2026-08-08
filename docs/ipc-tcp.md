@@ -346,9 +346,17 @@ identical to the Unix socket flow. No agent-side changes needed.
 | screenshot | `data: true` | daemon returns base64 PNG in `Response::Ok::data` |
 | check | `shot_data: true` | daemon includes `shot_data` base64 in reply `value` |
 | render | `shot_data: true` | same as check |
+| upload | `data: "<base64>"` | MCP reads local `path`, sends base64; `path` kept for reference |
 
 Explicit agent arguments (`data`, `shot_data`) still honored (OR'd with
 TCP detection). Over Unix socket, flags default to `false` — unchanged.
+The agent never sees `data` or `shot_data` — the MCP layer handles them.
+**Upload** — the agent provides `path` (a file on the client host).
+Over TCP, the MCP layer reads the file, sends it as `data` (base64)
+in the request, so the daemon never needs access to the client's
+filesystem. Over Unix socket, `path` is sent as-is (daemon reads it
+directly). The agent always provides `path`; the transport switch is
+transparent.
 
 **Response side** — `hwatu mcp` transforms the daemon's reply before
 forwarding to the agent:

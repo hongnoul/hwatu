@@ -611,13 +611,19 @@ CLI flags: `--stdout` (shot to base64), `--shot-data`,
 `--baseline-data <b64>`, `--file <path>` (read file for upload).
 
 **MCP auto-handling.** When `hwatu mcp` connects to the daemon over
-TCP, it handles the inline fields automatically: `screenshot` and
-`check` with `shot` return local file paths (the base64 is decoded
-and written to a temp file on the client host). The agent sees the
-same path-based responses as with a local daemon — no `data` or
-`shot_data` arguments needed. Baseline and upload fields
-(`baseline_data`, `upload { data }`) remain explicit: the agent
-provides the base64 when it has a file on its own filesystem.
+TCP, it handles the inline fields automatically so the agent sees
+local file paths in both directions:
+
+- `screenshot` and `check` with `shot` return local file paths
+  (base64 decoded and written to a temp file on the client host).
+- `upload` reads the file at `path` on the client host and sends it
+  as base64 to the daemon — the agent always provides `path`, the
+  MCP layer handles the transport.
+
+The agent sees the same path-based interface as with a local daemon.
+No `data` or `shot_data` arguments needed. `baseline_data` remains
+explicit: the agent provides base64 when it has a baseline image on
+its own filesystem.
 
 ### Limits
 
