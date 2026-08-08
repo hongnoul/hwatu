@@ -135,6 +135,21 @@ H13. **Quickmarks + search keywords.** Named shortcuts (`:open
 
 ### D2: abandonment drivers (why people go back to Firefox)
 
+**Shipped 2026-08-08** (all six items; live checks in
+`scripts/test-d2.sh`). H14 was already real — the abp.rs converter
+has compiled EasyList element-hiding into css-display-none
+content-blocker rules since adblock landed; the tier entry was
+stale, and the test now proves it live. H15 as darkmode.rs
+(ctrl+shift+d, invert+hue-rotate with media double-inverted,
+per-host persistence on the site store, `"dark_mode": true` global
+default). H16 as the ClearSiteData verb / `hwatu clear-site-data
+[host]` (WebsiteDataManager clear/fetch+remove, site-store decisions
+and — on full clears — history go with it). H17 as ctrl+shift+m
+(detached mpv spawn). H18 as ctrl+e ($VISUAL/$EDITOR, terminal
+autodetect, non-blocking exit poll, framework-safe paste-back).
+H19 as `"restore_session": true` (restore on clean quit; identity
+via app_id already round-tripped).
+
 H14. **Cosmetic filtering.** Network-level EasyList blocking exists,
     but the #1 stated reason users leave this category is ad quality:
     element hiding is what makes YouTube/news sites bearable.
@@ -223,6 +238,16 @@ is measured solid (142.9fps). No crossfade will be added — native
 does not have one either.
 
 ### D4: niri-native integration (the WM is the browser chrome)
+
+Status 2026-08-08: H29 shipped (`hwatu jump` + the Jump protocol
+verb: open windows first with host-prefix boost, headless agent
+windows excluded, history fallback opens). H30 shipped (profiled
+windows get `hwatu.<profile>`; `"app_ids"` config rules map
+host-suffixes to app ids, longest key wins). H34 shipped
+(reader.rs: readability-lite extraction, additive overlay, alt+r).
+H36 shipped (share.rs: share.conf targets, argv-level substitution,
+no shell). H37 shipped (theme.rs: XDG portal color-scheme followed
+live). Remaining: H28, H31-H33, H35, H38-H40.
 
 Adopted 2026-08-08. Thesis: what makes macOS-Safari feel native is the
 browser treating the OS as its UI toolkit. The tiling-WM equivalent is
