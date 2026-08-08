@@ -1675,19 +1675,29 @@ pub fn upload(
     let mime = mime_from_extension(&path);
     let js = format!(
         r#"const selector = {selector};
-const el = document.querySelector(selector);
-if (!el) throw new Error('no element matches selector: ' + selector);
-if (!(el instanceof HTMLInputElement) || el.type !== 'file')
-  throw new Error('element is not an <input type=file>: ' + selector);
-const bin = atob({b64});
-const bytes = new Uint8Array(bin.length);
-for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-const file = new File([bytes], {name}, {{ type: {mime} }});
-const dt = new DataTransfer();
-dt.items.add(file);
-el.files = dt.files;
-el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+	const documents = [document];
+	for (let i = 0; i < documents.length; i++) {{
+	  for (const frame of documents[i].querySelectorAll('iframe,frame')) {{
+	    try {{
+	      const child = frame.contentDocument;
+	      if (child && !documents.includes(child)) documents.push(child);
+	    }} catch (_) {{}}
+	  }}
+	}}
+	const el = documents.map(doc => doc.querySelector(selector)).find(Boolean);
+	if (!el) throw new Error('no element matches selector: ' + selector);
+	const view = el.ownerDocument.defaultView || window;
+	if (!(el instanceof view.HTMLInputElement) || el.type !== 'file')
+	  throw new Error('element is not an <input type=file>: ' + selector);
+	const bin = atob({b64});
+	const bytes = new Uint8Array(bin.length);
+	for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+	const file = new view.File([bytes], {name}, {{ type: {mime} }});
+	const dt = new view.DataTransfer();
+	dt.items.add(file);
+	el.files = dt.files;
+	el.dispatchEvent(new view.Event('input', {{ bubbles: true }}));
+	el.dispatchEvent(new view.Event('change', {{ bubbles: true }}));
 return {{ uploaded: file.name, size: file.size, type: file.type }};"#,
         selector = js_string(&selector),
         b64 = js_string(&base64(&bytes)),
@@ -2493,8 +2503,21 @@ if (refIdx !== null) {{
   if (!el) throw new Error(`ref ${{refIdx}} out of range (snapshot had ${{refs.length}} interactables)`);
   if (!el.isConnected) throw new Error(`ref ${{refIdx}} is no longer in the document; re-run snapshot`);
   var matched = {{ ref: refIdx }};
-}} else {{
-  let els = [...document.querySelectorAll(selector)];
+	}} else {{
+	  // ATS portals such as iCIMS commonly place the actual application in a
+	  // same-origin iframe under a branded outer page. Traverse all accessible
+	  // frame documents so selectors retain their normal meaning there. Frames
+	  // with a different origin are skipped by the browser's same-origin guard.
+	  const documents = [document];
+	  for (let i = 0; i < documents.length; i++) {{
+	    for (const frame of documents[i].querySelectorAll('iframe,frame')) {{
+	      try {{
+	        const child = frame.contentDocument;
+	        if (child && !documents.includes(child)) documents.push(child);
+	      }} catch (_) {{}}
+	    }}
+	  }}
+	  let els = documents.flatMap(doc => [...doc.querySelectorAll(selector)]);
   const total = els.length;
   if (contains !== null)
     els = els.filter(e => ((e.textContent || '') + ' ' + (e.value || '')).includes(contains));
@@ -2765,14 +2788,15 @@ pub fn click(
 el.scrollIntoView({{ block: 'center', behavior: 'instant' }});
 const r = el.getBoundingClientRect();
 const x = r.left + r.width / 2, y = r.top + r.height / 2;
-const opts = {{ bubbles: true, cancelable: true, composed: true, view: window,
-                clientX: x, clientY: y, button: 0, detail: 1 }};
-el.dispatchEvent(new PointerEvent('pointerdown', {{ ...opts, pointerId: 1, isPrimary: true }}));
-el.dispatchEvent(new MouseEvent('mousedown', opts));
-if (el.focus) el.focus();
-el.dispatchEvent(new PointerEvent('pointerup', {{ ...opts, pointerId: 1, isPrimary: true }}));
-el.dispatchEvent(new MouseEvent('mouseup', opts));
-el.click ? el.click() : el.dispatchEvent(new MouseEvent('click', opts));
+	const targetView = el.ownerDocument.defaultView || window;
+	const opts = {{ bubbles: true, cancelable: true, composed: true, view: targetView,
+	                clientX: x, clientY: y, button: 0, detail: 1 }};
+	el.dispatchEvent(new targetView.PointerEvent('pointerdown', {{ ...opts, pointerId: 1, isPrimary: true }}));
+	el.dispatchEvent(new targetView.MouseEvent('mousedown', opts));
+	if (el.focus) el.focus();
+	el.dispatchEvent(new targetView.PointerEvent('pointerup', {{ ...opts, pointerId: 1, isPrimary: true }}));
+	el.dispatchEvent(new targetView.MouseEvent('mouseup', opts));
+	el.click ? el.click() : el.dispatchEvent(new targetView.MouseEvent('click', opts));
 // Give a same-document reaction (SPA routing, form handlers) one
 // macrotask to run, so the reported url reflects the click. Uses the
 // native clock so a paused virtual clock cannot stall it.
@@ -2828,16 +2852,16 @@ const enter = {enter};
 el.scrollIntoView({{ block: 'center', behavior: 'instant' }});
 if (el.focus) el.focus();
 const fire = (t) => el.dispatchEvent(new Event(t, {{ bubbles: true }}));
-if (el instanceof HTMLSelectElement) {{
+	const view = el.ownerDocument.defaultView || window;
+	if (el instanceof view.HTMLSelectElement) {{
   const opt = [...el.options].find(o => o.value === text || o.textContent.trim() === text);
   if (!opt) throw new Error(`no <option> matching ${{JSON.stringify(text)}} (values: ${{[...el.options].map(o => o.value).slice(0, 20).join(', ')}})`);
   el.value = opt.value;
   fire('input'); fire('change');
-}} else if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) {{
+	}} else if (el instanceof view.HTMLInputElement || el instanceof view.HTMLTextAreaElement) {{
   // Use the element's own realm. A target adopted from an iframe can pass the
   // type check while rejecting a setter borrowed from the top-level realm.
-  const view = el.ownerDocument.defaultView;
-  const proto = el instanceof view.HTMLInputElement ? view.HTMLInputElement.prototype : view.HTMLTextAreaElement.prototype;
+	  const proto = el instanceof view.HTMLInputElement ? view.HTMLInputElement.prototype : view.HTMLTextAreaElement.prototype;
   const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
   setter.call(el, clear ? text : el.value + text);
   fire('input'); fire('change');
