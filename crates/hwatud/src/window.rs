@@ -197,6 +197,30 @@ fn preferred_width(viewport_width: i32, ratio: f64) -> i32 {
     ((viewport_width as f64) * ratio).floor().max(1.0) as i32
 }
 
+/// Semantic app-id for a URL from `"app_ids"` in config.json (roadmap
+/// H30): `{"app_ids": {"youtube.com": "hwatu.media", "github.com":
+/// "hwatu.code"}}`. Keys match the host or any parent-domain suffix
+/// (mail.google.com matches a google.com rule). Longest key wins.
+fn site_app_id(url: &str) -> Option<String> {
+    let rules = config_value("app_ids")?;
+    let rules = rules.as_object()?;
+    let host = crate::prompts::host_of(url).to_lowercase();
+    if host.is_empty() {
+        return None;
+    }
+    let mut best: Option<(&str, &str)> = None;
+    for (key, value) in rules {
+        let Some(id) = value.as_str() else { continue };
+        let k = key.to_lowercase();
+        if (host == k || host.ends_with(&format!(".{k}")))
+            && best.is_none_or(|(bk, _)| k.len() > bk.len())
+        {
+            best = Some((key.as_str(), id));
+        }
+    }
+    best.map(|(_, id)| id.to_string())
+}
+
 /// Known-graphical editors that wait for their window to close ("-w"
 /// style). Anything else is assumed terminal-bound.
 fn editor_is_graphical(editor: &str) -> bool {
@@ -671,7 +695,20 @@ impl BrowserWindow {
         // a predictable default app_id so one WM rule can opt it out
         // (niri: `match app-id="hwatu-background"` + `open-focused
         // false`; Hyprland: `windowrule = noinitialfocus, class:...`).
+        //
+        // Semantic app-ids (roadmap H30): with no explicit app_id, a
+        // profiled window gets `hwatu.<profile>` and a URL matching an
+        // `"app_ids": {"<host-suffix>": "<id>"}` config rule gets that
+        // id — so niri window rules do auto-placement, floating, and
+        // workspace pinning without hwatu growing its own rule engine.
         let app_id = app_id
+            .or_else(|| {
+                profile
+                    .as_deref()
+                    .filter(|p| !p.is_empty())
+                    .map(|p| format!("hwatu.{p}"))
+            })
+            .or_else(|| url.as_deref().and_then(site_app_id))
             .or_else(|| (mode == OpenMode::Background).then(|| "hwatu-background".to_string()));
         let webview = match profile.as_deref().filter(|p| !p.is_empty()) {
             Some(name) => {

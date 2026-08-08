@@ -559,6 +559,91 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
         })),
         Request::Console { id, clear, limit } => automation::console(daemon, id, clear, limit),
         Request::Net { id, clear, limit } => automation::net(daemon, id, clear, limit),
+        Request::Jump { query, open } => {
+            // Fuzzy jump (roadmap H29): open windows first, then
+            // history. Window scoring reuses the history matcher's
+            // spirit: substring on url/title, host-prefix boost.
+            let q = query.to_lowercase();
+            let best_window = {
+                let windows = daemon.windows.borrow();
+                let mut best: Option<(u64, i32)> = None;
+                for w in windows.values() {
+                    let info = w.info();
+                    // Headless windows belong to agents; jumping into
+                    // one would materialize an agent's workspace.
+                    if info.mode == hwatu_ipc::OpenMode::Headless {
+                        continue;
+                    }
+                    let url = info.url.to_lowercase();
+                    let title = info.title.to_lowercase();
+                    let host = url
+                        .strip_prefix("https://")
+                        .or_else(|| url.strip_prefix("http://"))
+                        .unwrap_or(&url)
+                        .trim_start_matches("www.");
+                    let score = if host.starts_with(&q) {
+                        3
+                    } else if url.contains(&q) || title.contains(&q) {
+                        1
+                    } else {
+                        continue;
+                    };
+                    if best.is_none_or(|(_, s)| score > s) {
+                        best = Some((info.id, score));
+                    }
+                }
+                best
+            };
+            if let Some((id, _)) = best_window {
+                if crate::compositor::display_free() {
+                    reply(Response::err(
+                        "no display: hwatud is running display-free; cannot focus".to_string(),
+                    ));
+                    return;
+                }
+                let win = daemon.windows.borrow().get(&id).cloned();
+                if let Some(win) = win {
+                    win.present();
+                    daemon.last_target.replace(Some(id));
+                    reply(Response::value(serde_json::json!({
+                        "jump": "focused",
+                        "id": id,
+                    })));
+                    return;
+                }
+            }
+            // No live window: fall back to history.
+            let hits = daemon.history.complete(&query, 1);
+            match hits.into_iter().next() {
+                Some(hit) if open => {
+                    let info = BrowserWindow::open(
+                        daemon,
+                        Some(hit.url.clone()),
+                        None,
+                        hwatu_ipc::OpenMode::Normal,
+                    );
+                    daemon.last_target.replace(Some(info.id));
+                    reply(Response::value(serde_json::json!({
+                        "jump": "opened",
+                        "id": info.id,
+                        "url": hit.url,
+                    })));
+                }
+                Some(hit) => {
+                    reply(Response::value(serde_json::json!({
+                        "jump": "match",
+                        "url": hit.url,
+                        "title": hit.title,
+                    })));
+                }
+                None => {
+                    reply(Response::err(format!(
+                        "no window or history match for {query:?}"
+                    )));
+                }
+            }
+            return;
+        }
         Request::Handoff { id, reason, now } => {
             let Some(win) = daemon.windows.borrow().get(&id).cloned() else {
                 reply(Response::err(format!("no window {id}")));

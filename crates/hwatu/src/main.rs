@@ -1088,6 +1088,17 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
         Some("handoffs") => Ok(Request::Handoffs {
             take: rest.get(1).and_then(|s| s.parse().ok()),
         }),
+        Some("jump") => {
+            let query = rest[1..]
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            if query.is_empty() {
+                return Err("usage: hwatu jump <query>".into());
+            }
+            Ok(Request::Jump { query, open: true })
+        }
         Some("focus") => {
             let id = rest
                 .get(1)
@@ -1189,6 +1200,7 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--profile <name|auto>] [--bac
 | history [<query>] [--limit <n>] [--clear] \
 | clear-site-data [<host>] \
 | handoff <id> --reason <text> [--now] | handoffs [<id>] \
+| jump <query> \
 | expect [--id <id>] <selector> [--contains <filter>] [--text <substring>] [--absent] [--visible] [--nth <n>] [--timeout-ms <ms>] [--watch] \
 	| click [--id <id>] [--trusted] (<selector> [nth] [--contains <text>] | --ref <n>) \
 	| type [--id <id>] [--trusted] (<selector> | --ref <n>) <text> [--enter] [--no-clear] \

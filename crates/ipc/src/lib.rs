@@ -617,6 +617,17 @@ pub enum Request {
         #[serde(default)]
         take: Option<u64>,
     },
+    /// Fuzzy jump (roadmap H29): match `query` against open windows
+    /// (url + title) first, then visit history. Focuses the best
+    /// window match; with `open` (default true), a history-only match
+    /// opens a new window on it. Replies with what it did. The
+    /// "Spotlight for the web" verb — bind `hwatu jump` in the WM.
+    Jump {
+        query: String,
+        /// Open a window for history-only matches (default true).
+        #[serde(default = "default_true")]
+        open: bool,
+    },
 }
 
 /// Maximum number of actions in one [`Request::Batch`]. This bounds daemon
@@ -663,6 +674,7 @@ impl Request {
             Request::ClearSiteData { .. } => "clear_site_data",
             Request::Handoff { .. } => "handoff",
             Request::Handoffs { .. } => "handoffs",
+            Request::Jump { .. } => "jump",
         }
     }
 
