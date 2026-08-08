@@ -191,6 +191,81 @@ audio (WM focus loss never pauses playback), and the compositing path
 is measured solid (142.9fps). No crossfade will be added — native
 does not have one either.
 
+### D4: niri-native integration (the WM is the browser chrome)
+
+Adopted 2026-08-08. Thesis: what makes macOS-Safari feel native is the
+browser treating the OS as its UI toolkit. The tiling-WM equivalent is
+treating compositor IPC (niri first, since it has the richest IPC),
+XDG portals, and desktop services as first-class surfaces. Nobody else
+can do "the WM is the tab manager" well because no other browser
+speaks niri IPC. Phone-connectivity features (Handoff analogs, KDE
+Connect push) were considered and rejected: out of scope, no
+constituency here.
+
+#### Niri IPC as the tab model
+
+H28. **Columns as tab groups.** "Open link in stack" places the new
+    window in the current niri column (niri's tabbed column display
+    renders it as a tab). Safari tab groups, except the groups are
+    real WM objects the user already knows how to manipulate.
+    Background-open = spawn in the column to the right, unfocused,
+    via `niri msg action`.
+H29. **`hwatu jump <query>`.** Fuzzy match over open windows + global
+    history (H9), then `niri msg action focus-window` to the winner
+    or a new window on a miss. Bindable from niri config, so any app
+    is one chord from "Spotlight for the web".
+H30. **Semantic app-ids.** Per-profile and per-site app_id
+    (`hwatu.work`, `hwatu.youtube`) so niri window rules do
+    auto-placement, floating, workspace pinning, and opacity without
+    hwatu growing its own rule engine. Profiles (separate cookie
+    stores) fall out of the same mechanism.
+H31. **Workspace-aware session restore.** Extends H19: restore
+    windows to *named* niri workspaces, and route deep links by rule
+    ("github.com/work-org opens on workspace work"). Uses the H30
+    identity conventions.
+
+#### Windows as system objects
+
+H32. **PiP as a niri float.** "Pop out video" spawns a small
+    always-on-float window (distinct app_id so a niri rule floats
+    it); the page keeps scrolling underneath. Reuses the shortform
+    verb machinery (H24) to find the active video.
+H33. **Quick Look for links.** "Peek" a hinted link (H10) in a
+    transient floating window: Esc dismisses, Enter promotes it to a
+    real tiled window. Cheap once H10 and H32's float plumbing exist.
+
+#### System-services analogs
+
+H34. **Reader mode.** Safari's signature feature: extraction JS
+    (readability-class) injected on demand, rendered with the user's
+    fonts and the H15 color scheme. Pairs with edit-in-$EDITOR (H18).
+H35. **libsecret as Keychain.** Store per-site credentials in
+    gnome-keyring/KWallet via libsecret as the zero-config tier
+    beneath H11's pass/KeePassXC/Bitwarden integration. Integrate,
+    never store our own — H11's principle unchanged; libsecret is
+    the system's store, not ours.
+H36. **Share sheet.** Current page or selection → palette "share"
+    submenu: mpv (H17), yt-dlp, wl-copy, wallabag, email, translate,
+    define. User-extensible via a `share.conf` of commands, same
+    format family as search.conf.
+
+#### Polish that reads as native
+
+H37. **Theme continuity.** Follow the XDG portal color-scheme (and
+    darkman) for prefers-color-scheme, and read niri's focus-ring
+    color to tint the bar and hanafuda accent, so the browser looks
+    like part of the rig, not a guest on it.
+H38. **Touchpad gestures.** Two-finger horizontal swipe = back /
+    forward with a rubber-band preview; pinch = zoom. The single
+    biggest contributor to Safari's laptop feel; the smoothwheel
+    infra already owns precise-delta events.
+H39. **Hotkey overlay parity.** A `Super+?`-style cheatsheet overlay
+    matching niri's own hotkey overlay in look and dismissal, so
+    muscle memory transfers between compositor and browser.
+H40. **Battery-aware mode.** Safari's efficiency pitch, translated:
+    on battery (upower D-Bus), tighten discard thresholds (H27),
+    drop reelwarm prefetch (H22), and cap shortform framerate.
+
 ### Engine-bound gaps (documented honestly, not planned)
 
 - **Widevine/DRM:** WebKitGTK has ClearKey only; no distro ships
