@@ -16,6 +16,15 @@ content-extension engine, zero JS in the request path), sane
 downloads, crash-restore sessions, TLS and permission prompts as
 one-line y/n bar prompts.
 
+Daily-driver basics all work: file uploads (`<input type=file>` opens
+a file dialog), printing (Ctrl+P, print-to-PDF included), PDF viewing
+(built-in pdf.js), spell check (locale-derived, Enchant), web
+notifications (forwarded to your desktop's notification daemon;
+clicking one focuses the page's window), and WebRTC calls
+(Meet/Discord/Zoom-web — needs your distro's gst-plugins-bad and
+`"media_stream": true`, see [Configuration](#configuration)).
+Permission answers and per-site zoom persist across restarts.
+
 New windows open at half the monitor width, matching the middle
 stop of niri's default 1/3, 1/2, 2/3 preset-width cycle and a
 comfortable reading width on 1080p-class monitors. Prefer a different
@@ -49,6 +58,7 @@ rebindable in `~/.config/hwatu/keys.conf`, one
 | `close` | `ctrl+w`, `ctrl+q` | close window |
 | `fullscreen` | `F11` | toggle fullscreen |
 | `mute` | `m` (bare key) | toggle page audio, preference sticks across videos on the page |
+| `print` | `ctrl+p` | print the page (system dialog; print-to-PDF included) |
 | `command_palette` | `ctrl+k`, `ctrl+shift+p` | fuzzy action search in the bar |
 
 Bare-key chords like `m` dispatch after the page declines the key, so
@@ -117,8 +127,29 @@ hwatu quit                 # stop the daemon
     but vanishes on daemon restart.
   - `"preferred_width": 0.25`: initial window width as a fraction of
     the monitor width, between 0 and 1. Default is one half.
+  - `"media_stream": true`: enable getUserMedia + WebRTC (mic, cam,
+    calls). Off by default because a WebKitGTK+pipewire device-probe
+    wedge lets fingerprinting SDKs freeze pages; turn it on if you
+    take calls in hwatu. `HWATU_MEDIA_STREAM=1` is the one-run env
+    equivalent.
+  - `"spell_check": false` disables spell check;
+    `"spell_check_languages": ["en_US", "de_DE"]` overrides the
+    locale-derived language list (install matching hunspell
+    dictionaries).
+- `~/.local/share/hwatud/site.json`: per-site memory (permission
+  answers, zoom levels). Delete it (or an entry) to be re-asked;
+  never written in ephemeral-profile mode.
 - Env-only gates, read at window creation: `HWATU_FOCUS_SHIELD=0`,
   `HWATU_BLUR_SHIELD=0`, `HWATU_DISABLE_MEDIA=1`.
+
+### Calls and video notes
+
+- WebRTC needs GStreamer's "bad" plugin set at runtime:
+  `gst-plugins-bad` (Arch) / `gstreamer1.0-plugins-bad` (Debian).
+- Hardware video decode (battery + shortform smoothness) arrives with
+  the same package's `va` plugin plus your GPU's VA-API driver
+  (`intel-media-driver` / `libva-mesa-driver`). `hwatu doctor`
+  reports whether it is active.
 
 ## Tiling WM setup
 
