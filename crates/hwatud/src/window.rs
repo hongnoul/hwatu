@@ -197,6 +197,23 @@ fn preferred_width(viewport_width: i32, ratio: f64) -> i32 {
     ((viewport_width as f64) * ratio).floor().max(1.0) as i32
 }
 
+/// Known-graphical editors that wait for their window to close ("-w"
+/// style). Anything else is assumed terminal-bound.
+fn editor_is_graphical(editor: &str) -> bool {
+    let bin = editor.split_whitespace().next().unwrap_or(editor);
+    let bin = bin.rsplit('/').next().unwrap_or(bin);
+    matches!(
+        bin,
+        "code" | "codium" | "subl" | "gedit" | "kate" | "zeditor" | "zed"
+    )
+}
+
+/// Is `bin` on PATH?
+fn which_exists(bin: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(bin).is_file()))
+}
+
 /// Interpret only the keys owned by a confirmation prompt. Everything else
 /// must keep propagating to the page, otherwise a prompt appearing while the
 /// user types into a form can silently eat characters.
@@ -1074,6 +1091,17 @@ impl BrowserWindow {
                     let level = this.daemon.site_store.zoom(&host).unwrap_or(1.0);
                     if (wv.zoom_level() - level).abs() > 0.001 {
                         wv.set_zoom_level(level);
+                    }
+                    // Forced dark mode (roadmap H15): re-apply the
+                    // per-site/global preference on the new document.
+                    if crate::darkmode::should_darken(&this.daemon.site_store, &host) {
+                        wv.evaluate_javascript(
+                            &crate::darkmode::apply_js(true),
+                            None,
+                            None,
+                            gtk::gio::Cancellable::NONE,
+                            |_| {},
+                        );
                     }
                     // Global history (roadmap H9): record user
                     // navigations. Headless windows belong to agent
@@ -2011,6 +2039,9 @@ impl BrowserWindow {
             Action::HintNewWindow => self.start_hints("newwin"),
             Action::HintYank => self.start_hints("yank"),
             Action::FillPassword => self.fill_password(),
+            Action::DarkMode => self.toggle_dark_mode(),
+            Action::OpenMpv => self.open_mpv(),
+            Action::EditInEditor => self.edit_in_editor(),
             Action::CommandPalette => self.open_palette(),
         }
         glib::Propagation::Stop
@@ -2201,6 +2232,215 @@ impl BrowserWindow {
                         this.flash_bar("no hints on this page", 1);
                     }
                 }
+            },
+        );
+    }
+
+    /// Toggle forced dark mode for the current site (roadmap H15).
+    /// The new state persists per host on the site store and re-applies
+    /// on every future navigation to it.
+    fn toggle_dark_mode(self: &Rc<Self>) {
+        let Some(webview) = self.live_webview() else {
+            return;
+        };
+        let host = prompts::host_of(&webview.uri().unwrap_or_default());
+        if host.is_empty() || host.starts_with("hwatu") {
+            self.flash_bar("no site to darken", 2);
+            return;
+        }
+        let on = !crate::darkmode::should_darken(&self.daemon.site_store, &host);
+        self.daemon.site_store.set_dark_mode(&host, on);
+        let this = self.clone();
+        webview.evaluate_javascript(
+            &crate::darkmode::apply_js(on),
+            None,
+            None,
+            gtk::gio::Cancellable::NONE,
+            move |_| {
+                this.flash_bar(
+                    if on {
+                        "dark mode on (this site)"
+                    } else {
+                        "dark mode off (this site)"
+                    },
+                    2,
+                );
+            },
+        );
+    }
+
+    /// Hand the current page URL to mpv (roadmap H17): the loved
+    /// mitigation for engine video gaps (DRM, codec walls). Detached
+    /// spawn; mpv owns its own lifecycle.
+    fn open_mpv(self: &Rc<Self>) {
+        let Some(webview) = self.live_webview() else {
+            return;
+        };
+        let Some(url) = webview.uri().filter(|u| u.starts_with("http")) else {
+            self.flash_bar("no page URL for mpv", 2);
+            return;
+        };
+        match std::process::Command::new("mpv")
+            .arg(url.as_str())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(_) => self.flash_bar("handed to mpv", 2),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                self.flash_bar("mpv not installed", 4);
+            }
+            Err(e) => {
+                eprintln!("hwatud: mpv spawn failed: {e}");
+                self.flash_bar("mpv failed to start", 4);
+            }
+        }
+    }
+
+    /// Edit the focused text field in $EDITOR (roadmap H18): dump the
+    /// field's value to a temp file, open $EDITOR (terminal editors
+    /// get a terminal via $TERMINAL/foot/alacritty/kitty), and paste
+    /// the saved contents back with framework-safe value setting.
+    /// The watcher polls the file's mtime; closing the editor without
+    /// saving changes nothing.
+    fn edit_in_editor(self: &Rc<Self>) {
+        let Some(webview) = self.live_webview() else {
+            return;
+        };
+        // 1. Read the focused editable's value (fail open when the
+        // focus isn't editable).
+        let this = self.clone();
+        webview.evaluate_javascript(
+            r#"(() => {
+  const el = document.activeElement;
+  if (!el) return null;
+  if (el.matches('textarea, input[type=text], input[type=search], input:not([type])'))
+    return el.value;
+  if (el.isContentEditable) return el.innerText;
+  return null;
+})()"#,
+            None,
+            None,
+            gtk::gio::Cancellable::NONE,
+            move |result| {
+                let Ok(value) = result else { return };
+                if value.is_null() {
+                    this.flash_bar("focus a text field first", 2);
+                    return;
+                }
+                let text = value.to_str().to_string();
+                this.spawn_editor(text);
+            },
+        );
+    }
+
+    /// Phase 2 of [`Self::edit_in_editor`]: editor round-trip.
+    fn spawn_editor(self: &Rc<Self>, initial: String) {
+        let path =
+            std::env::temp_dir().join(format!("hwatu-edit-{}-{}.txt", std::process::id(), self.id));
+        if std::fs::write(&path, &initial).is_err() {
+            self.flash_bar("cannot write temp file", 4);
+            return;
+        }
+        let editor = std::env::var("VISUAL")
+            .or_else(|_| std::env::var("EDITOR"))
+            .unwrap_or_else(|_| "vi".to_string());
+        // Terminal editors need a terminal. GUI editors ($VISUAL set
+        // to e.g. "code -w") mostly cope with being spawned directly.
+        let mut cmd = if editor_is_graphical(&editor) {
+            let mut parts = editor.split_whitespace();
+            let mut cmd = std::process::Command::new(parts.next().unwrap_or("vi"));
+            cmd.args(parts);
+            cmd.arg(&path);
+            cmd
+        } else {
+            let terminal = std::env::var("TERMINAL").ok().or_else(|| {
+                ["foot", "alacritty", "kitty", "wezterm"]
+                    .iter()
+                    .find(|t| which_exists(t))
+                    .map(|t| t.to_string())
+            });
+            let Some(terminal) = terminal else {
+                self.flash_bar("no terminal for $EDITOR (set $TERMINAL)", 4);
+                return;
+            };
+            let mut cmd = std::process::Command::new(terminal);
+            cmd.arg("-e");
+            let mut parts = editor.split_whitespace();
+            if let Some(bin) = parts.next() {
+                cmd.arg(bin);
+                cmd.args(parts);
+            }
+            cmd.arg(&path);
+            cmd
+        };
+        let mut child = match cmd.spawn() {
+            Ok(child) => child,
+            Err(e) => {
+                eprintln!("hwatud: editor spawn failed: {e}");
+                self.flash_bar("editor failed to start", 4);
+                let _ = std::fs::remove_file(&path);
+                return;
+            }
+        };
+        self.flash_bar("editing… save + close to paste back", 3);
+        // Poll for editor exit on the GTK loop (no blocking wait).
+        let this = self.clone();
+        glib::timeout_add_local(std::time::Duration::from_millis(300), move || {
+            match child.try_wait() {
+                Ok(None) => glib::ControlFlow::Continue,
+                Ok(Some(status)) => {
+                    let text = std::fs::read_to_string(&path).unwrap_or_default();
+                    let _ = std::fs::remove_file(&path);
+                    if status.success() {
+                        this.paste_into_focused(&text);
+                    } else {
+                        this.flash_bar("editor exited nonzero; not pasted", 3);
+                    }
+                    glib::ControlFlow::Break
+                }
+                Err(_) => {
+                    let _ = std::fs::remove_file(&path);
+                    glib::ControlFlow::Break
+                }
+            }
+        });
+    }
+
+    /// Write `text` into the currently focused editable, framework-safe.
+    fn paste_into_focused(self: &Rc<Self>, text: &str) {
+        let Some(webview) = self.live_webview() else {
+            return;
+        };
+        let payload = serde_json::to_string(text).unwrap_or_else(|_| "\"\"".into());
+        let js = format!(
+            r#"(() => {{
+  const TEXT = {payload};
+  const el = document.activeElement;
+  if (!el) return 'no focus';
+  if (el.isContentEditable) {{ el.innerText = TEXT; return 'pasted'; }}
+  if (!el.matches('textarea, input')) return 'not editable';
+  const proto = Object.getPrototypeOf(el);
+  const desc = Object.getOwnPropertyDescriptor(proto, 'value')
+    || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+  if (desc && desc.set) desc.set.call(el, TEXT); else el.value = TEXT;
+  el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+  el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+  return 'pasted';
+}})()"#
+        );
+        let this = self.clone();
+        webview.evaluate_javascript(
+            &js,
+            None,
+            None,
+            gtk::gio::Cancellable::NONE,
+            move |result| {
+                let msg = match result {
+                    Ok(v) if v.is_string() => v.to_str().to_string(),
+                    _ => "paste failed".to_string(),
+                };
+                this.flash_bar(&msg, 2);
             },
         );
     }

@@ -27,6 +27,10 @@ struct Data {
     /// stored; resetting to 100% removes the entry.
     #[serde(default)]
     zoom: HashMap<String, f64>,
+    /// host -> forced-dark-mode override (roadmap H15). Absent means
+    /// "follow the global `dark_mode` config default".
+    #[serde(default)]
+    dark: HashMap<String, bool>,
 }
 
 /// Daemon-wide store, shared by all windows. Single-threaded (GTK
@@ -99,6 +103,20 @@ impl SiteStore {
 
     pub fn zoom(&self, host: &str) -> Option<f64> {
         self.data.borrow().zoom.get(host).copied()
+    }
+
+    /// Per-site forced-dark override (roadmap H15). None = follow the
+    /// global default.
+    pub fn dark_mode(&self, host: &str) -> Option<bool> {
+        self.data.borrow().dark.get(host).copied()
+    }
+
+    pub fn set_dark_mode(&self, host: &str, on: bool) {
+        if host.is_empty() {
+            return;
+        }
+        self.data.borrow_mut().dark.insert(host.to_string(), on);
+        self.save();
     }
 
     /// Remember a zoom level; 100% (within rounding) clears the entry

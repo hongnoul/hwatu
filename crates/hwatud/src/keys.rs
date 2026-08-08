@@ -66,6 +66,12 @@ pub enum Action {
     HintYank,
     /// Fill login credentials from the system password manager.
     FillPassword,
+    /// Toggle forced dark mode for the current site.
+    DarkMode,
+    /// Hand the current page's URL to mpv (video escape hatch).
+    OpenMpv,
+    /// Edit the focused text field in $EDITOR, paste back on save.
+    EditInEditor,
     /// Open the command palette (fuzzy action search in the bar).
     CommandPalette,
 }
@@ -98,6 +104,9 @@ impl Action {
         Action::HintNewWindow,
         Action::HintYank,
         Action::FillPassword,
+        Action::DarkMode,
+        Action::OpenMpv,
+        Action::EditInEditor,
         Action::CommandPalette,
     ];
 
@@ -129,6 +138,9 @@ impl Action {
             Action::HintNewWindow => "hint_new_window",
             Action::HintYank => "hint_yank",
             Action::FillPassword => "fill_password",
+            Action::DarkMode => "dark_mode",
+            Action::OpenMpv => "open_mpv",
+            Action::EditInEditor => "edit_in_editor",
             Action::CommandPalette => "command_palette",
         }
     }
@@ -162,6 +174,9 @@ impl Action {
             Action::HintNewWindow => "link hints: open in new window",
             Action::HintYank => "link hints: copy link URL",
             Action::FillPassword => "fill login from password manager",
+            Action::DarkMode => "toggle forced dark mode (per site)",
+            Action::OpenMpv => "open current page in mpv",
+            Action::EditInEditor => "edit focused text field in $EDITOR",
             Action::CommandPalette => "command palette",
         }
     }
@@ -209,6 +224,9 @@ impl Action {
             Action::HintNewWindow => "F",
             Action::HintYank => "ctrl+shift+y",
             Action::FillPassword => "alt+p",
+            Action::DarkMode => "ctrl+shift+d",
+            Action::OpenMpv => "ctrl+shift+m",
+            Action::EditInEditor => "ctrl+e",
             // ctrl+shift+p mirrors VS Code; ctrl+k is unclaimed in
             // browsers and one chord shorter for daily use.
             Action::CommandPalette => "ctrl+k, ctrl+shift+p",

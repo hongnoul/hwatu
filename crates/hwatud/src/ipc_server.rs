@@ -115,6 +115,122 @@ fn read_next_request(conn: gio::SocketConnection, input: gio::DataInputStream, d
     );
 }
 
+/// Clear stored site data (roadmap H16). WebKit's clear() is
+/// type-based and whole-store; per-host removal fetches matching
+/// WebsiteData records first. Site-store decisions and (on full
+/// clears) history go with it: "clear everything about this site"
+/// must mean everything hwatu remembers, not just cookies.
+fn clear_site_data(daemon: &Rc<Daemon>, host: Option<String>, reply: automation::Reply) {
+    let Some(session) =
+        webkit6::NetworkSession::default().or_else(|| daemon.network_session.clone())
+    else {
+        reply(Response::err("no network session".to_string()));
+        return;
+    };
+    let Some(manager) = session.website_data_manager() else {
+        reply(Response::err("no website data manager".to_string()));
+        return;
+    };
+    let types = webkit6::WebsiteDataTypes::all();
+    // hwatu-side memory first (synchronous, always succeeds).
+    let decisions = daemon.site_store.clear_permissions(host.as_deref());
+    let history = if host.is_none() {
+        daemon.history.clear()
+    } else {
+        0
+    };
+
+    // WebKit's clear/remove callbacks demand Send, but Reply is a
+    // main-thread closure. The callbacks do run on this same GLib
+    // main context; bridge the result through a channel and poll it
+    // locally so the non-Send reply never crosses the bound.
+    let (tx, rx) = std::sync::mpsc::channel::<Result<serde_json::Value, String>>();
+    glib::timeout_add_local(std::time::Duration::from_millis(25), {
+        let mut reply = Some(reply);
+        move || match rx.try_recv() {
+            Ok(result) => {
+                if let Some(reply) = reply.take() {
+                    match result {
+                        Ok(value) => reply(Response::value(value)),
+                        Err(message) => reply(Response::err(message)),
+                    }
+                }
+                glib::ControlFlow::Break
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                if let Some(reply) = reply.take() {
+                    reply(Response::err("clear-site-data lost its result".to_string()));
+                }
+                glib::ControlFlow::Break
+            }
+        }
+    });
+
+    match host {
+        None => {
+            manager.clear(
+                types,
+                glib::TimeSpan::from_seconds(0),
+                gtk::gio::Cancellable::NONE,
+                move |result| {
+                    let _ = tx.send(match result {
+                        Ok(()) => Ok(serde_json::json!({
+                            "cleared": "all",
+                            "decisions_dropped": decisions,
+                            "history_dropped": history,
+                        })),
+                        Err(e) => Err(format!("clear failed: {e}")),
+                    });
+                },
+            );
+        }
+        Some(host) => {
+            // Fetch, filter by registrable-domain match, remove.
+            let manager2 = manager.clone();
+            manager.fetch(types, gtk::gio::Cancellable::NONE, move |result| {
+                let records = match result {
+                    Ok(records) => records,
+                    Err(e) => {
+                        let _ = tx.send(Err(format!("fetch failed: {e}")));
+                        return;
+                    }
+                };
+                let bare = host.strip_prefix("www.").unwrap_or(&host).to_string();
+                let matching: Vec<webkit6::WebsiteData> = records
+                    .into_iter()
+                    .filter(|record| {
+                        record.name().is_some_and(|name| {
+                            let name = name.to_lowercase();
+                            name == bare || name == host || name.ends_with(&format!(".{bare}"))
+                        })
+                    })
+                    .collect();
+                if matching.is_empty() {
+                    let _ = tx.send(Ok(serde_json::json!({
+                        "cleared": 0,
+                        "host": host,
+                        "decisions_dropped": decisions,
+                    })));
+                    return;
+                }
+                let count = matching.len();
+                let refs: Vec<&webkit6::WebsiteData> = matching.iter().collect();
+                manager2.remove(types, &refs, gtk::gio::Cancellable::NONE, move |result| {
+                    let _ = tx.send(match result {
+                        Ok(()) => Ok(serde_json::json!({
+                            "cleared": count,
+                            "host": host,
+                            "decisions_dropped": decisions,
+                        })),
+                        Err(e) => Err(format!("remove failed: {e}")),
+                    });
+                });
+            });
+        }
+    }
+}
+
 /// Route one request. Most commands answer synchronously; the
 /// automation commands (eval/navigate/screenshot/wait_load) complete
 /// later on the main loop and consume `reply` when they finish.
@@ -194,6 +310,9 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
         }
         Request::Prefetch { url } => {
             return automation::prefetch(daemon, url, reply);
+        }
+        Request::ClearSiteData { host } => {
+            return clear_site_data(daemon, host, reply);
         }
         Request::Challenge {
             id,
@@ -455,9 +574,21 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
         Request::Quit => {
             // Reply first, then exit from an idle callback so the response
             // actually reaches the client before the process dies.
-            glib::timeout_add_local_once(std::time::Duration::from_millis(50), || {
-                // Clean quit: do not resurrect these windows next start.
-                crate::session::clear();
+            let daemon = daemon.clone();
+            glib::timeout_add_local_once(std::time::Duration::from_millis(50), move || {
+                // Clean quit: default is no resurrection next start.
+                // `"restore_session": true` (roadmap H19) opts into
+                // restoring even after intentional exits — the WM-
+                // workspace crowd treats the browser session as
+                // durable state, not a per-run artifact.
+                let restore_on_quit = crate::window::config_value("restore_session")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if restore_on_quit {
+                    daemon.save_session_now();
+                } else {
+                    crate::session::clear();
+                }
                 let _ = std::fs::remove_file(hwatu_ipc::socket_path());
                 std::process::exit(0);
             });
@@ -482,6 +613,7 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
         | Request::Clock { .. }
         | Request::Diff { .. }
         | Request::Resize { .. }
+        | Request::ClearSiteData { .. }
         | Request::Expect { .. } => Response::err("internal: async request in sync path"),
         // Handled above; reaching here means an internal misroute.
         Request::Batch { .. } => Response::err("internal: batch in sync path"),

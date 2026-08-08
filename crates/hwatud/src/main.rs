@@ -15,6 +15,7 @@ mod blurshield;
 mod clock;
 mod compositor;
 mod console;
+mod darkmode;
 mod downloads;
 mod events;
 mod external;

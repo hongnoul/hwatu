@@ -571,6 +571,15 @@ pub enum Request {
         #[serde(default)]
         clear: bool,
     },
+    /// Clear stored site data (roadmap H16): cookies, local/session
+    /// storage, IndexedDB, caches. With `host`, only entries whose
+    /// registrable domain matches; without, everything. Also drops
+    /// matching per-site decisions (permissions, zoom, dark mode) and,
+    /// on a full clear, visit history.
+    ClearSiteData {
+        #[serde(default)]
+        host: Option<String>,
+    },
 }
 
 /// Maximum number of actions in one [`Request::Batch`]. This bounds daemon
@@ -614,6 +623,7 @@ impl Request {
             Request::Batch { .. } => "batch",
             Request::Subscribe { .. } => "subscribe",
             Request::History { .. } => "history",
+            Request::ClearSiteData { .. } => "clear_site_data",
         }
     }
 
