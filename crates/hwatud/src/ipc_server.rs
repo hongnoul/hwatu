@@ -123,6 +123,58 @@ fn unix_now() -> u64 {
         .unwrap_or(0)
 }
 
+// ---- client fairness (platform item 6b) ------------------------------
+//
+// Cheap bulkheads before parallel-agent use gets heavy: one runaway
+// agent must not starve the daemon. Two bounds, both answering
+// structured errors instead of silently queueing:
+//
+// - window quota: `Open` requests beyond HWATU_MAX_WINDOWS (default
+//   64) are refused. Windows are the expensive resource (a web
+//   process each); checks/prefetches are already pool-capped.
+// - request rate: a global token bucket (HWATU_MAX_RPS sustained,
+//   default 200/s, burst 2x) across all connections. Generous enough
+//   that no legitimate workload notices; a tight fire loop hits it.
+
+thread_local! {
+    static RATE: std::cell::RefCell<(f64, std::time::Instant)> =
+        std::cell::RefCell::new((max_rps() * 2.0, std::time::Instant::now()));
+}
+
+fn max_windows() -> usize {
+    std::env::var("HWATU_MAX_WINDOWS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|n: &usize| *n > 0)
+        .unwrap_or(64)
+}
+
+fn max_rps() -> f64 {
+    std::env::var("HWATU_MAX_RPS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|n: &f64| *n > 0.0)
+        .unwrap_or(200.0)
+}
+
+/// Take one token; false = over the rate bound.
+fn rate_admit() -> bool {
+    RATE.with(|cell| {
+        let (ref mut tokens, ref mut last) = *cell.borrow_mut();
+        let rps = max_rps();
+        let cap = rps * 2.0;
+        let now = std::time::Instant::now();
+        *tokens = (*tokens + now.duration_since(*last).as_secs_f64() * rps).min(cap);
+        *last = now;
+        if *tokens >= 1.0 {
+            *tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    })
+}
+
 /// Clear stored site data (roadmap H16). WebKit's clear() is
 /// type-based and whole-store; per-host removal fetches matching
 /// WebsiteData records first. Site-store decisions and (on full
@@ -248,6 +300,32 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
             "eval disabled by daemon policy (--no-eval)".to_string(),
         ));
         return;
+    }
+
+    // Client fairness (platform item 6b): rate bulkhead first — a
+    // structured "over rate" error, never silent queueing. Ping is
+    // exempt so health checks and stale-daemon detection always work.
+    if !matches!(req, Request::Ping) && !rate_admit() {
+        reply(Response::err(format!(
+            "over rate: daemon-wide request budget exceeded ({}/s sustained); \
+             back off and retry (HWATU_MAX_RPS overrides)",
+            max_rps()
+        )));
+        return;
+    }
+    // Window quota: Open is the request that allocates the expensive
+    // resource. Check/render use the pooled headless windows and stay
+    // bounded by their own caps.
+    if matches!(req, Request::Open { .. }) {
+        let open = daemon.windows.borrow().len();
+        let cap = max_windows();
+        if open >= cap {
+            reply(Response::err(format!(
+                "over quota: {open} windows open (cap {cap}); close some or \
+                 raise HWATU_MAX_WINDOWS"
+            )));
+            return;
+        }
     }
 
     let req = match req {
