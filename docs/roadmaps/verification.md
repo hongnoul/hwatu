@@ -139,6 +139,18 @@ worth native features; the rest stay non-goals.
 
 ### P3: context hygiene (snapshot output as a budgeted resource)
 
+**Shipped 2026-08-08** (both items; live checks in
+`scripts/test-snapshot-budget.sh`). Item 12 as `snapshot --budget
+<chars>` (snapbudget.rs): coarse-to-fine degradation — text halves
+to a 200-char floor, interactable fields shorten, entries cap at 30
+with an omission marker, final tier is per-tag landmark counts —
+with surviving refs keeping their original numbers. Measured:
+10807-char full snapshot → 2917 under a 4000 budget. Item 13 as an
+instruction-shape tripwire on every snapshot: matching lines move
+from `text` into a labeled `suspect` array with a note naming the
+heuristic. Honest about being heuristic — a tripwire, not a
+guarantee.
+
 Snapshot text goes straight into agent context, so its size and its
 trustworthiness are product surfaces:
 

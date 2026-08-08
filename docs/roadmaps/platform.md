@@ -23,13 +23,27 @@ between products and do not make verification depend on the browser shell.
 
 ## Concurrency and isolation
 
-6. **Profiles.** `--profile <name>`: separate cookie jars/site data
+6. **Profiles.** **Shipped 2026-08-08:** `--profile <name>` /
+   `HWATU_PROFILE` give windows isolated WebKit NetworkSessions (own
+   cookie jar + site data under `profiles/<name>/`), lazily created,
+   persistent, memory-only under ephemeral daemons. `auto` derives a
+   stable per-worktree name from the git toplevel, so N agents in N
+   worktrees isolate with zero flags. `scripts/test-profiles.sh`
+   covers sharing/isolation both ways and the on-disk layout.
+   Original scope:
+   `--profile <name>`: separate cookie jars/site data
    per profile, so parallel agents (or one agent testing two accounts)
    don't share sessions. One daemon, N isolated headless sessions.
    Extension for parallel-agent infra: derive the default profile
    from the caller's git worktree (hash of the repo root), so N
    agents in N worktrees get isolation with zero flags.
-6b. **Client fairness.** One runaway agent must not starve the
+6b. **Client fairness.** **Shipped 2026-08-08:** window quota
+   (HWATU_MAX_WINDOWS, default 64) refuses Open with a structured
+   over-quota error; a daemon-wide token bucket (HWATU_MAX_RPS,
+   default 200/s sustained, burst 2x) answers over-rate, with Ping
+   exempt so health checks always work. `scripts/test-fairness.sh`
+   measures refusals under tight limits and recovery after backoff.
+   Original scope: One runaway agent must not starve the
    daemon: per-client window quotas and a bounded per-connection
    request rate, with structured "over quota" errors instead of
    silent queueing. Cheap bulkheads before parallel-agent use gets
@@ -40,18 +54,26 @@ between products and do not make verification depend on the browser shell.
 
 ## Human hand-off
 
-10. **Generalized hand-off.** `challenge` already detects CAPTCHAs;
-   generalize the pattern: agent flags "needs human" with a reason,
-   the window materializes with the reason in the bar, the agent
-   awaits resolution. One command pair, any reason.
-11. **Hand-off queue.** The async half of item 10: `hwatu handoff
-   <id> --reason <text>` queues instead of materializing, `hwatu
-   handoffs` lists pending items with reasons, and the human drains
-   the queue on their own schedule (each entry promotes its window on
-   selection). Respects flow: an agent that needs a human at 14:02
-   should not steal focus at 14:02. Log queued-at/answered-at so the
-   cost of waiting on a human (and of interrupting one) is a measured
-   number, not a vibe.
+10. **Generalized hand-off.** **Shipped 2026-08-08** together with
+   item 11: `hwatu handoff <id> --reason <text> [--now]` — `--now`
+   materializes immediately with the reason in the bar (the
+   challenge pattern generalized to any reason).
+11. **Hand-off queue.** **Shipped 2026-08-08:** queueing is the
+   default (`hwatu handoff` without `--now`); `hwatu handoffs` lists
+   pending entries with measured waiting_secs; `hwatu handoffs <id>`
+   takes one (present + remove + log queued-at/answered-at, so the
+   cost of waiting on a human is a measured number). Takes validate
+   before consuming: a failed take (display-free) leaves the entry
+   queued. All transitions emit handoff events on the push-IPC
+   stream. `scripts/test-handoff.sh` covers queue/list/dedup/take
+   and the structured-error paths.
+   Original scope for both items: `challenge` already detects
+   CAPTCHAs; generalize the pattern: agent flags "needs human" with
+   a reason, the window materializes with the reason in the bar, the
+   agent awaits resolution. The async half: queue instead of
+   materializing, and the human drains the queue on their own
+   schedule. Respects flow: an agent that needs a human at 14:02
+   should not steal focus at 14:02.
 
 ## Push IPC
 
@@ -146,10 +168,11 @@ Test plan:
 
 ## Sequencing and gates
 
-As of 2026-08, push IPC and display-free operation are shipped. The remaining
-open platform sequence is profiles and client fairness, generalized hand-off
-and its queue, then zero-copy pixels. Independent items may proceed in parallel
-when they do not alter the same protocol or runtime boundary.
+As of 2026-08, push IPC, display-free operation, profiles, client
+fairness, and the generalized hand-off + queue are shipped. The one
+remaining open platform item is zero-copy pixels. Independent items
+may proceed in parallel when they do not alter the same protocol or
+runtime boundary.
 
 Every platform change must preserve old-client/new-daemon compatibility, run
 formatting, clippy, unit tests, and the relevant live-daemon script, and publish
