@@ -74,8 +74,10 @@ environments, and issues without a reproducer. Remove stale roadmap items that
 have no observed demand. Re-run published benchmarks when changes affect a
 performance claim.
 
-The positioning guardrail is: **browser-agnostic, measurable UI verification
-for autonomous coding agents**. Work that does not strengthen that promise or
-the human hand-off loop needs unusually strong evidence.
+The positioning guardrail remains **agent-first: browser-agnostic, measurable
+UI verification for autonomous coding agents**. Human-browser work qualifies
+when it strengthens the hand-off loop or removes a reproduced primary-browser
+abandonment blocker, and it must not weaken the agent path. Generic feature
+parity without that evidence remains out of scope.
 
 [use-report]: https://github.com/hongnoul/hwatu/issues/new?template=use-report.yml
