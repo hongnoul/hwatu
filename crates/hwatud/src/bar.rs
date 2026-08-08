@@ -193,6 +193,22 @@ impl Bar {
             .set_label(if rows.is_empty() { "no match" } else { "" });
     }
 
+    /// URL-mode history completions (roadmap H9): same row surface as
+    /// the palette, but an empty set hides the list (typing a fresh
+    /// URL with no history match is normal, not "no match") and
+    /// `selected=None` leaves every row unhighlighted (Enter then
+    /// navigates to the typed text, not a completion).
+    pub fn set_completions(&self, rows: &[(String, String)], selected: Option<usize>) {
+        if rows.is_empty() {
+            self.hide_list();
+            self.status.set_label("");
+            return;
+        }
+        self.set_palette_rows(rows, selected.unwrap_or(usize::MAX));
+        self.status.set_label("");
+        self.list.set_visible(true);
+    }
+
     /// Move the highlight without rebuilding rows.
     pub fn set_palette_selected(&self, selected: usize) {
         let mut child = self.list.first_child();

@@ -54,7 +54,11 @@
 //! (or, on the synthetic-swipe path, as the old reel's audio playing
 //! over the transition). Deliberately no crossfade: the native apps
 //! hard-cut audio at gesture commit too, and overlapping reel audio
-//! is universally perceived as a bug.
+//! is universally perceived as a bug. Because the commit-time pick is
+//! a mid-transition guess, a settle-time reconcile runs after each
+//! page: only the front-and-center video may keep playing, everything
+//! else is paused — a wrong guess otherwise leaked an off-screen
+//! reel's audio under the watched one indefinitely.
 //!
 //! Keyboard scrolling (Arrow/Page/Space) goes through the same
 //! animator, because WebKit's keydown scroll has the identical
@@ -90,6 +94,52 @@
 //! the handler is swallowed before `preventDefault`, so a bug degrades
 //! to engine-native scrolling, never to a dead wheel.
 //!
+//! Sensitivity: WebKitGTK synthesizes ~100px per discrete wheel notch
+//! while Chromium on Linux moves 120px (3 lines x 40px), so an
+//! otherwise identical curve still reads as "stiffer" — every click
+//! travels ~17% less. Discrete deltas are therefore scaled by
+//! `HWATU_WHEEL_SENSITIVITY` (default 1.2, matching Chromium) before
+//! entering the animator. Precise touchpad deltas are untouched: they
+//! are real hardware pixel values, not synthesized line steps.
+//!
+//! Hi-res wheels (Logitech MX Master and friends) report sub-notch
+//! motion: WebKitGTK hands the page non-integer pixel deltas that are
+//! all multiples of one hardware quantum (observed 6.8px = 1/15 of
+//! the 102px notch on an MX Master 4). `isDiscrete` misses most of
+//! them, but the multiples that happen to land on integers >= 24
+//! (34, 68, ...) it claims — one physical gesture split between the
+//! animator and the engine's instant path, two scrolling systems
+//! fighting over the same wheel, which reads as broken sensitivity.
+//! The quantized stream is detected by an approximate GCD over recent
+//! event magnitudes (touchpad deltas are continuous finger motion, so
+//! their GCD collapses toward zero) and claimed wholesale for the
+//! animator, scaled and glided exactly like classic discrete ticks.
+//!
+//! Sites in `nativeWheelSite` skip the non-passive wheel listener. A
+//! root listener makes WebKitGTK route touchpad gestures through the web
+//! process instead of its async scrolling thread even when the handler
+//! ultimately leaves precise deltas alone. Animation-heavy pages such as
+//! Baseten can then appear not to scroll at all. Keyboard enhancements
+//! remain installed; only wheel input returns to the engine-native path.
+//!
+//! Precise rescue: on some driver stacks (observed on NVIDIA+Wayland
+//! and Intel+NVIDIA hybrid laptops) that synchronous routing kills the
+//! engine's precise path outright — two-finger touchpad scrolling
+//! moves nothing anywhere while discrete wheel ticks (claimed by the
+//! animator) still work. The per-site skip list can't cover "every
+//! page on this GPU stack", so the handler self-heals: it watches
+//! unclaimed precise bursts, and when a burst has accumulated real
+//! travel and the target scroller provably hasn't moved a pixel by
+//! the deferred check, the page flips to rescue mode — precise deltas
+//! are claimed and drive the scroller directly (1:1 finger tracking,
+//! like the native path), with a short velocity fling on release
+//! through the same animator (the engine's kinetic scroll is as dead
+//! as its precise path). A healthy engine moves the scroller within a
+//! frame or two, so the check never trips it. This also restores
+//! two-finger panning (both axes) of a pinch-zoomed page: the pinch
+//! commits as page scale, growing the root scroller's extent, and the
+//! rescue pans it like any other scroller.
+//!
 //! `HWATU_SMOOTH_WHEEL=0` disables the whole thing.
 
 /// See module docs. Constants mirror Chromium
@@ -106,6 +156,13 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
   const SLOPE = (MIN_DUR - MAX_DUR) / (RAMP_END - RAMP_START);
   const OFFSET = MAX_DUR - RAMP_START * SLOPE;
   const EPS = 0.01;
+
+  // Discrete-notch multiplier, substituted at injection time from
+  // HWATU_WHEEL_SENSITIVITY. Default 1.2: WebKitGTK synthesizes ~100px
+  // per notch where Chromium moves 120px, and matching Chromium's
+  // travel-per-click is what kills the "stiff" feel. Precise touchpad
+  // deltas are never scaled (real hardware values).
+  const SENS = /*HWATU_WHEEL_SENSITIVITY*/1.2;
 
   function durationMs(delta) {
     const frames = Math.min(Math.max(OFFSET + Math.abs(delta) * SLOPE, MIN_DUR), MAX_DUR);
@@ -228,6 +285,49 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
     if (e.deltaMode !== 0) return true;
     return Number.isInteger(e.deltaY) && Number.isInteger(e.deltaX)
         && Math.abs(e.deltaY || e.deltaX) >= 24;
+  }
+
+  // Hi-res wheels (Logitech MX Master and friends) report sub-notch
+  // motion: WebKitGTK hands the page non-integer pixel deltas that are
+  // all multiples of one hardware quantum (observed 6.8px = 1/15 notch
+  // on an MX Master 4). isDiscrete misses them, but the multiples that
+  // happen to land on integers >= 24 (34, 68, ...) it claims — one
+  // physical gesture split between the animator and the engine's
+  // instant path. Detect the quantized stream with an approximate
+  // float GCD over recent magnitudes (touchpad deltas are continuous
+  // finger motion, so their GCD collapses toward zero) and claim it
+  // wholesale. The verdict is briefly sticky so a stream is never
+  // split mid-gesture while the window refills.
+  const HIRES_WIN = 8, HIRES_MIN_EVENTS = 4, HIRES_MIN_Q = 3, HIRES_MAX_Q = 24,
+        HIRES_STICKY_MS = 400;
+  const hiresMags = [];
+  let hiresUntil = 0;
+  // Approximate GCD for floats: fold remainders near either end of
+  // [0, b] to tolerate float32 quantization from the input stack.
+  function fgcd(a, b) {
+    while (b > 0.75) {
+      let r = a % b;
+      if (r > b / 2) r = b - r;
+      a = b; b = r;
+    }
+    return a;
+  }
+  function isHiresWheel(e) {
+    if (e.deltaMode !== 0) return false;
+    const m = Math.abs(e.deltaY || e.deltaX);
+    if (!m) return false;
+    hiresMags.push(m);
+    if (hiresMags.length > HIRES_WIN) hiresMags.shift();
+    const now = performance.now();
+    if (now < hiresUntil) return true;
+    if (hiresMags.length < HIRES_MIN_EVENTS) return false;
+    let q = hiresMags[0];
+    for (let i = 1; i < hiresMags.length && q > 0.75; i++) q = fgcd(hiresMags[i], q);
+    // Quantum bounds: below MIN_Q the stream is effectively continuous
+    // (native precise handling is right); at or above MAX_Q it's a
+    // classic notch wheel, which isDiscrete already claims.
+    if (q >= HIRES_MIN_Q && q < HIRES_MAX_Q) { hiresUntil = now + HIRES_STICKY_MS; return true; }
+    return false;
   }
 
   // True when `el` snaps mandatorily on this axis. The root scroller's
@@ -400,23 +500,34 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
     if (!ownVolume.has(v)) ownVolume.set(v, v.volume);
     return ownVolume.get(v);
   }
+  // Videos the handoff itself paused, so settle-time reconciliation
+  // can tell "we silenced it" apart from "the user paused it" and only
+  // resume the former.
+  const handoffPaused = new WeakSet();
   function handoffPlayback(dir) {
     if (!shortformSite()) return;
-    // The incoming card is still ~one viewport away in the paging
-    // direction at commit time: nearest video at least 40% of a
-    // viewport from center. None found (virtualized card not mounted
-    // yet) fails open — the site's observer handles it as before.
+    // Pick the incoming card: nearest video ahead of center in the
+    // paging direction. On the synthetic-swipe path the feed has
+    // already been dragged ~65% of a viewport at pointerup, leaving
+    // the real incoming reel only ~35% from center — a 40% floor
+    // skipped it and started the reel AFTER it instead (next-next
+    // reel's audio under the one being watched). 15% still safely
+    // excludes the outgoing reel: its center sits behind mid in the
+    // paging direction (d <= 0) throughout the transition. None found
+    // (virtualized card not mounted yet) fails open — the site's
+    // observer handles it as before.
     const mid = innerHeight / 2;
     let inc = null, best = Infinity;
     for (const v of document.querySelectorAll('video')) {
       const r = v.getBoundingClientRect();
       if (r.width < 1 || r.height < 1) continue;
       const d = ((r.top + r.bottom) / 2 - mid) * dir;
-      if (d < innerHeight * 0.4) continue;
+      if (d < innerHeight * 0.15) continue;
       if (d < best) { best = d; inc = v; }
     }
     if (inc) {
       const iv = ownVol(inc);
+      handoffPaused.delete(inc);
       if (inc.paused) {
         try { inc.volume = 0; } catch (_) {}
         const p = inc.play();
@@ -438,8 +549,41 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
         // Restore the element's own volume after the pause so a
         // scroll-back (or the site recycling the element) never
         // inherits a silenced video.
-        try { v.pause(); v.volume = ov; ownVolume.delete(v); } catch (_) {}
+        try { handoffPaused.add(v); v.pause(); v.volume = ov; ownVolume.delete(v); } catch (_) {}
       });
+    }
+  }
+  // Settle-time reconciliation: the commit-time handoff guesses the
+  // incoming card mid-transition. When the guess was wrong (the feed
+  // rubber-banded back, or the mounted-cards geometry mid-drag fooled
+  // the pick), a reel that is NOT on screen keeps playing audio under
+  // the one being watched — indefinitely, because the site's observer
+  // never pauses a video it didn't start. Once the transition has
+  // settled, the front-and-center video is the only one allowed to
+  // play: every other playing video ramps out and pauses, and a video
+  // the handoff itself paused is resumed if it ended up active (a
+  // snapped-back swipe must not leave the current reel frozen).
+  function reconcilePlayback() {
+    if (!shortformSite()) return;
+    // A newer swipe in flight owns playback: its own settle-time
+    // reconcile is already scheduled, and running now would judge
+    // mid-transition geometry.
+    if (performance.now() < swipeUntil) return;
+    const active = activeShortformVideo();
+    for (const v of document.querySelectorAll('video')) {
+      if (v === active || v.paused || rampTarget(v) === 0) continue;
+      const ov = ownVol(v);
+      rampVolume(v, 0, RAMP_OUT_MS, () => {
+        try { handoffPaused.add(v); v.pause(); v.volume = ov; ownVolume.delete(v); } catch (_) {}
+      });
+    }
+    if (active && active.paused && handoffPaused.has(active)) {
+      handoffPaused.delete(active);
+      const iv = ownVol(active);
+      try { active.volume = 0; } catch (_) {}
+      const p = active.play();
+      if (p && p.catch) p.catch(() => {});
+      rampVolume(active, iv, RAMP_IN_MS, () => ownVolume.delete(active));
     }
   }
 
@@ -499,6 +643,11 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
           // Gesture commit: start the incoming reel's playback now
           // instead of waiting out IG's settle + observer.
           handoffPlayback(dir);
+          // And reconcile once IG's own snap animation has settled:
+          // the commit-time pick is a mid-transition guess, and a
+          // wrong guess leaks an off-screen reel's audio forever.
+          // (+50ms so this fires past its own swipeUntil guard.)
+          setTimeout(reconcilePlayback, SWIPE_ABSORB_MS + 50);
         }
       } catch (_) {
         clearInterval(iv);
@@ -595,8 +744,12 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
     if (target == null) return true;
     animateTo(el, horiz, target);
     // Page commit on a snap/card feed: same handoff as the swipe
-    // path. handoffPlayback gates itself to shortform sites.
-    if (!horiz) handoffPlayback(dir);
+    // path. handoffPlayback gates itself to shortform sites; the
+    // settle-time reconcile corrects a wrong mid-transition pick.
+    if (!horiz) {
+      handoffPlayback(dir);
+      setTimeout(reconcilePlayback, SNAP_DUR + 150);
+    }
     return true;
   }
 
@@ -638,46 +791,132 @@ const SMOOTH_WHEEL_JS: &str = r#"(() => {
     ensureRaf();
   }
 
-  addEventListener('wheel', e => {
-    try {
-      if (e.defaultPrevented || !e.cancelable) return;
-      if (e.ctrlKey || e.altKey || e.metaKey) return; // zoom & friends
-      if (!isDiscrete(e)) {
-        // Precise touchpad deltas normally stay native, but on the
-        // IG gesture feed native pixels desync the reel state: claim
-        // and translate them into synthetic swipes.
-        if (!e.shiftKey && e.deltaY
-            && preciseFeedScroll(e.target, e.deltaY)) e.preventDefault();
-        return;
+  // A non-passive root wheel listener marks the whole viewport as a
+  // synchronous wheel-event region in WebKitGTK. Keep known pages that
+  // need the engine's async touchpad path out of that region entirely.
+  function nativeWheelSite() {
+    const host = location.hostname.toLowerCase().replace(/^www\./, '');
+    return host === 'baseten.co' || host.endsWith('.baseten.co');
+  }
+
+  // Precise rescue (see module docs): on some driver stacks the
+  // engine's precise touchpad path is dead inside the synchronous
+  // wheel region — unclaimed precise deltas move nothing anywhere,
+  // while discrete ticks (claimed by the animator) still work. Probe
+  // unclaimed bursts: real accumulated travel with a provably unmoved
+  // scroller flips the page into rescue mode for the rest of its
+  // life. Claimed deltas then track the finger 1:1 on BOTH axes (a
+  // pinch-zoomed page pans diagonally, exactly like the native path)
+  // and a release fling runs through the animator (the engine's
+  // kinetic scroll is as dead as its precise path). A healthy engine
+  // moves the scroller well within the probe window, so the probe
+  // never trips it.
+  const RESCUE_PROBE_MS = 150, RESCUE_MIN_TRAVEL = 48,
+        RESCUE_BURST_GAP_MS = 250, RESCUE_IDLE_MS = 120,
+        RESCUE_FLING_SCALE = 180, RESCUE_MIN_FLING_V = 0.4;
+  let rescued = false;
+  let probe = null;
+  let flingSamples = [], flingTimer = 0;
+  function rescueFling(el) {
+    const samples = flingSamples;
+    flingSamples = [];
+    if (samples.length < 3) return;
+    const span = samples[samples.length - 1].t - samples[0].t;
+    if (span <= 0) return;
+    let sx = 0, sy = 0;
+    for (const s of samples) { sx += s.dx; sy += s.dy; }
+    const horiz = Math.abs(sx) > Math.abs(sy);
+    const v = (horiz ? sx : sy) / span; // px/ms at release
+    if (Math.abs(v) < RESCUE_MIN_FLING_V) return;
+    animateBy(el, horiz, v * RESCUE_FLING_SCALE);
+  }
+  function rescueScroll(e) {
+    let dx = e.deltaX, dy = e.deltaY;
+    if (e.shiftKey && !dx) { dx = dy; dy = 0; }
+    if (!dx && !dy) return rescued; // scroll-stop: absorb once claimed
+    const horiz = Math.abs(dx) > Math.abs(dy);
+    const el = scrollTarget(e.target, horiz, (horiz ? dx : dy) > 0 ? 1 : -1);
+    if (!el) return false;
+    const now = performance.now();
+    if (!rescued) {
+      // Feed (or start) the dead-path probe; this event stays native.
+      // The token closure keeps a stale timer from judging a newer
+      // burst's probe.
+      if (!probe || probe.el !== el || now - probe.last > RESCUE_BURST_GAP_MS) {
+        const p = { el, horiz, pos: getPos(el, horiz), travel: 0, last: now };
+        probe = p;
+        setTimeout(() => {
+          if (probe !== p) return;
+          probe = null;
+          if (!rescued && p.travel >= RESCUE_MIN_TRAVEL && p.el.isConnected
+              && Math.abs(getPos(p.el, p.horiz) - p.pos) < 1) rescued = true;
+        }, RESCUE_PROBE_MS);
       }
-
-      let dx = e.deltaX, dy = e.deltaY;
-      if (e.deltaMode === 1) { dx *= 40; dy *= 40; }
-      else if (e.deltaMode === 2) { dx *= innerWidth; dy *= innerHeight; }
-      if (e.shiftKey && !dx) { dx = dy; dy = 0; }
-
-      const horiz = Math.abs(dx) > Math.abs(dy);
-      const delta = horiz ? dx : dy;
-      if (!delta) return;
-
-      const el = scrollTarget(e.target, horiz, delta > 0 ? 1 : -1);
-      if (!el) {
-        // IG's transform-virtualized feed can be unscrollable by
-        // extent (see gestureFeed) while still swipeable.
-        const feed = !horiz && gestureFeed(e.target);
-        if (feed && swipeFeed(feed, delta > 0 ? 1 : -1)) e.preventDefault();
-        return; // nothing scrollable: stay native
-      }
-
-      // Snap paging decides before preventDefault so an exception in
-      // it degrades to native scrolling, not a dead wheel.
-      if (pageSnap(el, horiz, delta > 0 ? 1 : -1)) { e.preventDefault(); return; }
-      e.preventDefault();
-      animateBy(el, horiz, delta);
-    } catch (_) {
-      // Fail open: native scrolling still works if we blow up.
+      probe.travel += Math.abs(horiz ? dx : dy);
+      probe.last = now;
+      return false;
     }
-  }, { passive: false });
+    // 1:1 finger tracking on both axes; the fling arms on idle. A
+    // stale glide must not fight the finger.
+    const a = anims.get(el);
+    if (a) endAnim(el, a);
+    el.scrollBy({ left: dx, top: dy, behavior: 'instant' });
+    flingSamples.push({ t: now, dx, dy });
+    if (flingSamples.length > 8) flingSamples.shift();
+    clearTimeout(flingTimer);
+    flingTimer = setTimeout(() => rescueFling(el), RESCUE_IDLE_MS);
+    return true;
+  }
+
+  function installWheelHandler() {
+    addEventListener('wheel', e => {
+      try {
+        if (e.defaultPrevented || !e.cancelable) return;
+        if (e.ctrlKey || e.altKey || e.metaKey) return; // zoom & friends
+        if (!isDiscrete(e) && !isHiresWheel(e)) {
+          // Precise touchpad deltas normally stay native, but on the
+          // IG gesture feed native pixels desync the reel state: claim
+          // and translate them into synthetic swipes.
+          if (!e.shiftKey && e.deltaY
+              && preciseFeedScroll(e.target, e.deltaY)) { e.preventDefault(); return; }
+          // Elsewhere they stay native unless the engine's precise
+          // path is provably dead (see rescueScroll).
+          if (rescueScroll(e)) e.preventDefault();
+          return;
+        }
+
+        let dx = e.deltaX, dy = e.deltaY;
+        if (e.deltaMode === 1) { dx *= 40; dy *= 40; }
+        else if (e.deltaMode === 2) { dx *= innerWidth; dy *= innerHeight; }
+        // Sensitivity applies to synthesized notch deltas (pixel/line
+        // modes); page-mode deltas are already viewport-sized.
+        if (e.deltaMode !== 2) { dx *= SENS; dy *= SENS; }
+        if (e.shiftKey && !dx) { dx = dy; dy = 0; }
+
+        const horiz = Math.abs(dx) > Math.abs(dy);
+        const delta = horiz ? dx : dy;
+        if (!delta) return;
+
+        const el = scrollTarget(e.target, horiz, delta > 0 ? 1 : -1);
+        if (!el) {
+          // IG's transform-virtualized feed can be unscrollable by
+          // extent (see gestureFeed) while still swipeable.
+          const feed = !horiz && gestureFeed(e.target);
+          if (feed && swipeFeed(feed, delta > 0 ? 1 : -1)) e.preventDefault();
+          return; // nothing scrollable: stay native
+        }
+
+        // Snap paging decides before preventDefault so an exception in
+        // it degrades to native scrolling, not a dead wheel.
+        if (pageSnap(el, horiz, delta > 0 ? 1 : -1)) { e.preventDefault(); return; }
+        e.preventDefault();
+        animateBy(el, horiz, delta);
+      } catch (_) {
+        // Fail open: native scrolling still works if we blow up.
+      }
+    }, { passive: false });
+  }
+  if (!nativeWheelSite()) installWheelHandler();
 
   // Keyboard scrolling through the same animator. WebKit's keydown
   // scroller has the identical isolated-pulse problem as its wheel
@@ -956,6 +1195,29 @@ fn enabled() -> bool {
     )
 }
 
+/// Discrete-notch multiplier from `HWATU_WHEEL_SENSITIVITY`.
+/// Default 1.2 (Chromium's 120px per notch vs WebKitGTK's ~100px).
+/// Unparseable or non-positive values fall back to the default;
+/// the value is clamped to [0.1, 10] so a typo can't produce a
+/// dead or teleporting wheel.
+fn sensitivity() -> f64 {
+    const DEFAULT: f64 = 1.2;
+    std::env::var("HWATU_WHEEL_SENSITIVITY")
+        .ok()
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .filter(|v| v.is_finite() && *v > 0.0)
+        .map(|v| v.clamp(0.1, 10.0))
+        .unwrap_or(DEFAULT)
+}
+
+/// The injected script with the sensitivity constant substituted.
+fn script_source() -> String {
+    SMOOTH_WHEEL_JS.replace(
+        "/*HWATU_WHEEL_SENSITIVITY*/1.2",
+        &format!("{}", sensitivity()),
+    )
+}
+
 /// Inject the wheel animator into a WebView. Must run on every view
 /// (prewarm pool and popups) before page content loads, same contract
 /// as `console::wire_view`.
@@ -968,7 +1230,7 @@ pub fn wire_view(view: &webkit6::WebView) {
         return;
     };
     let script = webkit6::UserScript::new(
-        SMOOTH_WHEEL_JS,
+        &script_source(),
         webkit6::UserContentInjectedFrames::AllFrames,
         webkit6::UserScriptInjectionTime::Start,
         &[],
@@ -997,6 +1259,57 @@ mod tests {
         std::env::remove_var("HWATU_SMOOTH_WHEEL");
     }
 
+    /// Sensitivity: default 1.2 (Chromium's per-notch travel), env
+    /// override honored, garbage and out-of-range values fail safe,
+    /// and the templating substitutes the constant into the script.
+    /// One test because parallel tests must not race the env var.
+    #[test]
+    fn sensitivity_env_semantics() {
+        std::env::remove_var("HWATU_WHEEL_SENSITIVITY");
+        assert_eq!(sensitivity(), 1.2);
+        let src = script_source();
+        assert!(src.contains("const SENS = 1.2;"));
+        assert!(!src.contains("/*HWATU_WHEEL_SENSITIVITY*/"));
+        std::env::set_var("HWATU_WHEEL_SENSITIVITY", "1.0");
+        assert_eq!(sensitivity(), 1.0);
+        std::env::set_var("HWATU_WHEEL_SENSITIVITY", "2.5");
+        assert_eq!(sensitivity(), 2.5);
+        std::env::set_var("HWATU_WHEEL_SENSITIVITY", "1.5");
+        assert!(script_source().contains("const SENS = 1.5;"));
+        // Clamped, not rejected: stays usable.
+        std::env::set_var("HWATU_WHEEL_SENSITIVITY", "50");
+        assert_eq!(sensitivity(), 10.0);
+        std::env::set_var("HWATU_WHEEL_SENSITIVITY", "0.01");
+        assert_eq!(sensitivity(), 0.1);
+        // Garbage / non-positive fall back to the default.
+        for bad in ["", "abc", "0", "-1", "nan", "inf"] {
+            std::env::set_var("HWATU_WHEEL_SENSITIVITY", bad);
+            assert_eq!(sensitivity(), 1.2, "value {bad:?} must fall back");
+        }
+        std::env::remove_var("HWATU_WHEEL_SENSITIVITY");
+    }
+
+    /// The scale must apply to discrete pixel/line deltas but never to
+    /// page-mode deltas or the precise-touchpad path.
+    #[test]
+    fn sensitivity_script_shape() {
+        // Scaling happens after page-mode normalization and skips it,
+        // and before the shift-key axis swap so both axes are scaled.
+        let handler = SMOOTH_WHEEL_JS
+            .split("addEventListener('wheel'")
+            .nth(1)
+            .unwrap();
+        let page = handler.find("e.deltaMode === 2").unwrap();
+        let sens = handler
+            .find("if (e.deltaMode !== 2) { dx *= SENS; dy *= SENS; }")
+            .unwrap();
+        let swap = handler.find("if (e.shiftKey && !dx)").unwrap();
+        assert!(page < sens && sens < swap);
+        // The precise arm returns before the scaling line.
+        let precise = handler.find("!isDiscrete(e)").unwrap();
+        assert!(precise < sens);
+    }
+
     /// The injected script must keep its fail-open shape: bail on
     /// non-cancelable/prevented events before any preventDefault.
     #[test]
@@ -1016,6 +1329,26 @@ mod tests {
         let target = handler.find("scrollTarget").unwrap();
         let pd = target + handler[target..].find("e.preventDefault()").unwrap();
         assert!(target < pd);
+    }
+
+    /// Baseten's animation-heavy homepage needs WebKitGTK's asynchronous
+    /// touchpad path. Installing any non-passive root wheel listener would
+    /// mark the whole viewport for synchronous web-process scrolling.
+    #[test]
+    fn baseten_keeps_native_wheel_path() {
+        assert!(SMOOTH_WHEEL_JS.contains("function nativeWheelSite"));
+        assert!(SMOOTH_WHEEL_JS.contains("host === 'baseten.co'"));
+        assert!(SMOOTH_WHEEL_JS.contains("host.endsWith('.baseten.co')"));
+        let install = SMOOTH_WHEEL_JS
+            .find("function installWheelHandler")
+            .expect("wheel listener installer");
+        let gate = SMOOTH_WHEEL_JS
+            .find("if (!nativeWheelSite()) installWheelHandler();")
+            .expect("native-wheel host gate");
+        assert!(
+            install < gate,
+            "listener must only install behind the host gate"
+        );
     }
 
     /// ArrowLeft must select the close control before falling back to the
@@ -1237,10 +1570,19 @@ mod tests {
         assert!(body.contains("if (!shortformSite()) return;"));
         // Outgoing: every other playing video ramps to zero, pauses,
         // then restores its own volume so scroll-back never inherits
-        // a silenced video.
+        // a silenced video. The pause is marked so settle-time
+        // reconciliation can resume a wrongly-paused active reel.
         assert!(body.contains("if (v === inc || v.paused || rampTarget(v) === 0) continue;"));
         assert!(body.contains("rampVolume(v, 0, RAMP_OUT_MS"));
-        assert!(body.contains("v.pause(); v.volume = ov; ownVolume.delete(v);"));
+        assert!(
+            body.contains("handoffPaused.add(v); v.pause(); v.volume = ov; ownVolume.delete(v);")
+        );
+        // Incoming pick floor: 15% of a viewport ahead of center. The
+        // old 40% floor overshot on the synthetic-swipe path (feed
+        // already dragged ~65% at pointerup) and started the reel
+        // AFTER the incoming one — its audio then played under the
+        // reel being watched.
+        assert!(body.contains("innerHeight * 0.15"));
         // Incoming: starts muted-by-volume and ramps in; the play()
         // rejection is swallowed (autoplay policy).
         assert!(body.contains("inc.volume = 0;"));
@@ -1253,6 +1595,34 @@ mod tests {
         let ps = SMOOTH_WHEEL_JS.split("function pageSnap").nth(1).unwrap();
         let ps_body = ps.split("function animateBy").next().unwrap();
         assert!(ps_body.contains("handoffPlayback(dir)"));
+    }
+
+    /// After the transition settles, only the front-and-center video
+    /// may keep playing: a wrong commit-time pick otherwise leaks an
+    /// off-screen reel's audio under the watched one indefinitely.
+    /// Both commit paths schedule the reconcile past their settle
+    /// window, it skips while a newer swipe is in flight, and it
+    /// resumes only videos the handoff itself paused.
+    #[test]
+    fn settle_time_reconcile_shape() {
+        assert!(SMOOTH_WHEEL_JS.contains("function reconcilePlayback"));
+        let body = SMOOTH_WHEEL_JS
+            .split("function reconcilePlayback")
+            .nth(1)
+            .unwrap();
+        let body = body.split("function swipeFeed").next().unwrap();
+        // Gated to shortform sites, and defers to a newer in-flight swipe.
+        assert!(body.contains("if (!shortformSite()) return;"));
+        assert!(body.contains("if (performance.now() < swipeUntil) return;"));
+        // Only the active video keeps playing; others ramp out + pause.
+        assert!(body.contains("activeShortformVideo()"));
+        assert!(body.contains("rampVolume(v, 0, RAMP_OUT_MS"));
+        // Resumes the active video only when the handoff paused it —
+        // a user pause stays a pause.
+        assert!(body.contains("handoffPaused.has(active)"));
+        // Scheduled on both commit paths, past each settle window.
+        assert!(SMOOTH_WHEEL_JS.contains("setTimeout(reconcilePlayback, SWIPE_ABSORB_MS + 50)"));
+        assert!(SMOOTH_WHEEL_JS.contains("setTimeout(reconcilePlayback, SNAP_DUR + 150)"));
     }
 
     /// Precise touchpad deltas on the Instagram gesture feed must be
@@ -1280,6 +1650,126 @@ mod tests {
             .unwrap();
         let arm = handler.split("let dx = e.deltaX").next().unwrap();
         assert!(arm.contains("!isDiscrete(e)"));
-        assert!(arm.contains("preciseFeedScroll(e.target, e.deltaY)) e.preventDefault()"));
+        assert!(
+            arm.contains("preciseFeedScroll(e.target, e.deltaY)) { e.preventDefault(); return; }")
+        );
+    }
+
+    /// Precise deltas everywhere else must stay engine-native unless
+    /// the engine's precise path is provably dead: the rescue only
+    /// claims after an unclaimed burst accumulated real travel AND the
+    /// target scroller did not move a pixel by the deferred check. It
+    /// must never trip on a healthy engine, and once tripped it must
+    /// track the finger on both axes (zoomed-page side pan) and fling
+    /// through the animator on release.
+    #[test]
+    fn precise_rescue_shape() {
+        assert!(SMOOTH_WHEEL_JS.contains("function rescueScroll"));
+        assert!(SMOOTH_WHEEL_JS.contains("function rescueFling"));
+        let body = SMOOTH_WHEEL_JS
+            .split("function rescueScroll")
+            .nth(1)
+            .unwrap();
+        let body = body.split("function installWheelHandler").next().unwrap();
+        // The probe is evidence-gated: travel floor + unmoved scroller,
+        // judged on a deferred timer, and a stale timer cannot judge a
+        // newer burst.
+        assert!(SMOOTH_WHEEL_JS.contains("RESCUE_MIN_TRAVEL"));
+        assert!(body.contains("p.travel >= RESCUE_MIN_TRAVEL"));
+        assert!(body.contains("Math.abs(getPos(p.el, p.horiz) - p.pos) < 1"));
+        assert!(body.contains("if (probe !== p) return;"));
+        // Unrescued events stay native (return false before any claim).
+        assert!(body.contains("return false;"));
+        // Claimed deltas pan both axes 1:1 — this is what makes a
+        // pinch-zoomed page side-pannable.
+        assert!(body.contains("el.scrollBy({ left: dx, top: dy, behavior: 'instant' })"));
+        // Release fling reuses the Chromium-curve animator.
+        let fling = SMOOTH_WHEEL_JS
+            .split("function rescueFling")
+            .nth(1)
+            .unwrap()
+            .split("function rescueScroll")
+            .next()
+            .unwrap();
+        assert!(fling.contains("animateBy(el, horiz,"));
+        // The wheel handler consults the rescue inside the precise arm,
+        // after the IG feed guard, and preventDefaults claimed events.
+        let handler = SMOOTH_WHEEL_JS
+            .split("addEventListener('wheel'")
+            .nth(1)
+            .unwrap();
+        let arm = handler.split("let dx = e.deltaX").next().unwrap();
+        let feed = arm.find("preciseFeedScroll").unwrap();
+        let rescue = arm.find("rescueScroll(e)) e.preventDefault()").unwrap();
+        assert!(feed < rescue);
+    }
+
+    /// Hi-res wheels (MX Master-style) emit sub-notch deltas that are
+    /// exact multiples of a hardware quantum; the stream must be
+    /// detected (approximate GCD) and claimed for the animator so one
+    /// physical gesture is never split between the animator and the
+    /// engine's instant path. Touchpads (continuous deltas, GCD -> 0)
+    /// and classic notch wheels (quantum >= 24, isDiscrete territory)
+    /// must stay out of the hi-res arm.
+    #[test]
+    fn hires_wheel_detection_shape() {
+        assert!(SMOOTH_WHEEL_JS.contains("function isHiresWheel"));
+        assert!(SMOOTH_WHEEL_JS.contains("function fgcd"));
+        let body = SMOOTH_WHEEL_JS
+            .split("function isHiresWheel")
+            .nth(1)
+            .unwrap();
+        // Pixel-mode only: line/page modes are classic discrete input.
+        assert!(body.contains("e.deltaMode !== 0"));
+        // Quantum bounds keep touchpads (low) and notch wheels (high) out.
+        assert!(SMOOTH_WHEEL_JS.contains("HIRES_MIN_Q = 3"));
+        assert!(SMOOTH_WHEEL_JS.contains("HIRES_MAX_Q = 24"));
+        // Sticky verdict so a gesture is never split mid-stream.
+        assert!(body.contains("now < hiresUntil"));
+        // The handler claims hi-res streams alongside discrete ticks,
+        // before the precise-touchpad arm.
+        let handler = SMOOTH_WHEEL_JS
+            .split("addEventListener('wheel'")
+            .nth(1)
+            .unwrap();
+        assert!(handler.contains("!isDiscrete(e) && !isHiresWheel(e)"));
+
+        // The detector's math, mirrored in Rust: MX Master 4 deltas
+        // (multiples of 6.8 as float32) must yield a quantum in
+        // bounds; continuous touchpad-like deltas must not.
+        fn fgcd(mut a: f64, mut b: f64) -> f64 {
+            while b > 0.75 {
+                let mut r = a % b;
+                if r > b / 2.0 {
+                    r = b - r;
+                }
+                a = b;
+                b = r;
+            }
+            a
+        }
+        let mx: Vec<f64> = [
+            81.5999984741211,
+            54.400001525878906,
+            88.4000015258789,
+            27.200000762939453,
+            13.600000381469727,
+            34.0,
+            47.599998474121094,
+            68.0,
+        ]
+        .into_iter()
+        .collect();
+        let mut q = mx[0];
+        for &m in &mx[1..] {
+            q = fgcd(m, q);
+        }
+        assert!((3.0..24.0).contains(&q), "MX quantum detected, got {q}");
+        let pad = [7.3, 12.1, 18.9, 23.4, 9.7, 15.2, 21.8, 11.3];
+        let mut qp = pad[0];
+        for &m in &pad[1..] {
+            qp = fgcd(m, qp);
+        }
+        assert!(qp < 3.0, "touchpad stream must stay native, got {qp}");
     }
 }

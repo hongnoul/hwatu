@@ -2298,6 +2298,7 @@ pub fn snapshot(
     id: Option<u64>,
     diff: bool,
     rect: bool,
+    budget: Option<usize>,
     timeout_ms: Option<u64>,
     reply: Reply,
 ) {
@@ -2371,6 +2372,40 @@ return {
         "__HWATU_INCLUDE_RECTS__",
         if rect { "true" } else { "false" },
     );
+    // Injection quarantine (verification P3 item 13) applies to every
+    // snapshot: page text is untrusted input headed for agent context.
+    // Budgeted mode (P3 item 12) additionally degrades the reply
+    // coarse-to-fine to fit `budget` chars instead of truncating
+    // arbitrarily. Wraps whichever reply path (full or diff) produces
+    // the value.
+    let reply: Reply = {
+        let budget = budget.filter(|b| *b > 0);
+        Box::new(move |resp| {
+            let resp = match resp {
+                Response::Ok {
+                    value: Some(value),
+                    window,
+                    windows,
+                    adblock,
+                    path,
+                } => {
+                    let value = match budget {
+                        Some(budget) => crate::snapbudget::apply(value, budget),
+                        None => crate::snapbudget::quarantine(value),
+                    };
+                    Response::Ok {
+                        value: Some(value),
+                        window,
+                        windows,
+                        adblock,
+                        path,
+                    }
+                }
+                other => other,
+            };
+            reply(resp)
+        })
+    };
     if !diff {
         return eval(daemon, id, js, timeout_ms, reply);
     }
@@ -2526,11 +2561,23 @@ fn trusted_report(
 /// What a trusted injection does with the resolved target point.
 enum TrustedAction {
     Click,
+    Paste,
     Type {
         text: String,
         clear: bool,
         enter: bool,
     },
+}
+
+fn trusted_input_mode_error(mode: OpenMode) -> Option<&'static str> {
+    match mode {
+        OpenMode::Normal => None,
+        OpenMode::Background | OpenMode::Headless => Some(
+            "trusted input is unavailable for background/headless windows because native \
+             compositor events would promote and focus the window; use standard headless \
+             automation or explicitly open a normal window",
+        ),
+    }
 }
 
 /// Shared driver for trusted click/type. Sequence, all on the GTK main
@@ -2563,6 +2610,7 @@ fn trusted_input_run(
 ) {
     let what: &'static str = match action {
         TrustedAction::Click => "trusted click",
+        TrustedAction::Paste => "trusted paste",
         TrustedAction::Type { .. } => "trusted type",
     };
     let reply = OnceReply::new(reply);
@@ -2570,6 +2618,9 @@ fn trusted_input_run(
         Ok(w) => w,
         Err(resp) => return reply.send(*resp),
     };
+    if let Some(message) = trusted_input_mode_error(win.mode()) {
+        return reply.send(Response::err(format!("{what} refused: {message}")));
+    }
     let view = match live_view(&win) {
         Ok(v) => v,
         Err(resp) => return reply.send(*resp),
@@ -2642,6 +2693,9 @@ fn trusted_input_run(
                         TrustedAction::Click => {
                             crate::trusted_input::inject_click(&win, &view_for_cb, &target).await
                         }
+                        TrustedAction::Paste => {
+                            crate::trusted_input::inject_paste(&win, &view_for_cb, &target).await
+                        }
                         TrustedAction::Type { text, clear, enter } => {
                             crate::trusted_input::inject_type(
                                 &win,
@@ -2661,6 +2715,7 @@ fn trusted_input_run(
                     let url = view_for_cb.uri().map(|u| u.to_string());
                     let done = match action {
                         TrustedAction::Click => "clicked",
+                        TrustedAction::Paste => "pasted",
                         TrustedAction::Type { .. } => "typed",
                     };
                     // Give the compositor round-trip + page handlers a
@@ -2787,7 +2842,18 @@ if (el instanceof HTMLSelectElement) {{
   setter.call(el, clear ? text : el.value + text);
   fire('input'); fire('change');
 }} else if (el.isContentEditable) {{
-  if (clear) el.textContent = '';
+  if (clear) {{
+    // Select the existing editor contents instead of mutating textContent.
+    // Rich editors such as Google Sheets keep an internal model that only
+    // observes editing commands; direct DOM clearing desynchronizes it and
+    // causes the replacement text to be appended to the old value.
+    const doc = el.ownerDocument;
+    const selection = doc.getSelection();
+    const range = doc.createRange();
+    range.selectNodeContents(el);
+    selection.removeAllRanges();
+    selection.addRange(range);
+  }}
   el.dispatchEvent(new InputEvent('beforeinput', {{ bubbles: true, cancelable: true, inputType: 'insertText', data: text }}));
   document.execCommand ? document.execCommand('insertText', false, text) : el.textContent += text;
   fire('input');
@@ -2797,6 +2863,7 @@ if (el instanceof HTMLSelectElement) {{
 if (enter) {{
   const key = {{ bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', keyCode: 13, which: 13 }};
   const handled = !el.dispatchEvent(new KeyboardEvent('keydown', key));
+  el.dispatchEvent(new KeyboardEvent('keypress', key));
   el.dispatchEvent(new KeyboardEvent('keyup', key));
   if (!handled && el.form) el.form.requestSubmit ? el.form.requestSubmit() : el.form.submit();
 }}
@@ -2809,6 +2876,33 @@ return {{ typed: matched, value: String(value).slice(0, 200), url: location.href
         enter = enter,
     );
     eval_with(daemon, id, js, timeout_ms, NavPolicy::Success, reply);
+}
+
+/// Paste from the compositor clipboard into an element with native trusted
+/// input. This intentionally has no JS fallback: clipboard pasting must happen
+/// through the compositor while the trusted input session owns focus.
+#[allow(clippy::too_many_arguments)]
+pub fn paste(
+    daemon: &Rc<Daemon>,
+    id: Option<u64>,
+    selector: Option<String>,
+    nth: Option<u32>,
+    contains: Option<String>,
+    ref_idx: Option<u32>,
+    timeout_ms: Option<u64>,
+    reply: Reply,
+) {
+    trusted_input_run(
+        daemon,
+        id,
+        selector,
+        nth,
+        contains,
+        ref_idx,
+        TrustedAction::Paste,
+        timeout_ms,
+        reply,
+    );
 }
 
 /// Read a window's console/error/network capture buffer. Synchronous
@@ -2908,8 +3002,9 @@ fn mime_from_extension(path: &str) -> &'static str {
 mod tests {
     use super::{
         base64, challenge_detect_js, challenge_wait_js, expect_watch_js, plan_eval_source,
-        ExpectSpec, VISIBILITY_INSPECTOR_JS,
+        trusted_input_mode_error, ExpectSpec, VISIBILITY_INSPECTOR_JS,
     };
+    use hwatu_ipc::OpenMode;
 
     #[test]
     fn base64_matches_rfc_vectors() {
@@ -2920,6 +3015,15 @@ mod tests {
         assert_eq!(base64(b"foob"), "Zm9vYg==");
         assert_eq!(base64(b"fooba"), "Zm9vYmE=");
         assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+    }
+
+    #[test]
+    fn trusted_input_never_promotes_non_normal_windows() {
+        assert_eq!(trusted_input_mode_error(OpenMode::Normal), None);
+        for mode in [OpenMode::Background, OpenMode::Headless] {
+            let message = trusted_input_mode_error(mode).expect("mode must be refused");
+            assert!(message.contains("would promote and focus the window"));
+        }
     }
 
     #[test]

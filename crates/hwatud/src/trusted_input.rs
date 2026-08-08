@@ -231,25 +231,30 @@ pub struct InputReport {
 }
 
 /// Window-state guard for a trusted-input run: promotes + fullscreens
-/// the window on `prepare`, restores the previous state on `finish`
-/// (idempotent, shared across the racing callbacks via `Clone`).
+/// the window on `prepare`, restores the previous state and compositor
+/// focus on `finish` (idempotent, shared across the racing callbacks via
+/// `Clone`).
 #[derive(Clone)]
 pub struct TrustedSession {
     win: Rc<BrowserWindow>,
     was_fullscreen: bool,
     promoted: bool,
+    prior_niri_focus: Option<u64>,
     finished: Rc<Cell<bool>>,
 }
 
 pub fn prepare(win: &Rc<BrowserWindow>) -> TrustedSession {
     let was_fullscreen = win.window.is_fullscreen();
     let promoted = win.mode() != OpenMode::Normal;
+    // Native trusted input must temporarily focus a mapped compositor
+    // surface. Remember what the user was actually using before doing so;
+    // merely hiding the promoted headless window afterwards lets the WM
+    // choose an arbitrary successor and visibly strands keyboard focus.
+    let prior_niri_focus = focused_niri_window();
     // Best-effort compositor-side focus first: on niri this also switches
     // to the window's workspace, which fullscreen alone does not do.
     if let Ok(id) = find_niri_window(win) {
-        let _ = Command::new("niri")
-            .args(["msg", "action", "focus-window", "--id", &id.to_string()])
-            .status();
+        let _ = focus_niri_window(id);
     }
     win.present();
     if !was_fullscreen {
@@ -259,6 +264,7 @@ pub fn prepare(win: &Rc<BrowserWindow>) -> TrustedSession {
         win: win.clone(),
         was_fullscreen,
         promoted,
+        prior_niri_focus,
         finished: Rc::new(Cell::new(false)),
     }
 }
@@ -273,6 +279,9 @@ impl TrustedSession {
         }
         if self.promoted {
             self.win.unfocus();
+        }
+        if let Some(id) = self.prior_niri_focus {
+            let _ = focus_niri_window(id);
         }
     }
 }
@@ -361,6 +370,20 @@ pub async fn inject_type(
     // final value.
     let settle = 120 + 8 * text.chars().count() as u64;
     glib::timeout_future(Duration::from_millis(settle.min(1200))).await;
+    Ok(report)
+}
+
+pub async fn inject_paste(
+    win: &Rc<BrowserWindow>,
+    view: &webkit6::WebView,
+    target: &TargetPoint,
+) -> Result<InputReport, String> {
+    // The click both proves delivery (calibration) and moves keyboard
+    // focus to the target's window + element before wtype sends Ctrl+V.
+    let report = inject_click(win, view, target).await?;
+    glib::timeout_future(Duration::from_millis(60)).await;
+    run_wtype(&["-M", "ctrl", "v", "-m", "ctrl"])?;
+    glib::timeout_future(Duration::from_millis(180)).await;
     Ok(report)
 }
 
@@ -674,6 +697,38 @@ fn run_wtype(args: &[&str]) -> Result<(), String> {
     }
 }
 
+fn focus_niri_window(id: u64) -> Result<(), String> {
+    let status = Command::new("niri")
+        .args(["msg", "action", "focus-window", "--id", &id.to_string()])
+        .status()
+        .map_err(|e| format!("failed to focus niri window {id}: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("niri failed to focus window {id}: {status}"))
+    }
+}
+
+fn focused_niri_window_id(windows: &Value) -> Option<u64> {
+    let focused = windows
+        .as_array()?
+        .iter()
+        .find(|window| window.get("is_focused").and_then(Value::as_bool) == Some(true))?;
+    focused.get("id").and_then(Value::as_u64)
+}
+
+fn focused_niri_window() -> Option<u64> {
+    let out = Command::new("niri")
+        .args(["msg", "--json", "windows"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let windows: Value = serde_json::from_slice(&out.stdout).ok()?;
+    focused_niri_window_id(&windows)
+}
+
 /// Best-effort niri window lookup (pid + title). Used only to ask niri
 /// to focus the window (which also switches to its workspace); all
 /// coordinate work is calibration-based and compositor-agnostic.
@@ -724,7 +779,8 @@ fn find_niri_window(win: &Rc<BrowserWindow>) -> Result<u64, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::RESOLVER_JS;
+    use super::{focused_niri_window_id, RESOLVER_JS};
+    use serde_json::json;
 
     #[test]
     fn resolver_is_all_frames_shape() {
@@ -738,5 +794,17 @@ mod tests {
         assert!(RESOLVER_JS.contains("__hwatuLastTrustedMove"));
         assert!(RESOLVER_JS.contains("__hwatuTrustedMove"));
         assert!(RESOLVER_JS.contains("mousemove"));
+    }
+
+    #[test]
+    fn focused_niri_window_id_selects_only_focused_window() {
+        let windows = json!([
+            {"id": 10, "is_focused": false},
+            {"id": 11, "is_focused": true},
+            {"id": 12, "is_focused": false}
+        ]);
+        assert_eq!(focused_niri_window_id(&windows), Some(11));
+        assert_eq!(focused_niri_window_id(&json!([])), None);
+        assert_eq!(focused_niri_window_id(&json!({"id": 11})), None);
     }
 }

@@ -93,12 +93,50 @@ fn doctor() -> i32 {
         check("render", Err("skipped: daemon unreachable".into()));
     }
 
+    // 5. Hardware video decode (roadmap H3). Informational: software
+    // decode works, it just costs battery and shortform smoothness,
+    // so a missing plugin must not fail the doctor.
+    match hw_decode_probe() {
+        Ok(msg) => println!("ok    video: {msg}"),
+        Err(msg) => println!("info  video: {msg}"),
+    }
+
     if failures == 0 {
         println!("doctor: all checks passed");
         0
     } else {
         println!("doctor: {failures} check(s) failed");
         1
+    }
+}
+
+/// VA-API decode arrives with GStreamer's `va` plugin (gst-plugins-bad)
+/// plus a /dev/dri render node with a vendor driver. Report what is
+/// missing so the user knows which package turns it on.
+fn hw_decode_probe() -> Result<String, String> {
+    let render_node = fs::read_dir("/dev/dri")
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .any(|e| e.file_name().to_string_lossy().starts_with("renderD"));
+    if !render_node {
+        return Err(
+            "no /dev/dri render node; hardware video decode unavailable (software fallback)".into(),
+        );
+    }
+    let has_va = Command::new("gst-inspect-1.0")
+        .arg("va")
+        .output()
+        .map(|out| out.status.success())
+        .unwrap_or(false);
+    if has_va {
+        Ok("VA-API decode available (gstreamer va plugin + render node)".into())
+    } else {
+        Err("gstreamer `va` plugin missing; video decodes in software. \
+             Install gst-plugins-bad (Arch) / gstreamer1.0-plugins-bad (Debian) \
+             plus your GPU's VA-API driver for hardware decode"
+            .into())
     }
 }
 
@@ -142,6 +180,7 @@ fn smoke_test() -> Result<String, String> {
         url: Some(url.into()),
         app_id: None,
         mode: OpenMode::Headless,
+        profile: None,
     }) {
         Ok(Response::Ok {
             window: Some(w), ..
@@ -601,6 +640,7 @@ fn demo(args: &[String]) -> i32 {
         url: Some(url.clone()),
         app_id: None,
         mode,
+        profile: None,
     }) {
         Ok(Response::Ok {
             window: Some(w), ..
@@ -630,6 +670,7 @@ fn demo(args: &[String]) -> i32 {
         id: Some(id),
         diff: false,
         rect: false,
+        budget: None,
         timeout_ms: Some(15_000),
     }) {
         Ok(Response::Ok { value: Some(v), .. }) => {

@@ -115,10 +115,219 @@ fn read_next_request(conn: gio::SocketConnection, input: gio::DataInputStream, d
     );
 }
 
+/// Unix seconds now (hand-off queue timestamps).
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+// ---- client fairness (platform item 6b) ------------------------------
+//
+// Cheap bulkheads before parallel-agent use gets heavy: one runaway
+// agent must not starve the daemon. Two bounds, both answering
+// structured errors instead of silently queueing:
+//
+// - window quota: `Open` requests beyond HWATU_MAX_WINDOWS (default
+//   64) are refused. Windows are the expensive resource (a web
+//   process each); checks/prefetches are already pool-capped.
+// - request rate: a global token bucket (HWATU_MAX_RPS sustained,
+//   default 200/s, burst 2x) across all connections. Generous enough
+//   that no legitimate workload notices; a tight fire loop hits it.
+
+thread_local! {
+    static RATE: std::cell::RefCell<(f64, std::time::Instant)> =
+        std::cell::RefCell::new((max_rps() * 2.0, std::time::Instant::now()));
+}
+
+fn max_windows() -> usize {
+    std::env::var("HWATU_MAX_WINDOWS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|n: &usize| *n > 0)
+        .unwrap_or(64)
+}
+
+fn max_rps() -> f64 {
+    std::env::var("HWATU_MAX_RPS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|n: &f64| *n > 0.0)
+        .unwrap_or(200.0)
+}
+
+/// Take one token; false = over the rate bound.
+fn rate_admit() -> bool {
+    RATE.with(|cell| {
+        let (ref mut tokens, ref mut last) = *cell.borrow_mut();
+        let rps = max_rps();
+        let cap = rps * 2.0;
+        let now = std::time::Instant::now();
+        *tokens = (*tokens + now.duration_since(*last).as_secs_f64() * rps).min(cap);
+        *last = now;
+        if *tokens >= 1.0 {
+            *tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    })
+}
+
+/// Clear stored site data (roadmap H16). WebKit's clear() is
+/// type-based and whole-store; per-host removal fetches matching
+/// WebsiteData records first. Site-store decisions and (on full
+/// clears) history go with it: "clear everything about this site"
+/// must mean everything hwatu remembers, not just cookies.
+fn clear_site_data(daemon: &Rc<Daemon>, host: Option<String>, reply: automation::Reply) {
+    let Some(session) =
+        webkit6::NetworkSession::default().or_else(|| daemon.network_session.clone())
+    else {
+        reply(Response::err("no network session".to_string()));
+        return;
+    };
+    let Some(manager) = session.website_data_manager() else {
+        reply(Response::err("no website data manager".to_string()));
+        return;
+    };
+    let types = webkit6::WebsiteDataTypes::all();
+    // hwatu-side memory first (synchronous, always succeeds).
+    let decisions = daemon.site_store.clear_permissions(host.as_deref());
+    let history = if host.is_none() {
+        daemon.history.clear()
+    } else {
+        0
+    };
+
+    // WebKit's clear/remove callbacks demand Send, but Reply is a
+    // main-thread closure. The callbacks do run on this same GLib
+    // main context; bridge the result through a channel and poll it
+    // locally so the non-Send reply never crosses the bound.
+    let (tx, rx) = std::sync::mpsc::channel::<Result<serde_json::Value, String>>();
+    glib::timeout_add_local(std::time::Duration::from_millis(25), {
+        let mut reply = Some(reply);
+        move || match rx.try_recv() {
+            Ok(result) => {
+                if let Some(reply) = reply.take() {
+                    match result {
+                        Ok(value) => reply(Response::value(value)),
+                        Err(message) => reply(Response::err(message)),
+                    }
+                }
+                glib::ControlFlow::Break
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                if let Some(reply) = reply.take() {
+                    reply(Response::err("clear-site-data lost its result".to_string()));
+                }
+                glib::ControlFlow::Break
+            }
+        }
+    });
+
+    match host {
+        None => {
+            manager.clear(
+                types,
+                glib::TimeSpan::from_seconds(0),
+                gtk::gio::Cancellable::NONE,
+                move |result| {
+                    let _ = tx.send(match result {
+                        Ok(()) => Ok(serde_json::json!({
+                            "cleared": "all",
+                            "decisions_dropped": decisions,
+                            "history_dropped": history,
+                        })),
+                        Err(e) => Err(format!("clear failed: {e}")),
+                    });
+                },
+            );
+        }
+        Some(host) => {
+            // Fetch, filter by registrable-domain match, remove.
+            let manager2 = manager.clone();
+            manager.fetch(types, gtk::gio::Cancellable::NONE, move |result| {
+                let records = match result {
+                    Ok(records) => records,
+                    Err(e) => {
+                        let _ = tx.send(Err(format!("fetch failed: {e}")));
+                        return;
+                    }
+                };
+                let bare = host.strip_prefix("www.").unwrap_or(&host).to_string();
+                let matching: Vec<webkit6::WebsiteData> = records
+                    .into_iter()
+                    .filter(|record| {
+                        record.name().is_some_and(|name| {
+                            let name = name.to_lowercase();
+                            name == bare || name == host || name.ends_with(&format!(".{bare}"))
+                        })
+                    })
+                    .collect();
+                if matching.is_empty() {
+                    let _ = tx.send(Ok(serde_json::json!({
+                        "cleared": 0,
+                        "host": host,
+                        "decisions_dropped": decisions,
+                    })));
+                    return;
+                }
+                let count = matching.len();
+                let refs: Vec<&webkit6::WebsiteData> = matching.iter().collect();
+                manager2.remove(types, &refs, gtk::gio::Cancellable::NONE, move |result| {
+                    let _ = tx.send(match result {
+                        Ok(()) => Ok(serde_json::json!({
+                            "cleared": count,
+                            "host": host,
+                            "decisions_dropped": decisions,
+                        })),
+                        Err(e) => Err(format!("remove failed: {e}")),
+                    });
+                });
+            });
+        }
+    }
+}
+
 /// Route one request. Most commands answer synchronously; the
 /// automation commands (eval/navigate/screenshot/wait_load) complete
 /// later on the main loop and consume `reply` when they finish.
 fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
+    if !daemon.security.eval_enabled && req.uses_eval() {
+        reply(Response::err(
+            "eval disabled by daemon policy (--no-eval)".to_string(),
+        ));
+        return;
+    }
+
+    // Client fairness (platform item 6b): rate bulkhead first — a
+    // structured "over rate" error, never silent queueing. Ping is
+    // exempt so health checks and stale-daemon detection always work.
+    if !matches!(req, Request::Ping) && !rate_admit() {
+        reply(Response::err(format!(
+            "over rate: daemon-wide request budget exceeded ({}/s sustained); \
+             back off and retry (HWATU_MAX_RPS overrides)",
+            max_rps()
+        )));
+        return;
+    }
+    // Window quota: Open is the request that allocates the expensive
+    // resource. Check/render use the pooled headless windows and stay
+    // bounded by their own caps.
+    if matches!(req, Request::Open { .. }) {
+        let open = daemon.windows.borrow().len();
+        let cap = max_windows();
+        if open >= cap {
+            reply(Response::err(format!(
+                "over quota: {open} windows open (cap {cap}); close some or \
+                 raise HWATU_MAX_WINDOWS"
+            )));
+            return;
+        }
+    }
+
     let req = match req {
         Request::Batch { actions } => return dispatch_batch(daemon.clone(), actions, reply),
         other => other,
@@ -188,6 +397,9 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
         Request::Prefetch { url } => {
             return automation::prefetch(daemon, url, reply);
         }
+        Request::ClearSiteData { host } => {
+            return clear_site_data(daemon, host, reply);
+        }
         Request::Challenge {
             id,
             wait,
@@ -220,9 +432,10 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
             id,
             diff,
             rect,
+            budget,
             timeout_ms,
         } => {
-            return automation::snapshot(daemon, id, diff, rect, timeout_ms, reply);
+            return automation::snapshot(daemon, id, diff, rect, budget, timeout_ms, reply);
         }
         Request::Expect {
             id,
@@ -273,6 +486,18 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
             return automation::type_text(
                 daemon, id, selector, nth, contains, r#ref, text, trusted, clear, enter,
                 timeout_ms, reply,
+            );
+        }
+        Request::Paste {
+            id,
+            selector,
+            nth,
+            contains,
+            r#ref,
+            timeout_ms,
+        } => {
+            return automation::paste(
+                daemon, id, selector, nth, contains, r#ref, timeout_ms, reply,
             );
         }
         Request::Motion {
@@ -334,9 +559,253 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
         })),
         Request::Console { id, clear, limit } => automation::console(daemon, id, clear, limit),
         Request::Net { id, clear, limit } => automation::net(daemon, id, clear, limit),
-        Request::Open { url, app_id, mode } => {
+        Request::Jump { query, open } => {
+            // Fuzzy jump (roadmap H29): open windows first, then
+            // history. Window scoring reuses the history matcher's
+            // spirit: substring on url/title, host-prefix boost.
+            let q = query.to_lowercase();
+            let best_window = {
+                let windows = daemon.windows.borrow();
+                let mut best: Option<(u64, i32)> = None;
+                for w in windows.values() {
+                    let info = w.info();
+                    // Headless windows belong to agents; jumping into
+                    // one would materialize an agent's workspace.
+                    if info.mode == hwatu_ipc::OpenMode::Headless {
+                        continue;
+                    }
+                    let url = info.url.to_lowercase();
+                    let title = info.title.to_lowercase();
+                    let host = url
+                        .strip_prefix("https://")
+                        .or_else(|| url.strip_prefix("http://"))
+                        .unwrap_or(&url)
+                        .trim_start_matches("www.");
+                    let score = if host.starts_with(&q) {
+                        3
+                    } else if url.contains(&q) || title.contains(&q) {
+                        1
+                    } else {
+                        continue;
+                    };
+                    if best.is_none_or(|(_, s)| score > s) {
+                        best = Some((info.id, score));
+                    }
+                }
+                best
+            };
+            if let Some((id, _)) = best_window {
+                if crate::compositor::display_free() {
+                    reply(Response::err(
+                        "no display: hwatud is running display-free; cannot focus".to_string(),
+                    ));
+                    return;
+                }
+                let win = daemon.windows.borrow().get(&id).cloned();
+                if let Some(win) = win {
+                    win.present();
+                    daemon.last_target.replace(Some(id));
+                    reply(Response::value(serde_json::json!({
+                        "jump": "focused",
+                        "id": id,
+                    })));
+                    return;
+                }
+            }
+            // No live window: fall back to history.
+            let hits = daemon.history.complete(&query, 1);
+            match hits.into_iter().next() {
+                Some(hit) if open => {
+                    let info = BrowserWindow::open(
+                        daemon,
+                        Some(hit.url.clone()),
+                        None,
+                        hwatu_ipc::OpenMode::Normal,
+                    );
+                    daemon.last_target.replace(Some(info.id));
+                    reply(Response::value(serde_json::json!({
+                        "jump": "opened",
+                        "id": info.id,
+                        "url": hit.url,
+                    })));
+                }
+                Some(hit) => {
+                    reply(Response::value(serde_json::json!({
+                        "jump": "match",
+                        "url": hit.url,
+                        "title": hit.title,
+                    })));
+                }
+                None => {
+                    reply(Response::err(format!(
+                        "no window or history match for {query:?}"
+                    )));
+                }
+            }
+            return;
+        }
+        Request::Handoff { id, reason, now } => {
+            let Some(win) = daemon.windows.borrow().get(&id).cloned() else {
+                reply(Response::err(format!("no window {id}")));
+                return;
+            };
+            if now {
+                if crate::compositor::display_free() {
+                    reply(Response::err(
+                        "no display: hwatud is running display-free; queue with \
+                         `hwatu handoff <id> --reason ...` (without --now) instead"
+                            .to_string(),
+                    ));
+                    return;
+                }
+                win.present();
+                win.flash_bar(&format!("agent needs you: {reason}"), 30);
+                daemon.events.emit(
+                    "handoff",
+                    Some(id),
+                    serde_json::json!({ "state": "presented", "reason": reason }),
+                );
+                reply(Response::value(
+                    serde_json::json!({ "handoff": "presented" }),
+                ));
+                return;
+            }
+            let mut queue = daemon.handoffs.borrow_mut();
+            // Re-queueing the same window updates the reason instead
+            // of duplicating the entry.
+            queue.retain(|e| e.window_id != id);
+            queue.push(crate::HandoffEntry {
+                window_id: id,
+                reason: reason.clone(),
+                queued_at: unix_now(),
+            });
+            let position = queue.len();
+            drop(queue);
+            daemon.events.emit(
+                "handoff",
+                Some(id),
+                serde_json::json!({ "state": "queued", "reason": reason }),
+            );
+            reply(Response::value(serde_json::json!({
+                "handoff": "queued",
+                "position": position,
+            })));
+            return;
+        }
+        Request::Handoffs { take } => {
+            match take {
+                None => {
+                    let now = unix_now();
+                    let queue = daemon.handoffs.borrow();
+                    let entries: Vec<_> = queue
+                        .iter()
+                        .map(|e| {
+                            serde_json::json!({
+                                "id": e.window_id,
+                                "reason": e.reason,
+                                "queued_at": e.queued_at,
+                                "waiting_secs": now.saturating_sub(e.queued_at),
+                            })
+                        })
+                        .collect();
+                    reply(Response::value(serde_json::json!({ "handoffs": entries })));
+                }
+                Some(id) => {
+                    // Validate everything BEFORE consuming the entry: a
+                    // failed take (dead window aside, e.g. display-free
+                    // daemon) must leave the hand-off queued, or the
+                    // human's one attempt silently discards the agent's
+                    // request.
+                    let exists = daemon.handoffs.borrow().iter().any(|e| e.window_id == id);
+                    if !exists {
+                        reply(Response::err(format!("no pending handoff for window {id}")));
+                        return;
+                    }
+                    let win = daemon.windows.borrow().get(&id).cloned();
+                    let Some(win) = win else {
+                        // The window died while queued: the entry can
+                        // never be taken; drop it with a clear error.
+                        daemon.handoffs.borrow_mut().retain(|e| e.window_id != id);
+                        reply(Response::err(format!(
+                            "window {id} closed while its handoff was queued"
+                        )));
+                        return;
+                    };
+                    if crate::compositor::display_free() {
+                        reply(Response::err(
+                            "no display: hwatud is running display-free; cannot present"
+                                .to_string(),
+                        ));
+                        return;
+                    }
+                    let entry = {
+                        let mut queue = daemon.handoffs.borrow_mut();
+                        let pos = queue.iter().position(|e| e.window_id == id);
+                        pos.map(|p| queue.remove(p))
+                    };
+                    let Some(entry) = entry else {
+                        reply(Response::err(format!("no pending handoff for window {id}")));
+                        return;
+                    };
+                    let waited = unix_now().saturating_sub(entry.queued_at);
+                    win.present();
+                    win.flash_bar(&format!("handoff: {}", entry.reason), 30);
+                    // Queued-at/answered-at logged: the cost of waiting
+                    // on a human is a measured number, not a vibe.
+                    println!(
+                        "hwatud: handoff for window {id} answered after {waited}s ({})",
+                        entry.reason
+                    );
+                    daemon.events.emit(
+                        "handoff",
+                        Some(id),
+                        serde_json::json!({
+                            "state": "taken",
+                            "reason": entry.reason,
+                            "waited_secs": waited,
+                        }),
+                    );
+                    reply(Response::value(serde_json::json!({
+                        "handoff": "taken",
+                        "waited_secs": waited,
+                    })));
+                }
+            }
+            return;
+        }
+        Request::History {
+            query,
+            limit,
+            clear,
+        } => {
+            if clear {
+                let removed = daemon.history.clear();
+                Response::value(serde_json::json!({ "cleared": removed }))
+            } else {
+                let hits = daemon
+                    .history
+                    .complete(&query, limit.unwrap_or(20).min(100));
+                let entries: Vec<_> = hits
+                    .into_iter()
+                    .map(|h| {
+                        serde_json::json!({
+                            "url": h.url,
+                            "title": h.title,
+                            "score": h.score,
+                        })
+                    })
+                    .collect();
+                Response::value(serde_json::json!({ "history": entries }))
+            }
+        }
+        Request::Open {
+            url,
+            app_id,
+            mode,
+            profile,
+        } => {
             let url = url.map(normalize_url);
-            let info = BrowserWindow::open(daemon, url, app_id, mode);
+            let info = BrowserWindow::open_with_profile(daemon, url, app_id, mode, profile);
             // A fresh open is the natural target for follow-up id-less
             // automation ("open, then eval").
             daemon.last_target.replace(Some(info.id));
@@ -411,9 +880,21 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
         Request::Quit => {
             // Reply first, then exit from an idle callback so the response
             // actually reaches the client before the process dies.
-            glib::timeout_add_local_once(std::time::Duration::from_millis(50), || {
-                // Clean quit: do not resurrect these windows next start.
-                crate::session::clear();
+            let daemon = daemon.clone();
+            glib::timeout_add_local_once(std::time::Duration::from_millis(50), move || {
+                // Clean quit: default is no resurrection next start.
+                // `"restore_session": true` (roadmap H19) opts into
+                // restoring even after intentional exits — the WM-
+                // workspace crowd treats the browser session as
+                // durable state, not a per-run artifact.
+                let restore_on_quit = crate::window::config_value("restore_session")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                if restore_on_quit {
+                    daemon.save_session_now();
+                } else {
+                    crate::session::clear();
+                }
                 let _ = std::fs::remove_file(hwatu_ipc::socket_path());
                 std::process::exit(0);
             });
@@ -432,11 +913,13 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
         | Request::Snapshot { .. }
         | Request::Click { .. }
         | Request::Type { .. }
+        | Request::Paste { .. }
         | Request::Motion { .. }
         | Request::Seek { .. }
         | Request::Clock { .. }
         | Request::Diff { .. }
         | Request::Resize { .. }
+        | Request::ClearSiteData { .. }
         | Request::Expect { .. } => Response::err("internal: async request in sync path"),
         // Handled above; reaching here means an internal misroute.
         Request::Batch { .. } => Response::err("internal: batch in sync path"),
@@ -603,6 +1086,7 @@ mod tests {
             id: None,
             diff: false,
             rect: false,
+            budget: None,
             timeout_ms: None,
         }
     }

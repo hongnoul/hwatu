@@ -48,15 +48,19 @@ pub struct Entry {
     pub page: Option<String>,
 }
 
-/// True when Cloudflare says its challenge cannot run in this browser.
+/// True when Cloudflare rejects or abandons its challenge in this browser.
 ///
 /// 110500 is the documented unsupported-browser error.  The 600 family is a
 /// generic execution rejection, and is what Turnstile currently emits after
-/// detecting WebKitGTK's deliberately generic WebGL fingerprint.
+/// detecting WebKitGTK's deliberately generic WebGL fingerprint. Managed
+/// challenges can also tear down the widget without emitting either code;
+/// their final signal is the "Cannot find Widget" cleanup warning.
 pub fn is_turnstile_compat_error(entry: &Entry) -> bool {
     entry.kind == "console"
-        && entry.text.contains("[Cloudflare Turnstile] Error:")
-        && (entry.text.contains("Error: 110500") || entry.text.contains("Error: 600"))
+        && ((entry.text.contains("[Cloudflare Turnstile] Error:")
+            && (entry.text.contains("Error: 110500") || entry.text.contains("Error: 600")))
+            || (entry.text.contains("[Cloudflare Turnstile]")
+                && entry.text.contains("Cannot find Widget")))
 }
 
 fn now_ms() -> u64 {
@@ -292,7 +296,11 @@ mod tests {
         assert!(is_turnstile_compat_error(&e));
         e.text = "[Cloudflare Turnstile] Error: 110500.".into();
         assert!(is_turnstile_compat_error(&e));
+        e.text = "[Cloudflare Turnstile] Cannot find Widget cf-chl-widget-r2uax, consider using turnstile.remove() to clean up a widget.".into();
+        assert!(is_turnstile_compat_error(&e));
         e.text = "unrelated API Error: 600010".into();
+        assert!(!is_turnstile_compat_error(&e));
+        e.text = "Cannot find Widget in unrelated code".into();
         assert!(!is_turnstile_compat_error(&e));
         e.text = "[Cloudflare Turnstile] Error: 200500.".into();
         assert!(!is_turnstile_compat_error(&e));

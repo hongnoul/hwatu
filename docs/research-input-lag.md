@@ -240,3 +240,49 @@ path. Revisit when WebKitGTK's vblank monitor learns to follow the
 real display rate (or exposes a refresh-rate override): the DMA-BUF
 path is the better architecture and should win again once its pacing
 is fixed.
+
+## Addendum 2: the GSK Vulkan cross-GPU collapse (found and fixed)
+
+Symptom rediscovered while chasing "scroll paint should never lag":
+on the same 144Hz niri laptop (i7-12650H iGPU + RTX 4050 dGPU,
+NVIDIA 610 driver, GTK 4.22), every hwatu scroll frame took ~45ms
+(~22fps) while idle rAF sat at 7ms (144fps) — but stock MiniBrowser
+on the identical fixture scrolled at 14ms/frame. Same engine, same
+env, so the delta had to be in what surrounds the engine.
+
+Bisection (self-driving fixture writes its result into
+`document.title`, `~/.jcode/scratch/hwatu-scroll-bench/`):
+
+| config | scroll ms/frame |
+|---|---|
+| hwatu default (GSK auto → vulkan) | 44-46 |
+| hwatu, adblock/smoothwheel/shields off | 45 (not the scripts) |
+| hwatu, `LIBGL_ALWAYS_SOFTWARE=1` | 44 (not GL raster) |
+| hwatu at 1024x768 | 19 (pixel-volume bound) |
+| hwatu `GSK_RENDERER=vulkan` explicit | 46 |
+| hwatu `GSK_RENDERER=vulkan` + `GDK_VULKAN_DEVICE=1` (iGPU) | 48 |
+| hwatu `GSK_RENDERER=ngl`/`gl` | 12-17 |
+| hwatu `GSK_RENDERER=cairo` | 17 |
+| MiniBrowser (GSK gl default via its own path) | 14 |
+
+Root cause: GTK 4.22's renderer auto-selection picks the Vulkan
+renderer, and `GDK_DEBUG=vulkan` shows it lands on the **discrete
+NVIDIA GPU** ("Using Vulkan device 0: NVIDIA GeForce RTX 4050"),
+while WebKit paints its frames through the Wayland EGL platform on
+the **Intel iGPU** (eglinfo: Wayland platform → Mesa Intel ADL GT2).
+Every composited frame crosses the GPU boundary. Vulkan pinned to
+the iGPU is equally slow, so the texture-upload path of the Vulkan
+renderer is implicated too, not just device mismatch. The GL
+renderer follows the same EGL platform WebKit uses and composites
+on the iGPU: 3x faster, and it matches MiniBrowser.
+
+Fix: hwatud exports `GSK_RENDERER=gl` by default (`main.rs`), next
+to the existing DMA-BUF opt-out. Explicit user env always wins
+(`GSK_RENDERER=vulkan hwatud` restores GTK's pick). Verified after
+the change: fixture scroll 14-16ms, Wikipedia scroll median 14ms
+p95 17ms (was 44-46ms), WebGL2 still hardware-backed, screenshot
+pixel-clean, all 173 hwatud tests pass.
+
+Revisit when GTK's Vulkan renderer either follows the compositor's
+main device or gets dmabuf import fast paths on NVIDIA — Vulkan is
+GTK's strategic renderer and will eventually be the right answer.

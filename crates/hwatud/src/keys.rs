@@ -54,6 +54,28 @@ pub enum Action {
     Fullscreen,
     /// Toggle page audio mute.
     Mute,
+    /// Reopen the most recently closed window (ctrl+shift+t).
+    ReopenClosed,
+    /// Print the page (system dialog; print-to-PDF included).
+    Print,
+    /// Link hints: label visible links/controls, activate in place.
+    HintFollow,
+    /// Link hints, open the picked link in a new window.
+    HintNewWindow,
+    /// Link hints, copy the picked link's URL.
+    HintYank,
+    /// Fill login credentials from the system password manager.
+    FillPassword,
+    /// Toggle forced dark mode for the current site.
+    DarkMode,
+    /// Hand the current page's URL to mpv (video escape hatch).
+    OpenMpv,
+    /// Edit the focused text field in $EDITOR, paste back on save.
+    EditInEditor,
+    /// Toggle reader mode (article extraction, clean typography).
+    Reader,
+    /// Share the page URL via share.conf targets (palette submenu).
+    Share,
     /// Open the command palette (fuzzy action search in the bar).
     CommandPalette,
 }
@@ -80,6 +102,17 @@ impl Action {
         Action::ZoomReset,
         Action::Fullscreen,
         Action::Mute,
+        Action::ReopenClosed,
+        Action::Print,
+        Action::HintFollow,
+        Action::HintNewWindow,
+        Action::HintYank,
+        Action::FillPassword,
+        Action::DarkMode,
+        Action::OpenMpv,
+        Action::EditInEditor,
+        Action::Reader,
+        Action::Share,
         Action::CommandPalette,
     ];
 
@@ -105,6 +138,17 @@ impl Action {
             Action::ZoomReset => "zoom_reset",
             Action::Fullscreen => "fullscreen",
             Action::Mute => "mute",
+            Action::ReopenClosed => "reopen_closed",
+            Action::Print => "print",
+            Action::HintFollow => "hint_follow",
+            Action::HintNewWindow => "hint_new_window",
+            Action::HintYank => "hint_yank",
+            Action::FillPassword => "fill_password",
+            Action::DarkMode => "dark_mode",
+            Action::OpenMpv => "open_mpv",
+            Action::EditInEditor => "edit_in_editor",
+            Action::Reader => "reader",
+            Action::Share => "share",
             Action::CommandPalette => "command_palette",
         }
     }
@@ -132,6 +176,17 @@ impl Action {
             Action::ZoomReset => "reset zoom",
             Action::Fullscreen => "toggle fullscreen",
             Action::Mute => "toggle video mute",
+            Action::ReopenClosed => "reopen last closed tab",
+            Action::Print => "print page",
+            Action::HintFollow => "link hints: follow",
+            Action::HintNewWindow => "link hints: open in new window",
+            Action::HintYank => "link hints: copy link URL",
+            Action::FillPassword => "fill login from password manager",
+            Action::DarkMode => "toggle forced dark mode (per site)",
+            Action::OpenMpv => "open current page in mpv",
+            Action::EditInEditor => "edit focused text field in $EDITOR",
+            Action::Reader => "reader mode (article view)",
+            Action::Share => "share page URL (share.conf)",
             Action::CommandPalette => "command palette",
         }
     }
@@ -170,6 +225,21 @@ impl Action {
             // Bare key, so it dispatches in the bubble phase: an `m`
             // typed into a page text box still reaches the page.
             Action::Mute => "m",
+            // The mainstream browser convention for "undo close tab".
+            Action::ReopenClosed => "ctrl+shift+t",
+            Action::Print => "ctrl+p",
+            // Bare keys, bubble phase: an `f` typed into a page text
+            // box still reaches the page (same contract as `m`).
+            Action::HintFollow => "f",
+            Action::HintNewWindow => "F",
+            Action::HintYank => "ctrl+shift+y",
+            Action::FillPassword => "alt+p",
+            Action::DarkMode => "ctrl+shift+d",
+            Action::OpenMpv => "ctrl+shift+m",
+            Action::EditInEditor => "ctrl+e",
+            Action::Reader => "alt+r",
+            // Palette-only by default: share targets are a submenu.
+            Action::Share => "",
             // ctrl+shift+p mirrors VS Code; ctrl+k is unclaimed in
             // browsers and one chord shorter for daily use.
             Action::CommandPalette => "ctrl+k, ctrl+shift+p",
@@ -566,6 +636,12 @@ mod tests {
         // Bare m toggles mute; it must bubble so page inputs keep it.
         assert_eq!(map.lookup(Phase::Bubble, Key::m, NONE), Some(Action::Mute));
         assert_eq!(map.lookup(Phase::Capture, Key::m, NONE), None);
+        // Undo close tab, the chord everyone knows. Shift matters:
+        // bare ctrl+t opens a new window instead.
+        assert_eq!(
+            map.lookup(Phase::Capture, Key::T, CTRL | SHIFT),
+            Some(Action::ReopenClosed)
+        );
     }
 
     #[test]

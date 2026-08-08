@@ -268,6 +268,7 @@ fn open_headless(url: &str, timeout_ms: u64) -> Result<u64, String> {
         url: Some(url.to_string()),
         app_id: None,
         mode: OpenMode::Headless,
+        profile: None,
     })?
     else {
         unreachable!("call_ok filters Err")
@@ -373,6 +374,12 @@ fn clone_with_window(opts: &Opts, live: u64) -> Result<String, String> {
         "unreplicated_motion": unreplicated_motion,
         "stripped_scripts": stripped_scripts,
         "interactive_elements": interactive,
+        "parser_fixed_point": cap.get("parserFixedPoint").cloned().unwrap_or_else(|| serde_json::json!({
+            "fixed_point": true,
+            "rewritten": [],
+            "reparsed_tag_count_deltas": [],
+            "injected_css": false,
+        })),
         "scroll_effects": stats.scroll_effects,
         "summary": honesty,
         "envelope": "still clone; scores cover exactly this viewport and these scroll offsets",
@@ -752,20 +759,38 @@ fn materialize(cap: &serde_json::Value, out: &Path) -> Result<MaterializeStats, 
     if let Some(effects) = cap.get("scrollEffects").and_then(|v| v.as_array()) {
         if !effects.is_empty() {
             let mut fits = Vec::new();
+            let mut scroll_tracks = Vec::new();
             for effect in effects {
                 let mut annotated = effect.clone();
                 let entry = annotated.as_object_mut().expect("effect is an object");
                 // The dense per-word sweep is fitting input, not report
                 // material: it dwarfs the rest of the report.
                 entry.remove("words");
-                match fit_scroll_effect(effect) {
-                    Some(fit) => {
+                let kind = effect.get("kind").and_then(|v| v.as_str()).unwrap_or("");
+                if matches!(
+                    kind,
+                    "scroll-coupled-visual-style" | "scroll-pin" | "scroll-triggered-time-style"
+                ) {
+                    if direct_track_supported(effect) {
                         entry.insert("replay".into(), serde_json::json!("replayed"));
-                        entry.insert("replay_fit".into(), fit.to_json());
-                        fits.push(fit);
-                    }
-                    None => {
+                        entry.insert(
+                            "replay_fit".into(),
+                            serde_json::json!({ "model": "direct serialized scroll track runtime" }),
+                        );
+                        scroll_tracks.push(annotated.clone());
+                    } else {
                         entry.insert("replay".into(), serde_json::json!("report-only"));
+                    }
+                } else {
+                    match fit_scroll_effect(effect) {
+                        Some(fit) => {
+                            entry.insert("replay".into(), serde_json::json!("replayed"));
+                            entry.insert("replay_fit".into(), fit.to_json());
+                            fits.push(fit);
+                        }
+                        None => {
+                            entry.insert("replay".into(), serde_json::json!("report-only"));
+                        }
                     }
                 }
                 scroll_effects_out.push(annotated);
@@ -778,6 +803,7 @@ fn materialize(cap: &serde_json::Value, out: &Path) -> Result<MaterializeStats, 
             if !fits.is_empty() {
                 inject.push_str(&scroll_replay_script(&fits));
             }
+            inject.push_str(&scroll_tracks_replay_script(&scroll_tracks));
             if !inject.is_empty() {
                 if let Some(pos) = html.find("</body>") {
                     html.insert_str(pos, &inject);
@@ -1354,6 +1380,240 @@ fn scroll_replay_script(fits: &[ScrollEffectFit]) -> String {
     )
 }
 
+fn supported_matrix(v: &str) -> bool {
+    v == "none" || v.starts_with("matrix(") || v.starts_with("matrix3d(")
+}
+
+fn supported_inset_percent(v: &str) -> bool {
+    if v == "none" {
+        return true;
+    }
+    let Some(body) = v.strip_prefix("inset(").and_then(|s| s.strip_suffix(')')) else {
+        return false;
+    };
+    let main = body.split(" round ").next().unwrap_or(body);
+    !main.is_empty()
+        && main
+            .split_whitespace()
+            .all(|part| part.ends_with('%') && part[..part.len() - 1].parse::<f64>().is_ok())
+}
+
+fn direct_style_supported(from: &serde_json::Value, to: &serde_json::Value) -> bool {
+    let mut supported_change = false;
+    let changed = |field: &str| from.get(field) != to.get(field);
+    if changed("opacity") {
+        let ok = from
+            .get("opacity")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse::<f64>().ok())
+            .is_some()
+            && to
+                .get("opacity")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<f64>().ok())
+                .is_some();
+        if !ok {
+            return false;
+        }
+        supported_change = true;
+    }
+    if changed("borderRadius") {
+        let ok = from
+            .get("borderRadius")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.trim_end_matches("px").parse::<f64>().ok())
+            .is_some()
+            && to
+                .get("borderRadius")
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.trim_end_matches("px").parse::<f64>().ok())
+                .is_some();
+        if !ok {
+            return false;
+        }
+        supported_change = true;
+    }
+    if changed("transform") {
+        let ok = from
+            .get("transform")
+            .and_then(|v| v.as_str())
+            .is_some_and(supported_matrix)
+            && to
+                .get("transform")
+                .and_then(|v| v.as_str())
+                .is_some_and(supported_matrix);
+        if !ok {
+            return false;
+        }
+        supported_change = true;
+    }
+    if changed("clipPath") {
+        let ok = from
+            .get("clipPath")
+            .and_then(|v| v.as_str())
+            .is_some_and(supported_inset_percent)
+            && to
+                .get("clipPath")
+                .and_then(|v| v.as_str())
+                .is_some_and(supported_inset_percent);
+        if !ok {
+            return false;
+        }
+        supported_change = true;
+    }
+    supported_change
+}
+
+fn direct_track_supported(effect: &serde_json::Value) -> bool {
+    let Some(kind) = effect.get("kind").and_then(|v| v.as_str()) else {
+        return false;
+    };
+    if effect.get("selector").and_then(|v| v.as_str()).is_none() {
+        return false;
+    }
+    match kind {
+        "scroll-pin" => {
+            effect
+                .get("pinnedSelector")
+                .and_then(|v| v.as_str())
+                .is_some()
+                && effect.get("startY").and_then(|v| v.as_f64()).is_some()
+                && effect.get("endY").and_then(|v| v.as_f64()).is_some()
+                && effect
+                    .get("desiredViewportTop")
+                    .and_then(|v| v.as_f64())
+                    .is_some()
+                && effect.get("endY").and_then(|v| v.as_f64()).unwrap_or(0.0)
+                    > effect.get("startY").and_then(|v| v.as_f64()).unwrap_or(0.0)
+        }
+        "scroll-coupled-visual-style" => {
+            let Some(progress) = effect.get("progress") else {
+                return false;
+            };
+            let Some(start) = progress.get("startY").and_then(|v| v.as_f64()) else {
+                return false;
+            };
+            let Some(end) = progress.get("endY").and_then(|v| v.as_f64()) else {
+                return false;
+            };
+            end > start
+                && effect
+                    .get("from")
+                    .zip(effect.get("to"))
+                    .is_some_and(|(from, to)| direct_style_supported(from, to))
+        }
+        "scroll-triggered-time-style" => {
+            effect.get("triggerY").and_then(|v| v.as_f64()).is_some()
+                && effect
+                    .get("before")
+                    .zip(effect.get("after"))
+                    .is_some_and(|(before, after)| direct_style_supported(before, after))
+        }
+        _ => false,
+    }
+}
+
+fn scroll_tracks_replay_script(effects: &[serde_json::Value]) -> String {
+    let payload: Vec<serde_json::Value> = effects
+        .iter()
+        .filter(|e| {
+            matches!(
+                e.get("kind").and_then(|v| v.as_str()),
+                Some("scroll-coupled-visual-style" | "scroll-pin" | "scroll-triggered-time-style")
+            )
+        })
+        .cloned()
+        .collect();
+    if payload.is_empty() {
+        return String::new();
+    }
+    format!(
+        r#"<script id="hwatu-scroll-tracks-replay">(function () {{
+  const cfg = {payload};
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const num = (v) => {{ const n = parseFloat(v); return Number.isFinite(n) ? n : null; }};
+  const px = (v) => {{ const n = num(v); return n == null ? null : n + 'px'; }};
+  const matrix = (v) => {{
+    if (!v || v === 'none') return {{ sx: 1, sy: 1, tx: 0, ty: 0 }};
+    let m = /^matrix\(([^)]+)\)$/.exec(v);
+    if (m) {{ const p = m[1].split(',').map(parseFloat); return {{ sx: p[0] || 1, sy: p[3] || 1, tx: p[4] || 0, ty: p[5] || 0 }}; }}
+    m = /^matrix3d\(([^)]+)\)$/.exec(v);
+    if (m) {{ const p = m[1].split(',').map(parseFloat); return {{ sx: p[0] || 1, sy: p[5] || 1, tx: p[12] || 0, ty: p[13] || 0 }}; }}
+    return null;
+  }};
+  const inset = (v) => {{
+    const m = /^inset\(([^)]*)\)$/.exec(v || '');
+    if (!m) return null;
+    const [main, round] = m[1].split(/\s+round\s+/);
+    const vals = main.trim().split(/\s+/).map(num);
+    if (vals.some(x => x == null)) return null;
+    while (vals.length < 4) vals.push(vals[vals.length === 1 ? 0 : vals.length - 2]);
+    return {{ vals, round: round || '' }};
+  }};
+  const states = cfg.map((e) => {{
+    const root = document.querySelector(e.selector || '');
+    if (!root) return null;
+    if (e.kind === 'scroll-pin') {{
+      const child = document.querySelector(e.pinnedSelector || '') || root.firstElementChild || root;
+      const baseTransform = child.style.transform || '';
+      const computedTransform = getComputedStyle(child).transform;
+      const baseline = baseTransform || (computedTransform && computedTransform !== 'none' ? computedTransform : '');
+      return {{ e, root, child, baseline }};
+    }}
+    return {{ e, root }};
+  }}).filter(Boolean);
+  const writeStyle = (el, from, to, t) => {{
+    if (!from || !to) return;
+    const fo = num(from.opacity), toOp = num(to.opacity);
+    if (fo != null && toOp != null && fo !== toOp) el.style.opacity = String(lerp(fo, toOp, t));
+    const fr = px(from.borderRadius), tr = px(to.borderRadius);
+    if (fr != null && tr != null && fr !== tr) el.style.borderRadius = lerp(parseFloat(fr), parseFloat(tr), t) + 'px';
+    const fm = matrix(from.transform), tm = matrix(to.transform);
+    if (fm && tm) el.style.transform = `translate(${{lerp(fm.tx, tm.tx, t)}}px, ${{lerp(fm.ty, tm.ty, t)}}px) scale(${{lerp(fm.sx, tm.sx, t)}}, ${{lerp(fm.sy, tm.sy, t)}})`;
+    const fi = inset(from.clipPath), ti = inset(to.clipPath);
+    if (fi && ti) el.style.clipPath = 'inset(' + fi.vals.map((v, i) => lerp(v, ti.vals[i], t).toFixed(3) + '%').join(' ') + (ti.round ? ' round ' + ti.round : '') + ')';
+  }};
+  const update = () => {{
+    const y = scrollY || document.documentElement.scrollTop || 0;
+    for (const s of states) {{
+      const e = s.e;
+      if (e.kind === 'scroll-pin') {{
+        const start = +e.startY || 0, end = +e.endY || start;
+        const active = y >= start && y <= end && end > start;
+        if (!active) {{ s.child.style.transform = s.baseline; continue; }}
+        const desired = Number.isFinite(+e.desiredViewportTop) ? +e.desiredViewportTop : s.child.getBoundingClientRect().top;
+        // Restore the captured baseline before measuring so our previous
+        // translate never feeds back into the next frame. The stable root
+        // remains the activation anchor; this read only computes the final
+        // correction needed for sticky/native layouts.
+        s.child.style.transform = s.baseline;
+        s.root.getBoundingClientRect();
+        const delta = desired - s.child.getBoundingClientRect().top;
+        s.child.style.transform = `translate3d(0, ${{delta}}px, 0)` + (s.baseline ? ' ' + s.baseline : '');
+        s.child.style.willChange = 'transform';
+      }} else if (e.kind === 'scroll-coupled-visual-style') {{
+        const p = e.progress || {{}};
+        const t = clamp((y - (+p.startY || 0)) / Math.max(1, (+p.endY || 0) - (+p.startY || 0)), 0, 1);
+        writeStyle(s.root, e.from, e.to, t);
+      }} else if (e.kind === 'scroll-triggered-time-style') {{
+        const on = y >= (+e.triggerY || 0);
+        s.root.dataset.hwatuTimeState = on ? 'in' : 'out';
+        s.root.style.transition = 'transform 700ms cubic-bezier(.2,.8,.2,1), opacity 500ms ease, color 500ms ease, background-color 500ms ease, clip-path 700ms ease';
+        writeStyle(s.root, on ? e.before : e.after, on ? e.after : e.before, 1);
+      }}
+    }}
+  }};
+  addEventListener('scroll', update, {{ passive: true }});
+  document.addEventListener('scroll', update, {{ passive: true, capture: true }});
+  if (typeof requestAnimationFrame === 'function') {{ const loop = () => {{ update(); requestAnimationFrame(loop); }}; requestAnimationFrame(loop); }}
+  setInterval(update, 250);
+  update();
+}})();</script>"#,
+        payload = serde_json::Value::Array(payload)
+    )
+}
+
 fn scroll_effect_notice(effects: &[serde_json::Value]) -> Option<String> {
     if effects.is_empty() {
         return None;
@@ -1364,7 +1624,7 @@ fn scroll_effect_notice(effects: &[serde_json::Value]) -> Option<String> {
         .filter(|e| e.get("replay").and_then(|v| v.as_str()) == Some("replayed"))
         .count();
     Some(format!(
-        "\n<!-- hwatu: detected {count} scroll-coupled text style region(s): \
+        "\n<!-- hwatu: detected {count} scroll effect track(s): \
          {replayed} replayed by a generated scrollY->style runtime, {} report-only; \
          see scroll-effects.json for fits and entry/midpoint/exit samples. -->\n",
         count - replayed
@@ -1677,7 +1937,10 @@ mod tests {
             }),
         ];
         let notice = scroll_effect_notice(&effects).unwrap();
-        assert!(notice.contains("detected 2 scroll-coupled"), "{notice}");
+        assert!(
+            notice.contains("detected 2 scroll effect track"),
+            "{notice}"
+        );
         assert!(notice.contains("1 replayed"), "{notice}");
         assert!(notice.contains("1 report-only"), "{notice}");
         assert!(notice.contains("scroll-effects.json"), "{notice}");
@@ -1792,6 +2055,51 @@ mod tests {
             w["i"] = serde_json::json!(k);
         }
         assert!(fit_scroll_effect(&effect).is_none());
+    }
+
+    #[test]
+    fn direct_tracks_gate_unsupported_shapes() {
+        let visual = serde_json::json!({
+            "kind": "scroll-coupled-visual-style",
+            "selector": "#visual",
+            "progress": { "startY": 10, "endY": 100 },
+            "from": { "opacity": "0", "transform": "matrix(1, 0, 0, 1, 0, 0)", "clipPath": "inset(0% 100% 0% 0% round 10px)" },
+            "to": { "opacity": "1", "transform": "matrix(2, 0, 0, 2, 0, 0)", "clipPath": "inset(0% 0% 0% 0% round 10px)" }
+        });
+        assert!(direct_track_supported(&visual));
+        let unsupported = serde_json::json!({
+            "kind": "scroll-coupled-visual-style",
+            "selector": "#visual",
+            "progress": { "startY": 10, "endY": 100 },
+            "from": { "clipPath": "circle(10px at 50% 50%)" },
+            "to": { "clipPath": "circle(50px at 50% 50%)" }
+        });
+        assert!(!direct_track_supported(&unsupported));
+    }
+
+    #[test]
+    fn scroll_tracks_runtime_composes_pin_baseline_transform() {
+        let script = scroll_tracks_replay_script(&[serde_json::json!({
+            "kind": "scroll-pin",
+            "selector": "#pin-root",
+            "pinnedSelector": "#pinned",
+            "startY": 100,
+            "endY": 900,
+            "desiredViewportTop": 120,
+            "replay": "replayed"
+        })]);
+        assert!(script.contains("hwatu-scroll-tracks-replay"), "{script}");
+        assert!(script.contains("baseTransform"), "{script}");
+        assert!(script.contains("computedTransform"), "{script}");
+        assert!(
+            script.contains("s.child.style.transform = s.baseline"),
+            "{script}"
+        );
+        assert!(
+            script.contains("+ (s.baseline ? ' ' + s.baseline"),
+            "{script}"
+        );
+        assert!(script.contains("translate3d(0,"), "{script}");
     }
 
     #[test]

@@ -254,6 +254,51 @@ sandboxes), which is the price of instant spawns. Unfocused windows
 are additionally suspended after `HWATU_DISCARD_SECS` (default 120 s),
 which kills their web process and returns that ~56 MB until refocus.
 
+## Memory-over-time soak
+
+`scripts/soak-daemon-rss.sh` exercises one long-lived `hwatud` through
+repeated page-operation rounds against a deterministic local fixture by
+default. Each round drives the existing daemon with:
+
+1. `goto --id <window> --until dom <local-fixture>?round=N`
+2. `shot --id <window> <artifact.png>`
+3. `snapshot --id <window>`
+
+The benchmark isolates `XDG_RUNTIME_DIR`, `XDG_STATE_HOME`,
+`XDG_CONFIG_HOME`, `XDG_DATA_HOME`, and `XDG_CACHE_HOME`, so the default
+run does not read or write the user's real socket, state, cookie jar, or
+WebKit cache. Its primary curve is the owned daemon process tree, not just
+the GTK parent: it sums PSS from `/proc/<pid>/smaps_rollup` for `hwatud`
+and descendants, falling back to VmRSS only where PSS is unavailable. The
+summary JSON records the exact `metric` and `metric_method` used.
+
+By default this is a measurement tool, not a CI failure gate. It writes a
+CSV curve and `summary.json`, warns when growth exceeds the threshold, and
+only exits non-zero for growth when explicitly requested with
+`--fail-on-growth` or `HWATU_SOAK_FAIL_ON_GROWTH=1`. The default threshold
+is 20% after warmup, which is intentionally generous for allocator and
+WebKit process start-up noise while still catching the multi-round runaway
+class that motivated issue #48.
+
+```sh
+cargo build --release
+scripts/soak-daemon-rss.sh --rounds 200 --warmup 10 --out /tmp/hwatu-soak --keep
+scripts/soak-daemon-rss.sh --rounds 200 --warmup 10 --fail-on-growth
+```
+
+Short host run for issue #48, measured 2026-08-02 on the same i7-12650H
+laptop with WebKitGTK 2.52.5, release binaries, 5 warmup rounds and 30
+measured rounds:
+
+| metric | baseline | final | peak | growth | result |
+|---|---:|---:|---:|---:|---|
+| process-tree PSS | 237,070 kB | 228,854 kB | 239,450 kB | -3.47% | below 20%, not failed |
+
+The curve stayed bounded and ended below the post-warmup baseline: rounds
+21-30 were 234,403, 233,090, 233,357, 233,826, 231,247, 230,701,
+230,187, 230,037, 230,167, and 229,015 kB. No unbounded ratchet was
+observed in this short soak.
+
 ## Head-to-head: hwatu vs Playwright + headless Chromium
 
 `scripts/bench-vs-playwright.mjs` runs both tools against the same
@@ -324,8 +369,8 @@ sidesteps it via recycling but `open` still pays it). Fixed so far:
 screenshot encode (was 90 ms of the pass; threaded fast-PNG encode,
 ~14 ms), load-settle tail (`--until dom`, 2026-07-25), and per-pass
 overhead (composite `check` + window recycling, 2026-07-25, which
-took the warm screenshot pass from ~100 ms to 35-39 ms). Tracked in
-[roadmap.md](roadmap.md).
+took the warm screenshot pass from ~100 ms to 35-39 ms). Shared runtime
+performance work is tracked in the [platform roadmap](roadmaps/platform.md).
 
 Caveat on method: hwatu steps go through CLI process spawns (5 per
 pass, the worst case for it) except in the socket variants, while

@@ -4,13 +4,13 @@
 //! with a y/n keypress on the bar. One pending prompt at a time per
 //! window; later requests queue behind it.
 //!
-//! Decisions are remembered per (host, kind) for the daemon's lifetime
-//! so a page asking repeatedly does not nag. Nothing is persisted:
-//! restart the daemon to reset grants, which is also the safe default.
+//! Permission decisions are remembered per (host, kind) in the daemon's
+//! site store (persistent on disk unless the daemon runs an ephemeral
+//! profile) so a page asking repeatedly does not nag, across restarts.
 
 use gtk::gio;
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use webkit6::prelude::*;
 
 /// A question waiting for a y/n keypress.
@@ -46,9 +46,9 @@ impl Prompt {
         }
     }
 
-    fn memory_key(&self) -> Option<String> {
+    fn memory_key(&self) -> Option<(String, &'static str)> {
         match self {
-            Prompt::Permission { host, kind, .. } => Some(format!("perm:{host}:{kind}")),
+            Prompt::Permission { host, kind, .. } => Some((host.clone(), kind)),
             // TLS exceptions are handled by the network session itself.
             Prompt::Tls { .. } => None,
             // Launching another application is always an explicit action.
@@ -57,19 +57,16 @@ impl Prompt {
     }
 }
 
-/// Daemon-lifetime decision memory, shared by all windows.
-pub type Memory = std::rc::Rc<RefCell<HashMap<String, bool>>>;
-
-/// Per-window prompt queue; decision memory is daemon-wide so a grant
-/// in one window covers the site in every window.
-#[derive(Default)]
+/// Per-window prompt queue; decision memory is the daemon-wide site
+/// store, so a grant in one window covers the site in every window
+/// and (outside ephemeral mode) across restarts.
 pub struct Prompts {
     queue: RefCell<VecDeque<Prompt>>,
-    remembered: Memory,
+    remembered: crate::sitedata::Store,
 }
 
 impl Prompts {
-    pub fn new(remembered: Memory) -> Self {
+    pub fn new(remembered: crate::sitedata::Store) -> Self {
         Prompts {
             queue: RefCell::new(VecDeque::new()),
             remembered,
@@ -80,8 +77,8 @@ impl Prompts {
     /// open now (i.e. this prompt is at the front), or None if it was
     /// auto-answered from memory or is waiting behind another.
     pub fn push(&self, prompt: Prompt) -> Option<String> {
-        if let Some(key) = prompt.memory_key() {
-            if let Some(&allow) = self.remembered.borrow().get(&key) {
+        if let Some((host, kind)) = prompt.memory_key() {
+            if let Some(allow) = self.remembered.permission(&host, kind) {
                 answer(&prompt, allow, None);
                 return None;
             }
@@ -99,8 +96,8 @@ impl Prompts {
     /// any is queued.
     pub fn answer_front(&self, allow: bool, webview: Option<&webkit6::WebView>) -> Option<String> {
         let front = self.queue.borrow_mut().pop_front()?;
-        if let Some(key) = front.memory_key() {
-            self.remembered.borrow_mut().insert(key, allow);
+        if let Some((host, kind)) = front.memory_key() {
+            self.remembered.set_permission(&host, kind, allow);
         }
         answer(&front, allow, webview);
         self.queue.borrow().front().map(|p| p.question())

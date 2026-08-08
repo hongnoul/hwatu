@@ -254,7 +254,14 @@ fn default_open_mode() -> OpenMode {
             .map(|k| k.starts_with("JCODE_") && !JCODE_USER_CONFIG_VARS.contains(&k))
             .unwrap_or(false)
     });
-    if !from_jcode && !AGENT_MARKERS.iter().any(|k| std::env::var_os(k).is_some()) {
+    let from_agent = from_jcode || AGENT_MARKERS.iter().any(|k| std::env::var_os(k).is_some());
+    let gio_launch_pid = std::env::var("GIO_LAUNCHED_DESKTOP_FILE_PID").ok();
+    let user_initiated = is_current_gio_launch(
+        std::env::var_os("GIO_LAUNCHED_DESKTOP_FILE").is_some(),
+        gio_launch_pid.as_deref(),
+        std::process::id(),
+    ) || std::env::var("JCODE_OPEN_ORIGIN").as_deref() == Ok("user");
+    if should_default_to_normal(user_initiated, from_agent) {
         return OpenMode::Normal;
     }
     if let Ok(v) = std::env::var("HWATU_AGENT_MODE") {
@@ -266,6 +273,28 @@ fn default_open_mode() -> OpenMode {
         );
     }
     config_agent_mode().unwrap_or(OpenMode::Headless)
+}
+
+/// A URL explicitly activated by a user is visible even when the application
+/// that called the system opener is itself an agent UI. GIO marks conforming
+/// desktop-entry launches; jcode supplies `JCODE_OPEN_ORIGIN=user` because some
+/// `xdg-open` implementations execute desktop entries directly without a GIO
+/// marker. Without this exception, the inherited `JCODE_*` environment would
+/// silently create a headless hwatu page.
+fn should_default_to_normal(user_initiated: bool, from_agent: bool) -> bool {
+    user_initiated || !from_agent
+}
+
+/// GIO launch markers are inherited by child processes. The companion PID is
+/// therefore required to prove that GIO launched this process, rather than an
+/// ancestor such as a terminal or agent UI.
+fn is_current_gio_launch(
+    desktop_file_present: bool,
+    launched_pid: Option<&str>,
+    current_pid: u32,
+) -> bool {
+    desktop_file_present
+        && launched_pid.and_then(|pid| pid.parse::<u32>().ok()) == Some(current_pid)
 }
 
 /// Parse a user-facing mode name. `focus` is accepted as an alias for
@@ -340,6 +369,10 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
     let mut keep = false;
     let mut diff = false;
     let mut rect = false;
+    let mut budget: Option<usize> = None;
+    let mut reason: Option<String> = None;
+    let mut now = false;
+    let mut profile: Option<String> = None;
     let mut expect_watch = false;
     let mut mode = default_mode;
     let mut trusted = false;
@@ -413,6 +446,40 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                     .and_then(|v| v.parse().ok())
                     .ok_or("usage: --limit <n>")?,
             );
+        } else if arg == "--budget" {
+            budget = Some(
+                it.next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("usage: --budget <chars>")?,
+            );
+        } else if let Some(v) = arg.strip_prefix("--budget=") {
+            budget = Some(v.parse().map_err(|_| "usage: --budget=<chars>")?);
+        } else if arg == "--reason" {
+            reason = Some(
+                it.next()
+                    .filter(|v| !v.trim().is_empty())
+                    .ok_or("usage: --reason <text>")?
+                    .clone(),
+            );
+        } else if let Some(v) = arg.strip_prefix("--reason=") {
+            if v.trim().is_empty() {
+                return Err("usage: --reason=<text>".into());
+            }
+            reason = Some(v.to_string());
+        } else if arg == "--now" {
+            now = true;
+        } else if arg == "--profile" {
+            profile = Some(
+                it.next()
+                    .filter(|v| !v.trim().is_empty())
+                    .ok_or("usage: --profile <name|auto>")?
+                    .clone(),
+            );
+        } else if let Some(v) = arg.strip_prefix("--profile=") {
+            if v.trim().is_empty() {
+                return Err("usage: --profile=<name|auto>".into());
+            }
+            profile = Some(v.to_string());
         } else if arg == "--time-ms" {
             time_ms = Some(
                 it.next()
@@ -587,6 +654,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             url: None,
             app_id,
             mode,
+            profile: resolve_profile(profile),
         }),
         Some("list") => Ok(Request::List),
         Some("ping") => Ok(Request::Ping),
@@ -812,6 +880,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             id,
             diff,
             rect,
+            budget,
             timeout_ms,
         }),
         Some("expect") => {
@@ -960,8 +1029,76 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 timeout_ms,
             })
         }
+        Some("paste") => {
+            let selector = if r#ref.is_some() {
+                None
+            } else {
+                Some(
+                    rest.get(1)
+                        .ok_or("usage: hwatu paste [--id <id>] (<selector> | --ref <n>)")?
+                        .to_string(),
+                )
+            };
+            if selector.is_none() && r#ref.is_none() {
+                return Err("usage: hwatu paste [--id <id>] (<selector> | --ref <n>)".into());
+            }
+            Ok(Request::Paste {
+                id,
+                selector,
+                nth,
+                contains,
+                r#ref,
+                timeout_ms,
+            })
+        }
         Some("console") => Ok(Request::Console { id, clear, limit }),
         Some("net") => Ok(Request::Net { id, clear, limit }),
+        Some("history") => {
+            // `hwatu history [query...] [--limit N] [--clear]`
+            let query = rest[1..]
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            Ok(Request::History {
+                query,
+                limit,
+                clear,
+            })
+        }
+        Some("clear-site-data") => Ok(Request::ClearSiteData {
+            host: rest.get(1).map(|s| s.to_string()),
+        }),
+        Some("handoff") => {
+            // `hwatu handoff <id> --reason <text> [--now]`
+            let win = rest
+                .get(1)
+                .and_then(|s| s.parse().ok())
+                .or(id)
+                .ok_or("usage: hwatu handoff <id> --reason <text> [--now]")?;
+            let reason = reason
+                .clone()
+                .ok_or("usage: hwatu handoff <id> --reason <text> [--now]")?;
+            Ok(Request::Handoff {
+                id: win,
+                reason,
+                now,
+            })
+        }
+        Some("handoffs") => Ok(Request::Handoffs {
+            take: rest.get(1).and_then(|s| s.parse().ok()),
+        }),
+        Some("jump") => {
+            let query = rest[1..]
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            if query.is_empty() {
+                return Err("usage: hwatu jump <query>".into());
+            }
+            Ok(Request::Jump { query, open: true })
+        }
         Some("focus") => {
             let id = rest
                 .get(1)
@@ -1004,11 +1141,48 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             ),
             app_id,
             mode,
+            profile: resolve_profile(profile),
         }),
     }
 }
 
-const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--focus] [url] \
+/// Resolve the profile choice (platform item 6): explicit flag wins,
+/// then HWATU_PROFILE. The value `auto` derives a stable per-worktree
+/// name from the git repo root (hash of the toplevel path), so N
+/// agents in N worktrees get cookie isolation with zero flags —
+/// export HWATU_PROFILE=auto once in the agent harness.
+fn resolve_profile(flag: Option<String>) -> Option<String> {
+    let choice = flag.or_else(|| {
+        std::env::var("HWATU_PROFILE")
+            .ok()
+            .filter(|v| !v.is_empty())
+    })?;
+    if choice != "auto" {
+        return Some(choice);
+    }
+    // auto: hash the git toplevel (or cwd outside a repo).
+    let root = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|p| p.to_string_lossy().into_owned())
+        })?;
+    // FNV-1a, matching the daemon's session-file hashing style.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in root.as_bytes() {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    Some(format!("wt-{hash:016x}"))
+}
+
+const USAGE: &str = "usage: hwatu [--app-id <id>] [--profile <name|auto>] [--background|--headless|--focus] [url] \
 (agent environments default to --headless; set HWATU_AGENT_MODE or \
 \"agent_mode\" in ~/.config/hwatu/config.json to normal|background|headless) \
 | list [--json] | close <id> | focus <id> | unfocus <id> \
@@ -1022,11 +1196,16 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--foc
     | challenge [--id <id>] [--wait] \
     | upload [--id <id>] <selector> <path> \
 | scroll [--id <id>] [<selector> [nth]] [--contains <text>] [--to-y <px>] [--by <pages>] \
-| snapshot [--id <id>] [--diff] [--rect] \
+| snapshot [--id <id>] [--diff] [--rect] [--budget <chars>] \
+| history [<query>] [--limit <n>] [--clear] \
+| clear-site-data [<host>] \
+| handoff <id> --reason <text> [--now] | handoffs [<id>] \
+| jump <query> \
 | expect [--id <id>] <selector> [--contains <filter>] [--text <substring>] [--absent] [--visible] [--nth <n>] [--timeout-ms <ms>] [--watch] \
-| click [--id <id>] [--trusted] (<selector> [nth] [--contains <text>] | --ref <n>) \
-| type [--id <id>] [--trusted] (<selector> | --ref <n>) <text> [--enter] [--no-clear] \
-| console [--id <id>] [--clear] [--limit <n>] \
+	| click [--id <id>] [--trusted] (<selector> [nth] [--contains <text>] | --ref <n>) \
+	| type [--id <id>] [--trusted] (<selector> | --ref <n>) <text> [--enter] [--no-clear] \
+	| paste [--id <id>] (<selector> | --ref <n>) \
+	| console [--id <id>] [--clear] [--limit <n>] \
 | net [--id <id>] [--clear] [--limit <n>] \
 | motion [--id <id>] [--observe [--ms <ms>]] \
 | resize [--id <id>] <width>x<height> \
@@ -1247,7 +1426,8 @@ pub(crate) fn connect_or_spawn() -> std::io::Result<UnixStream> {
 #[cfg(test)]
 mod tests {
     use super::{
-        is_onboarding_command, normalize_request_paths, parse_with_default_mode, OpenMode,
+        is_current_gio_launch, is_onboarding_command, normalize_request_paths,
+        parse_with_default_mode, should_default_to_normal, OpenMode,
     };
     use hwatu_ipc::Request;
 
@@ -1258,6 +1438,22 @@ mod tests {
         assert!(is_onboarding_command(Some("demo")));
         assert!(!is_onboarding_command(Some("https://example.com")));
         assert!(!is_onboarding_command(None));
+    }
+
+    #[test]
+    fn desktop_entry_launch_is_visible_inside_agent_environment() {
+        assert!(should_default_to_normal(true, true));
+        assert!(should_default_to_normal(false, false));
+        assert!(!should_default_to_normal(false, true));
+    }
+
+    #[test]
+    fn gio_launch_marker_must_belong_to_current_process() {
+        assert!(is_current_gio_launch(true, Some("42"), 42));
+        assert!(!is_current_gio_launch(true, Some("41"), 42));
+        assert!(!is_current_gio_launch(true, None, 42));
+        assert!(!is_current_gio_launch(true, Some("not-a-pid"), 42));
+        assert!(!is_current_gio_launch(false, Some("42"), 42));
     }
 
     /// Env-independent parse: tests themselves often run under a
@@ -1730,6 +1926,7 @@ mod tests {
                 url: None,
                 app_id: None,
                 mode: OpenMode::Normal,
+                profile: None,
             })
         ));
     }
@@ -2048,6 +2245,41 @@ mod tests {
         assert!(!clear);
         assert!(parse(&args(&["type", "input"])).is_err());
         assert!(parse(&args(&["type"])).is_err());
+    }
+
+    #[test]
+    fn paste_targets_selector_or_ref() {
+        let Ok(Request::Paste {
+            selector,
+            nth,
+            contains,
+            r#ref,
+            ..
+        }) = parse(&args(&[
+            "paste",
+            "textarea",
+            "--nth",
+            "2",
+            "--contains",
+            "Bio",
+        ]))
+        else {
+            panic!("expected Paste");
+        };
+        assert_eq!(selector.as_deref(), Some("textarea"));
+        assert_eq!(nth, Some(2));
+        assert_eq!(contains.as_deref(), Some("Bio"));
+        assert!(r#ref.is_none());
+
+        let Ok(Request::Paste {
+            selector, r#ref, ..
+        }) = parse(&args(&["paste", "--ref", "4"]))
+        else {
+            panic!("expected Paste");
+        };
+        assert!(selector.is_none());
+        assert_eq!(r#ref, Some(4));
+        assert!(parse(&args(&["paste"])).is_err());
     }
 
     #[test]

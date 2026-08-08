@@ -15,23 +15,34 @@ mod blurshield;
 mod clock;
 mod compositor;
 mod console;
+mod darkmode;
 mod downloads;
 mod events;
 mod external;
 mod focusshield;
+mod hints;
+mod history;
 mod ipc_server;
 mod keys;
 mod launcher;
 mod mediashim;
 mod net;
+mod notify;
 mod observe;
+mod opfs;
 mod palette;
+mod passfill;
 mod prompts;
+mod reader;
 mod search;
 mod session;
+mod share;
+mod sitedata;
 mod siteua;
 mod smoothwheel;
+mod snapbudget;
 mod snapdiff;
+mod theme;
 mod trusted_input;
 mod verify;
 mod window;
@@ -65,8 +76,16 @@ pub struct Daemon {
     pub prewarmed: RefCell<Option<webkit6::WebView>>,
     /// Built-in content blocker (on by default).
     pub adblock: adblock::Adblock,
-    /// Remembered permission decisions (host+kind), daemon lifetime.
-    pub prompt_memory: prompts::Memory,
+    /// Per-site decisions (permissions, zoom), persistent on disk
+    /// unless the daemon runs an ephemeral profile (roadmap H5).
+    pub site_store: sitedata::Store,
+    /// Global visit history for URL completion (roadmap H9).
+    /// In-memory under ephemeral profiles.
+    pub history: history::Store,
+    /// Pending human hand-offs (platform items 10-11): window id ->
+    /// (reason, queued-at). Agents queue via `hwatu handoff`; the
+    /// human drains via `hwatu handoffs` on their own schedule.
+    pub handoffs: RefCell<Vec<HandoffEntry>>,
     /// Resolved keybindings (defaults + ~/.config/hwatu/keys.conf).
     pub keymap: keys::Keymap,
     /// Window most recently targeted by an automation command (eval,
@@ -75,6 +94,11 @@ pub struct Daemon {
     /// and none is focused, so an agent that opened or drove a window
     /// can keep addressing it without repeating `id`.
     pub last_target: RefCell<Option<u64>>,
+    /// Recently closed user windows, newest last, capped small.
+    /// `ctrl+shift+t` (Action::ReopenClosed) pops from here. Headless
+    /// windows (agent verification runs) and blank/launcher pages are
+    /// never recorded.
+    pub recently_closed: RefCell<Vec<session::SessionEntry>>,
     /// Idle headless windows kept for reuse by `hwatu check`, so
     /// back-to-back checks navigate a warm window instead of paying
     /// window construction + prewarm-refill per check. Entries carry
@@ -97,25 +121,128 @@ pub struct Daemon {
     /// Next hanafuda card to deal on a launcher window (see
     /// [`launcher::deal_uri`]). Wraps modulo the deck size.
     pub next_deal: RefCell<usize>,
+    /// Operator security policy selected at daemon startup.
+    pub security: SecurityConfig,
+    /// Isolated network session used by every WebView when the daemon is
+    /// running in ephemeral-profile mode. Holding the object here keeps the
+    /// in-memory cookie jar alive while the daemon runs.
+    pub network_session: Option<webkit6::NetworkSession>,
+    /// Named profile sessions (platform item 6): profile name ->
+    /// isolated NetworkSession (own cookie jar + site data under
+    /// `~/.local/share/hwatud/profiles/<name>/`). Windows opened with
+    /// the same profile share logins; different profiles never do.
+    /// Under an ephemeral-profile daemon these are memory-only too.
+    pub profiles: RefCell<HashMap<String, webkit6::NetworkSession>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SecurityConfig {
+    pub eval_enabled: bool,
+    pub ephemeral_profile: bool,
+}
+
+/// One queued human hand-off (platform items 10-11).
+#[derive(Debug, Clone)]
+pub struct HandoffEntry {
+    pub window_id: u64,
+    pub reason: String,
+    /// Unix seconds when the agent queued it; answered_at is stamped
+    /// (and logged) when the human takes it, so the cost of waiting
+    /// on a human is a measured number, not a vibe.
+    pub queued_at: u64,
+}
+
+impl Default for SecurityConfig {
+    fn default() -> Self {
+        Self {
+            eval_enabled: true,
+            ephemeral_profile: false,
+        }
+    }
 }
 
 impl Daemon {
-    fn new(app: gtk::Application) -> Rc<Self> {
+    fn new(app: gtk::Application, security: SecurityConfig) -> Rc<Self> {
+        let network_session = if security.ephemeral_profile {
+            let session = webkit6::NetworkSession::new_ephemeral();
+            session.set_persistent_credential_storage_enabled(false);
+            println!("hwatud: ephemeral profile enabled (memory-only WebKit session)");
+            Some(session)
+        } else {
+            None
+        };
+
         Rc::new(Self {
             app,
             windows: RefCell::new(HashMap::new()),
             next_id: RefCell::new(1),
             prewarmed: RefCell::new(None),
             adblock: adblock::Adblock::default(),
-            prompt_memory: prompts::Memory::default(),
+            site_store: sitedata::SiteStore::load(!security.ephemeral_profile),
+            history: history::History::load(!security.ephemeral_profile),
+            handoffs: RefCell::new(Vec::new()),
             keymap: keys::Keymap::load(),
             last_target: RefCell::new(None),
+            recently_closed: RefCell::new(Vec::new()),
             check_pool: RefCell::new(Vec::new()),
             prefetch_pool: RefCell::new(Vec::new()),
             session_save_timer: RefCell::new(None),
             events: events::Broker::default(),
             next_deal: RefCell::new(0),
+            security,
+            network_session,
+            profiles: RefCell::new(HashMap::new()),
         })
+    }
+
+    /// The NetworkSession for a named profile, created on first use.
+    /// Profile names are sanitized into a directory component; the
+    /// session persists cookies/site data under
+    /// `~/.local/share/hwatud/profiles/<name>/` (memory-only when the
+    /// daemon itself is ephemeral).
+    pub fn profile_session(&self, name: &str) -> webkit6::NetworkSession {
+        if let Some(session) = self.profiles.borrow().get(name) {
+            return session.clone();
+        }
+        let session = if self.security.ephemeral_profile {
+            webkit6::NetworkSession::new_ephemeral()
+        } else {
+            let safe: String = name
+                .chars()
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
+                .collect();
+            let dir = glib::user_data_dir()
+                .join("hwatud")
+                .join("profiles")
+                .join(&safe);
+            let cache = glib::user_cache_dir()
+                .join("hwatud")
+                .join("profiles")
+                .join(&safe);
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::fs::create_dir_all(&cache);
+            let session = webkit6::NetworkSession::new(
+                Some(&dir.to_string_lossy()),
+                Some(&cache.to_string_lossy()),
+            );
+            if let Some(cookies) = session.cookie_manager() {
+                cookies.set_persistent_storage(
+                    &dir.join("cookies.sqlite").to_string_lossy(),
+                    webkit6::CookiePersistentStorage::Sqlite,
+                );
+            }
+            session
+        };
+        self.profiles
+            .borrow_mut()
+            .insert(name.to_string(), session.clone());
+        session
     }
 
     /// Deal the next hanafuda card index and advance the counter,
@@ -130,7 +257,7 @@ impl Daemon {
     /// Take the warm WebView (or build one) and immediately warm the next.
     pub fn take_webview(self: &Rc<Self>) -> webkit6::WebView {
         let view = self.prewarmed.borrow_mut().take().unwrap_or_else(|| {
-            let view = window::build_webview();
+            let view = window::build_webview(self);
             self.adblock.apply_to(&view);
             view
         });
@@ -151,7 +278,7 @@ impl Daemon {
         let daemon = self.clone();
         glib::idle_add_local_once(move || {
             if daemon.prewarmed.borrow().is_none() {
-                let view = window::build_webview();
+                let view = window::build_webview(&daemon);
                 daemon.adblock.apply_to(&view);
                 // Deep warm: loading about:blank realizes the web
                 // process and the GPU compositor path while idle, so a
@@ -175,6 +302,9 @@ impl Daemon {
     /// bursty navigation doesn't thrash the disk. The trailing save
     /// always runs, so the file converges on the true state.
     pub fn schedule_session_save(self: &Rc<Self>) {
+        if self.security.ephemeral_profile {
+            return;
+        }
         if self.session_save_timer.borrow().is_some() {
             return;
         }
@@ -187,6 +317,9 @@ impl Daemon {
     }
 
     pub fn save_session_now(&self) {
+        if self.security.ephemeral_profile {
+            return;
+        }
         let entries: Vec<session::SessionEntry> = {
             let windows = self.windows.borrow();
             let mut infos: Vec<_> = windows.values().map(|w| w.info()).collect();
@@ -212,7 +345,11 @@ impl Daemon {
 /// the XDG data dir, so logins survive daemon restarts. All WebViews
 /// share the default session (persistence is what makes the shared
 /// engine feel like one browser instead of a fleet of incognito tabs).
-fn persist_cookies() {
+fn persist_cookies(security: SecurityConfig) {
+    if security.ephemeral_profile {
+        println!("hwatud: ephemeral profile enabled; persistent cookies disabled");
+        return;
+    }
     let Some(session) = webkit6::NetworkSession::default() else {
         eprintln!("hwatud: no default network session; cookies will not persist");
         return;
@@ -289,7 +426,60 @@ fn open_sandbox_for_media() {
     }
 }
 
+/// Spell check (roadmap H6): WebKitGTK's Enchant backend is compiled
+/// in but disabled by default. Turn it on with the session locale's
+/// language. `"spell_check": false` in config.json disables;
+/// `"spell_check_languages": ["en_US", "de_DE"]` overrides the
+/// locale-derived list (Enchant needs matching dictionaries, e.g.
+/// hunspell-en_us).
+fn enable_spell_checking() {
+    let Some(context) = webkit6::WebContext::default() else {
+        return;
+    };
+    if let Some(v) = window::config_value("spell_check") {
+        if v.as_bool() == Some(false) {
+            return;
+        }
+    }
+    let languages: Vec<String> = window::config_value("spell_check_languages")
+        .and_then(|v| {
+            let list: Vec<String> = v
+                .as_array()?
+                .iter()
+                .filter_map(|s| s.as_str().map(str::to_string))
+                .collect();
+            (!list.is_empty()).then_some(list)
+        })
+        .unwrap_or_else(|| {
+            // "en_US.UTF-8" -> "en_US"; C/POSIX locales get no list and
+            // Enchant falls back to its own default.
+            std::env::var("LANG")
+                .ok()
+                .map(|l| l.split('.').next().unwrap_or(&l).to_string())
+                .filter(|l| !l.is_empty() && l != "C" && l != "POSIX")
+                .into_iter()
+                .collect()
+        });
+    context.set_spell_checking_enabled(true);
+    if !languages.is_empty() {
+        let refs: Vec<&str> = languages.iter().map(String::as_str).collect();
+        context.set_spell_checking_languages(&refs);
+    }
+}
+
 fn main() -> glib::ExitCode {
+    let security = match parse_security_args(std::env::args().skip(1)) {
+        Ok(ParseSecurity::Run(security)) => security,
+        Ok(ParseSecurity::Help) => {
+            println!("usage: hwatud [--no-eval] [--ephemeral-profile]");
+            return glib::ExitCode::SUCCESS;
+        }
+        Err(message) => {
+            eprintln!("hwatud: {message}");
+            eprintln!("usage: hwatud [--no-eval] [--ephemeral-profile]");
+            return glib::ExitCode::FAILURE;
+        }
+    };
     // Keep RAM predictable: cap glibc arena explosion under GTK threads.
     std::env::set_var("MALLOC_ARENA_MAX", "2");
     // Full-refresh-rate scrolling: WebKitGTK's default DMA-BUF
@@ -307,6 +497,24 @@ fn main() -> glib::ExitCode {
     // Must run before GTK/WebKit init; web processes inherit the env.
     if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_none() {
         std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+    // Keep GTK's scene-graph renderer on OpenGL. GTK 4.22 auto-picks
+    // its Vulkan renderer on "the best" Vulkan device, which on hybrid
+    // Intel+NVIDIA laptops is the discrete GPU — while WebKit's frames
+    // render on the integrated GPU the Wayland EGL platform selects.
+    // Every composited frame then crosses GPUs (or bounces through the
+    // CPU), and scrolling collapses to ~22fps: measured 45ms/frame
+    // scroll under GSK vulkan vs 12-17ms under GSK ngl on the same
+    // fixture (144Hz niri, i7-12650H + RTX 4050; stock MiniBrowser
+    // matches the ngl number). Vulkan is no faster even pinned to the
+    // iGPU (GDK_VULKAN_DEVICE=1: 48ms), so this is the renderer's
+    // upload path, not device selection. ngl follows the EGL platform,
+    // keeping composite on the same GPU WebKit paints with. Explicit
+    // user env always wins (GSK_RENDERER=vulkan restores GTK's pick).
+    // "gl" is the unified OpenGL renderer name on GTK 4.22+ (the
+    // 4.14-era split into gl/ngl is gone; ngl now warns and aliases).
+    if std::env::var_os("GSK_RENDERER").is_none() {
+        std::env::set_var("GSK_RENDERER", "gl");
     }
     // Display-free operation (roadmap G4): with no usable
     // WAYLAND_DISPLAY/DISPLAY, spawn a managed headless child
@@ -351,18 +559,25 @@ fn main() -> glib::ExitCode {
     app.connect_startup(move |app| {
         bar::install_css();
         // Reclaim session blobs orphaned by a crashed/killed daemon.
-        window::sweep_discard_dir();
-        let daemon = Daemon::new(app.clone());
+        if !security.ephemeral_profile {
+            window::sweep_discard_dir();
+        }
+        let daemon = Daemon::new(app.clone(), security);
         // Cookies persist across daemon restarts. WebKit's default
         // network session keeps its jar in RAM only until told
         // otherwise, which makes every restart look like a brand-new
         // browser: logins vanish, and sites like GitHub answer the
         // fresh jar with their strictest anti-bot login path (device
         // verification, captcha). Must run before any WebView exists.
-        persist_cookies();
+        persist_cookies(security);
         // Local media playback needs the web-process sandbox to see
         // the files. Before any web process exists (hard requirement).
         open_sandbox_for_media();
+        // Spell check (H6): Enchant backend on, locale-derived language.
+        enable_spell_checking();
+        // Theme continuity (H37): follow the desktop color scheme so
+        // prefers-color-scheme resolves like native apps'.
+        theme::follow_system();
         // Internal pages (hwatu://launcher) before any WebView exists.
         launcher::register_scheme();
         adblock::Adblock::init(&daemon);
@@ -374,7 +589,11 @@ fn main() -> glib::ExitCode {
         // Crash resilience: a leftover session file means the previous
         // daemon died uncleanly (clean quits delete it); reopen its
         // windows. After the socket is up so spawn timing stays honest.
-        let leftovers = session::take();
+        let leftovers = if security.ephemeral_profile {
+            Vec::new()
+        } else {
+            session::take()
+        };
         if !leftovers.is_empty() {
             println!(
                 "hwatud: restoring {} window(s) from a previous session",
@@ -437,9 +656,40 @@ fn parse_dpr(raw: Option<&str>) -> Option<i32> {
     raw?.trim().parse::<i32>().ok().filter(|&n| n > 0)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParseSecurity {
+    Run(SecurityConfig),
+    Help,
+}
+
+fn parse_security_args<I, S>(args: I) -> Result<ParseSecurity, String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    let mut config = SecurityConfig::default();
+
+    if std::env::var_os("HWATUD_NO_EVAL").is_some_and(|v| !v.is_empty() && v != "0") {
+        config.eval_enabled = false;
+    }
+    if std::env::var_os("HWATUD_EPHEMERAL_PROFILE").is_some_and(|v| !v.is_empty() && v != "0") {
+        config.ephemeral_profile = true;
+    }
+
+    for arg in args {
+        match arg.as_ref() {
+            "--no-eval" => config.eval_enabled = false,
+            "--ephemeral-profile" | "--ephemeral" => config.ephemeral_profile = true,
+            "--help" | "-h" => return Ok(ParseSecurity::Help),
+            other => return Err(format!("unknown argument `{other}`")),
+        }
+    }
+    Ok(ParseSecurity::Run(config))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::parse_dpr;
+    use super::{parse_dpr, parse_security_args, ParseSecurity, SecurityConfig};
 
     /// The DPR pin only accepts positive integers: GDK_SCALE cannot
     /// express fractions, and 0/negative are nonsense. Everything
@@ -455,5 +705,37 @@ mod tests {
         assert_eq!(parse_dpr(Some("1")), Some(1));
         assert_eq!(parse_dpr(Some(" 2 ")), Some(2));
         assert_eq!(parse_dpr(Some("3")), Some(3));
+    }
+
+    #[test]
+    fn security_args_default_open_profile() {
+        assert_eq!(
+            parse_security_args(std::iter::empty::<&str>()).unwrap(),
+            ParseSecurity::Run(SecurityConfig::default())
+        );
+    }
+
+    #[test]
+    fn security_args_accept_eval_and_profile_opt_outs() {
+        assert_eq!(
+            parse_security_args(["--no-eval", "--ephemeral-profile"]).unwrap(),
+            ParseSecurity::Run(SecurityConfig {
+                eval_enabled: false,
+                ephemeral_profile: true,
+            })
+        );
+    }
+
+    #[test]
+    fn security_args_help_is_successful_control_flow() {
+        assert_eq!(
+            parse_security_args(["--help"]).unwrap(),
+            ParseSecurity::Help
+        );
+    }
+
+    #[test]
+    fn security_args_reject_unknown_flags() {
+        assert!(parse_security_args(["--cookies-please"]).is_err());
     }
 }

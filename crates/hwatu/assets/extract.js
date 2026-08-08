@@ -65,6 +65,11 @@ async function detectScrollEffects() {
     for (let n = el; n && n !== document.body; n = n.parentElement) {
       const tag = n.tagName && n.tagName.toLowerCase();
       if (tag === 'nav' || tag === 'header' || n.getAttribute('role') === 'navigation') return true;
+    }
+    return false;
+  };
+  const positionedChrome = (el) => {
+    for (let n = el; n && n !== document.body; n = n.parentElement) {
       const st = getComputedStyle(n);
       if (st.position === 'fixed' || st.position === 'sticky') return true;
     }
@@ -72,27 +77,41 @@ async function detectScrollEffects() {
   };
   const all = [...document.querySelectorAll('body *')].slice(0, 12000);
   const candidates = [];
+  const visualCandidate = (el, st) => {
+    const r = el.getBoundingClientRect();
+    const area = Math.max(0, r.width) * Math.max(0, r.height);
+    if (area < Math.min(innerWidth * innerHeight * 0.015, 12000)) return false;
+    if (st.display === 'inline' || st.position === 'fixed') return false;
+    return true;
+  };
   for (const el of all) {
     if (navish(el)) continue;
     const text = ownText(el);
-    if (text.length < 1 || text.length > 80) continue;
     const st = getComputedStyle(el);
     if (st.display === 'none' || st.visibility === 'hidden') continue;
-    candidates.push({ el, text });
+    const isText = text.length >= 1 && text.length <= 80;
+    const isVisual = !isText && visualCandidate(el, st);
+    if (isText && positionedChrome(el)) continue;
+    if (!isText && !isVisual) continue;
+    candidates.push({ el, text, candidateKind: isText ? 'text' : 'visual' });
     if (candidates.length >= 5000) break;
   }
-  if (candidates.length < 3) return [];
+  if (candidates.length < 1) return [];
   const styleOf = (el) => {
     const st = getComputedStyle(el);
+    const r = el.getBoundingClientRect();
     return {
       color: st.color,
       backgroundColor: st.backgroundColor,
       opacity: st.opacity,
       textShadow: st.textShadow,
       transform: st.transform,
+      clipPath: st.clipPath,
+      borderRadius: st.borderRadius,
+      rect: { top: Math.round(r.top), left: Math.round(r.left), width: Math.round(r.width), height: Math.round(r.height) },
     };
   };
-  const styleKey = (s) => `${s.color}|${s.backgroundColor}|${s.opacity}|${s.textShadow}|${s.transform}`;
+  const styleKey = (s) => `${s.color}|${s.backgroundColor}|${s.opacity}|${s.textShadow}|${s.transform}|${s.clipPath}|${s.borderRadius}`;
   const coarse = [...new Set([0, .125, .25, .375, .5, .625, .75, .875, 1]
     .map(f => Math.round(maxScroll * f)))];
   const seen = candidates.map(() => []);
@@ -110,9 +129,102 @@ async function detectScrollEffects() {
     const variants = new Set(seen[i].map(s => s.key));
     if (variants.size >= 2) changed.push({ i, ...candidates[i], observations: seen[i] });
   }
-  if (changed.length < 3) {
+  const effects = [];
+  let effectIndex = 0;
+  const cssPath = (el) => {
+    if (el.id) return `#${CSS.escape(el.id)}`;
+    if (el.dataset.hwatuScrollEffect) return `[data-hwatu-scroll-effect="${el.dataset.hwatuScrollEffect}"]`;
+    const parts = [];
+    for (let n = el; n && n !== document.body && parts.length < 5; n = n.parentElement) {
+      let part = n.tagName.toLowerCase();
+      const cls = [...n.classList].filter(Boolean).slice(0, 2);
+      if (cls.length) part += '.' + cls.map(CSS.escape).join('.');
+      const parent = n.parentElement;
+      if (parent) part += `:nth-child(${[...parent.children].indexOf(n) + 1})`;
+      parts.unshift(part);
+    }
+    return 'body > ' + parts.join(' > ');
+  };
+  const clamp = (y) => Math.max(0, Math.min(maxScroll, Math.round(y)));
+  // Pin candidates: a sizeable element whose viewport top plateaus while scrollY advances.
+  const pinRoots = [];
+  for (let ci = 0; ci < candidates.length; ci++) {
+    const c = candidates[ci];
+    if (pinRoots.some(root => root.contains(c.el) || c.el.contains(root))) continue;
+    if (c.candidateKind !== 'visual' && !c.el.children.length) continue;
+    const obs = seen[ci].filter(o => o.style.rect && o.style.rect.height > 40);
+    let best = null;
+    for (let a = 0; a < obs.length; a++) for (let b = a + 2; b < obs.length; b++) {
+      const slice = obs.slice(a, b + 1);
+      const dy = slice[slice.length - 1].y - slice[0].y;
+      const tops = slice.map(o => o.style.rect.top);
+      const span = Math.max(...tops) - Math.min(...tops);
+      if (dy >= innerHeight * 0.45 && span <= 3 && tops[0] > -innerHeight * 0.2 && tops[0] < innerHeight * 0.85) {
+        if (!best || dy > best.endY - best.startY) best = { startY: slice[0].y, endY: slice[slice.length - 1].y, top: Math.round(tops.reduce((x, y) => x + y, 0) / tops.length) };
+      }
+    }
+    if (!best) continue;
+    const root = c.el.parentElement || c.el;
+    root.dataset.hwatuScrollEffect = effectIndex;
+    effects.push({
+      kind: 'scroll-pin', selector: `[data-hwatu-scroll-effect="${effectIndex}"]`, pinnedSelector: cssPath(c.el),
+      dependency: 'viewport rect plateau across scroll sweep; replay uses stable ancestor rect and child translate, preserving report-only fallback if selector misses',
+      startY: best.startY, endY: best.endY, desiredViewportTop: best.top,
+    });
+    pinRoots.push(root);
+    effectIndex += 1;
+    if (effects.length >= 6) break;
+  }
+  // Non-text transform/clip/opacity scrubs: store raw endpoints for direct replay.
+  for (const c of changed.filter(x => x.candidateKind === 'visual').slice(0, 12)) {
+    const obs = c.observations;
+    const keys = obs.map(o => o.key);
+    const firstChange = keys.findIndex(k => k !== keys[0]);
+    if (firstChange < 1) continue;
+    const lastChange = keys.length - 1 - [...keys].reverse().findIndex(k => k !== keys[keys.length - 1]);
+    const from = obs[Math.max(0, firstChange - 1)];
+    const to = obs[lastChange];
+    c.el.dataset.hwatuScrollEffect = effectIndex;
+    effects.push({
+      kind: 'scroll-coupled-visual-style', selector: `[data-hwatu-scroll-effect="${effectIndex}"]`,
+      dependency: 'non-text paint-area element changes transform/clip-path/opacity after document scroll',
+      progress: { startY: from.y, endY: to.y }, from: from.style, to: to.style,
+    });
+    effectIndex += 1;
+  }
+  // Time-based threshold tracks: constant-scroll dwell changes indicate wall-clock animation.
+  const timeCandidates = candidates
+    .map((c, ci) => ({ c, ci }))
+    .filter(({ c, ci }) => c.candidateKind === 'text' || (seen[ci] || []).some(o => o.key !== ((seen[ci] || [])[0] && (seen[ci] || [])[0].key)))
+    .slice(0, 80);
+  await waitScroll(0);
+  await new Promise(r => setTimeout(r, 180));
+  for (const { c, ci } of timeCandidates) {
+    const obs = seen[ci] || [];
+    const coarseChange = obs.find(o => o.key !== (obs[0] && obs[0].key));
+    const r0 = c.el.getBoundingClientRect();
+    const docTop0 = r0.top + scrollY;
+    const probeY = coarseChange ? coarseChange.y : clamp(docTop0 - innerHeight * 0.7);
+    scrollTo(0, Math.max(0, Math.min(maxScroll, probeY)));
+    window.dispatchEvent(new Event('scroll'));
+    document.dispatchEvent(new Event('scroll'));
+    const before = styleOf(c.el); const beforeKey = styleKey(before);
+    await new Promise(r => setTimeout(r, 520));
+    const after = styleOf(c.el); const afterKey = styleKey(after);
+    if (beforeKey === afterKey) continue;
+    c.el.dataset.hwatuScrollEffect = effectIndex;
+    effects.push({
+      kind: 'scroll-triggered-time-style', selector: `[data-hwatu-scroll-effect="${effectIndex}"]`,
+      dependency: 'computed style changed during dwell at constant scrollY; replay uses threshold-triggered state machine',
+      triggerY: Math.round(probeY), triggerLine: Math.round((before.rect.top / innerHeight) * 1000) / 1000,
+      before, after,
+    });
+    effectIndex += 1;
+    if (effects.filter(e => e.kind === 'scroll-triggered-time-style').length >= 12) break;
+  }
+  if (changed.filter(c => c.candidateKind === 'text').length < 3) {
     await waitScroll(0);
-    return [];
+    return effects;
   }
   const groupRoot = (el) => {
     let best = el.parentElement || el;
@@ -130,10 +242,8 @@ async function detectScrollEffects() {
     prev.push(item);
     groups.set(root, prev);
   }
-  const clamp = (y) => Math.max(0, Math.min(maxScroll, Math.round(y)));
-  const effects = [];
-  let effectIndex = 0;
   for (const [root, items] of [...groups.entries()].sort((a, b) => b[1].length - a[1].length)) {
+    if (!items.some(i => i.candidateKind === 'text')) continue;
     const uniqueText = new Set(items.map(i => i.text.toLowerCase()));
     if (items.length < 3 || uniqueText.size < 3 || navish(root)) continue;
     root.dataset.hwatuScrollEffect = effectIndex;
@@ -387,6 +497,87 @@ const interactiveCount = document.querySelectorAll(
   'a[href], button, [role=button], [onclick], input, select, textarea, summary, [role=link], [role=tab], [role=menuitem]'
 ).length;
 
+// Parser fixed-point guard: DOMs produced by JS/React can be valid live
+// trees that are not representable as equivalent text/html. The common
+// case is block-flow line wrappers inside <p>; when reparsed, the HTML
+// parser auto-closes the paragraph and ejects the wrapper siblings. Rewrite
+// only those unsafe paragraphs in the cloned document so serialization is a
+// fixed point while preserving attributes, children, and paragraph semantics.
+function parserFixedPointRewrite(doc) {
+  const BLOCK_IN_P = new Set([
+    'address', 'article', 'aside', 'blockquote', 'details', 'dialog', 'div',
+    'dl', 'fieldset', 'figcaption', 'figure', 'footer', 'form', 'h1', 'h2',
+    'h3', 'h4', 'h5', 'h6', 'header', 'hgroup', 'hr', 'main', 'menu', 'nav',
+    'ol', 'p', 'pre', 'section', 'table', 'ul'
+  ]);
+  const hasBarePSelector = () => {
+    const re = /(^|[^.#\w-])p(?=$|[^\w-])/i;
+    for (const sheet of sheets) {
+      const text = sheet.text || '';
+      if (re.test(text)) return true;
+    }
+    return false;
+  };
+  const stats = {
+    rewritten: [],
+    reparsed_tag_count_deltas: [],
+    injected_css: false,
+  };
+  let i = 0;
+  for (const p of [...doc.querySelectorAll('p')]) {
+    const offenders = [...p.children].filter(c => BLOCK_IN_P.has(c.tagName.toLowerCase()));
+    if (!offenders.length) continue;
+    const div = doc.ownerDocument.createElement('div');
+    for (const attr of [...p.attributes]) div.setAttribute(attr.name, attr.value);
+    div.setAttribute('role', div.getAttribute('role') || 'paragraph');
+    div.setAttribute('data-hwatu-was', 'p');
+    div.setAttribute('data-hwatu-parser-fix', String(i));
+    while (p.firstChild) div.appendChild(p.firstChild);
+    p.replaceWith(div);
+    stats.rewritten.push({
+      i,
+      from: 'p',
+      to: 'div',
+      reason: 'block child inside p would be ejected by text/html reparse',
+      block_children: [...new Set(offenders.map(c => c.tagName.toLowerCase()))],
+      class: div.getAttribute('class') || null,
+      id: div.getAttribute('id') || null,
+    });
+    i += 1;
+  }
+  if (stats.rewritten.length && hasBarePSelector()) {
+    const style = doc.ownerDocument.createElement('style');
+    style.setAttribute('data-hwatu-parser-fix-style', '');
+    style.textContent = ':where([data-hwatu-was="p"][role="paragraph"]) { display: block; margin-block: 1em; }';
+    (doc.querySelector('head') || doc).appendChild(style);
+    stats.injected_css = true;
+  }
+  const html = '<!doctype html>\n' + doc.outerHTML;
+  const reparsed = document.implementation.createHTMLDocument('hwatu-reparse-check');
+  reparsed.open();
+  reparsed.write(html);
+  reparsed.close();
+  const countTags = (root) => {
+    const counts = new Map();
+    for (const el of root.querySelectorAll('*')) {
+      const tag = el.tagName.toLowerCase();
+      counts.set(tag, (counts.get(tag) || 0) + 1);
+    }
+    return counts;
+  };
+  const liveCounts = countTags(doc);
+  const reparsedCounts = countTags(reparsed.documentElement);
+  const tags = new Set([...liveCounts.keys(), ...reparsedCounts.keys()]);
+  for (const tag of [...tags].sort()) {
+    const live = liveCounts.get(tag) || 0;
+    const reparsed = reparsedCounts.get(tag) || 0;
+    if (live !== reparsed) stats.reparsed_tag_count_deltas.push({ tag, live, reparsed });
+  }
+  stats.fixed_point = stats.reparsed_tag_count_deltas.length === 0;
+  stats.html = html;
+  return stats;
+}
+
 // 4. Serialized DOM. Strip scripts (the clone is a static still) and
 //    live stylesheet links (we inline the CSSOM text instead).
 const doc = document.documentElement.cloneNode(true);
@@ -401,10 +592,18 @@ doc.querySelectorAll('noscript').forEach(el => {
   el.replaceWith(span);
 });
 
+const parserFixedPoint = parserFixedPointRewrite(doc);
+
 return {
   base: location.href,
   title: document.title,
-  html: '<!doctype html>\n' + doc.outerHTML,
+  html: parserFixedPoint.html,
+  parserFixedPoint: {
+    rewritten: parserFixedPoint.rewritten,
+    reparsed_tag_count_deltas: parserFixedPoint.reparsed_tag_count_deltas,
+    fixed_point: parserFixedPoint.fixed_point,
+    injected_css: parserFixedPoint.injected_css,
+  },
   sheets,
   assets: [...assets].slice(0, 500),
     canvases,

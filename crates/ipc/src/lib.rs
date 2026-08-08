@@ -50,6 +50,14 @@ pub enum Request {
         /// wire means [`OpenMode::Normal`], so old clients keep working.
         #[serde(default)]
         mode: OpenMode,
+        /// Cookie/site-data isolation (platform item 6): windows with
+        /// the same profile name share a session; different profiles
+        /// never share cookies, storage, or logins. Absent = the
+        /// daemon's default (persistent) session. The CLI sends
+        /// `HWATU_PROFILE` when set (`auto` derives a per-worktree
+        /// name, so N agents in N worktrees isolate with zero flags).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        profile: Option<String>,
     },
     /// List open windows.
     List,
@@ -285,6 +293,13 @@ pub enum Request {
         /// token-cheap and preserve the original response shape.
         #[serde(default, skip_serializing_if = "is_false")]
         rect: bool,
+        /// Character budget for the reply (verification P3): the
+        /// snapshot degrades coarse-to-fine instead of truncating
+        /// arbitrarily — page text shrinks first, then interactable
+        /// text/href fields shorten, then interactables reduce to
+        /// landmark counts. 0/absent = unbudgeted (classic shape).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        budget: Option<usize>,
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
@@ -339,6 +354,25 @@ pub enum Request {
         /// page did not handle the keydown itself).
         #[serde(default)]
         enter: bool,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
+    /// Paste from the compositor clipboard into an element targeted like
+    /// [`Request::Click`]. Always uses trusted native input synthesis: the
+    /// daemon clicks/focuses the target, then asks `wtype` to press Ctrl+V
+    /// while the trusted input session owns compositor focus.
+    Paste {
+        #[serde(default)]
+        id: Option<u64>,
+        #[serde(default)]
+        selector: Option<String>,
+        #[serde(default)]
+        nth: Option<u32>,
+        #[serde(default)]
+        contains: Option<String>,
+        /// Interactable index from the last snapshot of this window.
+        #[serde(default)]
+        r#ref: Option<u32>,
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
@@ -540,6 +574,60 @@ pub enum Request {
         #[serde(default)]
         window: Option<u64>,
     },
+    /// Query (or clear) the global visit history (roadmap H9). With a
+    /// query, returns frecency-ranked completions; empty query returns
+    /// the most relevant recent pages. `clear` wipes history and
+    /// reports the removed row count.
+    History {
+        #[serde(default)]
+        query: String,
+        #[serde(default)]
+        limit: Option<usize>,
+        #[serde(default)]
+        clear: bool,
+    },
+    /// Clear stored site data (roadmap H16): cookies, local/session
+    /// storage, IndexedDB, caches. With `host`, only entries whose
+    /// registrable domain matches; without, everything. Also drops
+    /// matching per-site decisions (permissions, zoom, dark mode) and,
+    /// on a full clear, visit history.
+    ClearSiteData {
+        #[serde(default)]
+        host: Option<String>,
+    },
+    /// Generalized human hand-off (platform roadmap items 10-11).
+    /// Flags "this window needs a person" with a reason. Default is
+    /// queueing: the entry waits in the hand-off queue until a human
+    /// drains it (respects flow — an agent that needs a human at
+    /// 14:02 should not steal focus at 14:02). With `now`, the window
+    /// materializes immediately with the reason in the bar (the old
+    /// challenge-style behavior, for when the agent is blocked).
+    Handoff {
+        id: u64,
+        reason: String,
+        /// Materialize immediately instead of queueing.
+        #[serde(default)]
+        now: bool,
+    },
+    /// List pending hand-offs (id, reason, queued_at) or resolve one:
+    /// `take` promotes that window to focus and removes the entry,
+    /// stamping answered_at so waiting cost is a measured number.
+    Handoffs {
+        /// Window id to take (present + remove). Absent = list.
+        #[serde(default)]
+        take: Option<u64>,
+    },
+    /// Fuzzy jump (roadmap H29): match `query` against open windows
+    /// (url + title) first, then visit history. Focuses the best
+    /// window match; with `open` (default true), a history-only match
+    /// opens a new window on it. Replies with what it did. The
+    /// "Spotlight for the web" verb — bind `hwatu jump` in the WM.
+    Jump {
+        query: String,
+        /// Open a window for history-only matches (default true).
+        #[serde(default = "default_true")]
+        open: bool,
+    },
 }
 
 /// Maximum number of actions in one [`Request::Batch`]. This bounds daemon
@@ -571,6 +659,7 @@ impl Request {
             Request::Snapshot { .. } => "snapshot",
             Request::Click { .. } => "click",
             Request::Type { .. } => "type",
+            Request::Paste { .. } => "paste",
             Request::Console { .. } => "console",
             Request::Net { .. } => "net",
             Request::Motion { .. } => "motion",
@@ -581,6 +670,23 @@ impl Request {
             Request::Resize { .. } => "resize",
             Request::Batch { .. } => "batch",
             Request::Subscribe { .. } => "subscribe",
+            Request::History { .. } => "history",
+            Request::ClearSiteData { .. } => "clear_site_data",
+            Request::Handoff { .. } => "handoff",
+            Request::Handoffs { .. } => "handoffs",
+            Request::Jump { .. } => "jump",
+        }
+    }
+
+    /// True when this request asks the daemon to execute page JavaScript.
+    /// Operators can disable this entire surface at the daemon boundary so
+    /// direct CLI, MCP, and raw socket clients all get the same policy.
+    pub fn uses_eval(&self) -> bool {
+        match self {
+            Request::Eval { .. } => true,
+            Request::Check { eval, .. } => eval.as_ref().is_some_and(|js| !js.is_empty()),
+            Request::Batch { actions } => actions.iter().any(Self::uses_eval),
+            _ => false,
         }
     }
 
@@ -599,6 +705,7 @@ impl Request {
                 | Request::Snapshot { .. }
                 | Request::Click { .. }
                 | Request::Type { .. }
+                | Request::Paste { .. }
                 | Request::Console { .. }
         ) || matches!(self, Request::Expect { watch: false, .. })
     }
@@ -966,6 +1073,20 @@ pub struct WindowInfo {
     /// promotes a window to normal.
     #[serde(default, skip_serializing_if = "is_normal")]
     pub mode: OpenMode,
+    /// Last WebKit web-process termination observed for this window, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_process_terminated: Option<Box<WebProcessTerminationInfo>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WebProcessTerminationInfo {
+    /// Stable, machine-readable reason: crashed, oom, or terminated.
+    pub reason: String,
+    /// Human-readable description suitable for diagnostics.
+    pub message: String,
+    /// Best-known URL at the time the web process died.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub url: String,
 }
 
 fn is_normal(mode: &OpenMode) -> bool {
@@ -1031,6 +1152,40 @@ mod tests {
         };
         assert_eq!(render.as_deref(), Some("<h1>hi</h1>"));
         assert_eq!(base.as_deref(), Some("http://localhost:3000/"));
+    }
+
+    #[test]
+    fn old_window_info_defaults_recovery_fields() {
+        let old = r#"{"id":7,"url":"","title":"","focused":false,"suspended":false}"#;
+        let info: WindowInfo = serde_json::from_str(old).expect("old WindowInfo parses");
+
+        assert_eq!(info.web_process_terminated, None);
+    }
+
+    #[test]
+    fn window_info_serializes_recoverable_crash_state() {
+        let info = WindowInfo {
+            id: 7,
+            url: "https://example.test/sign-up".into(),
+            title: String::new(),
+            focused: true,
+            suspended: false,
+            app_id: None,
+            mode: OpenMode::Normal,
+            web_process_terminated: Some(Box::new(WebProcessTerminationInfo {
+                reason: "oom".into(),
+                message: "was killed (out of memory)".into(),
+                url: "https://example.test/sign-up".into(),
+            })),
+        };
+
+        let json = serde_json::to_value(&info).expect("WindowInfo serializes");
+
+        assert_eq!(json["web_process_terminated"]["reason"], "oom");
+        assert_eq!(
+            json["web_process_terminated"]["url"],
+            "https://example.test/sign-up"
+        );
     }
 
     /// A viewport-sweep check roundtrips through the wire format; an
@@ -1165,6 +1320,46 @@ mod tests {
         assert_eq!(limit, Some(50));
     }
 
+    #[test]
+    fn paste_roundtrips_with_selector_or_ref() {
+        let req = Request::Paste {
+            id: Some(9),
+            selector: Some("textarea".into()),
+            nth: Some(1),
+            contains: Some("Bio".into()),
+            r#ref: None,
+            timeout_ms: Some(2500),
+        };
+        let wire = serde_json::to_string(&req).unwrap();
+        assert!(wire.contains("\"cmd\":\"paste\""));
+        let Ok(Request::Paste {
+            id,
+            selector,
+            nth,
+            contains,
+            r#ref,
+            timeout_ms,
+        }) = serde_json::from_str::<Request>(&wire)
+        else {
+            panic!("paste failed to roundtrip");
+        };
+        assert_eq!(id, Some(9));
+        assert_eq!(selector.as_deref(), Some("textarea"));
+        assert_eq!(nth, Some(1));
+        assert_eq!(contains.as_deref(), Some("Bio"));
+        assert_eq!(r#ref, None);
+        assert_eq!(timeout_ms, Some(2500));
+
+        let Ok(Request::Paste {
+            selector, r#ref, ..
+        }) = serde_json::from_str::<Request>(r#"{"cmd":"paste","ref":7}"#)
+        else {
+            panic!("paste ref failed to parse");
+        };
+        assert!(selector.is_none());
+        assert_eq!(r#ref, Some(7));
+    }
+
     /// Subscribe roundtrips with and without filters; a bare
     /// `{"cmd":"subscribe"}` (defaults) is valid so shell one-liners
     /// stay terse.
@@ -1235,6 +1430,77 @@ mod tests {
     }
 
     #[test]
+    fn uses_eval_covers_direct_check_and_batch_surfaces() {
+        assert!(Request::Eval {
+            id: None,
+            js: "return document.cookie".into(),
+            timeout_ms: None,
+        }
+        .uses_eval());
+
+        let mut check = Request::Check {
+            url: Some("https://example.test".into()),
+            render: None,
+            base: None,
+            eval: None,
+            shot: false,
+            shot_path: None,
+            full: false,
+            baseline: None,
+            tolerance: None,
+            heatmap: None,
+            until: LoadStage::default(),
+            keep: false,
+            timeout_ms: None,
+            viewports: vec![],
+            baseline_dir: None,
+        };
+        assert!(!check.uses_eval());
+        if let Request::Check { eval, .. } = &mut check {
+            *eval = Some("".into());
+        }
+        assert!(!check.uses_eval());
+        if let Request::Check { eval, .. } = &mut check {
+            *eval = Some("localStorage.secret".into());
+        }
+        assert!(check.uses_eval());
+
+        assert!(!Request::Navigate {
+            id: Some(1),
+            url: "https://example.test".into(),
+            wait: true,
+            until: LoadStage::default(),
+            timeout_ms: None,
+        }
+        .uses_eval());
+
+        assert!(Request::Batch {
+            actions: vec![
+                Request::Navigate {
+                    id: Some(1),
+                    url: "https://example.test".into(),
+                    wait: true,
+                    until: LoadStage::default(),
+                    timeout_ms: None,
+                },
+                check,
+            ],
+        }
+        .uses_eval());
+
+        assert!(Request::Batch {
+            actions: vec![Request::Batch {
+                actions: vec![Request::Eval {
+                    id: Some(1),
+                    js: "document.cookie".into(),
+                    timeout_ms: None,
+                }],
+            }],
+        }
+        .uses_eval());
+    }
+
+    #[test]
     fn batch_validation_rejects_nested_oversized_and_unsupported_actions() {
         assert!(Request::validate_batch(&[])
             .unwrap_err()
@@ -1245,6 +1511,7 @@ mod tests {
                 id: None,
                 diff: false,
                 rect: false,
+                budget: None,
                 timeout_ms: None,
             };
             BATCH_MAX_ACTIONS + 1
@@ -1258,6 +1525,7 @@ mod tests {
                 id: None,
                 diff: false,
                 rect: false,
+                budget: None,
                 timeout_ms: None,
             }],
         }];
@@ -1350,6 +1618,7 @@ mod tests {
             id: Some(2),
             diff: false,
             rect: false,
+            budget: None,
             timeout_ms: None,
         };
         let wire = serde_json::to_string(&plain).unwrap();
@@ -1358,16 +1627,22 @@ mod tests {
             "non-diff snapshot must omit the field for old daemons: {wire}"
         );
         assert!(!wire.contains("rect"));
+        assert!(
+            !wire.contains("budget"),
+            "absent budget must stay off the wire"
+        );
 
         let diffing = Request::Snapshot {
             id: Some(2),
             diff: true,
             rect: true,
+            budget: Some(2000),
             timeout_ms: None,
         };
         let wire = serde_json::to_string(&diffing).unwrap();
         assert!(wire.contains("\"diff\":true"));
         assert!(wire.contains("\"rect\":true"));
+        assert!(wire.contains("\"budget\":2000"));
         let Ok(Request::Snapshot { diff, .. }) = serde_json::from_str::<Request>(&wire) else {
             panic!("diff snapshot failed to roundtrip");
         };

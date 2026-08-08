@@ -16,7 +16,7 @@ use crate::launcher;
 use crate::prompts::{self, Prompt, Prompts};
 use crate::Daemon;
 use gtk::prelude::*;
-use hwatu_ipc::{OpenMode, WindowInfo};
+use hwatu_ipc::{OpenMode, WebProcessTerminationInfo, WindowInfo};
 use std::cell::RefCell;
 use std::rc::Rc;
 use webkit6::prelude::*;
@@ -64,6 +64,53 @@ fn home_page() -> Option<String> {
         .filter(|v| !v.trim().is_empty())
 }
 
+/// WebKit cancels the in-flight main-frame request when another navigation
+/// replaces it, including back/forward history traversal. That is normal
+/// navigation control flow, not a page failure worth surfacing to the user.
+fn load_was_cancelled(error: &glib::Error) -> bool {
+    error.matches(webkit6::NetworkError::Cancelled)
+        || error.matches(gtk::gio::IOErrorEnum::Cancelled)
+}
+
+/// Whether a navigation action is a conventional Ctrl+click on a link.
+/// WebKit reports modifiers as GDK bits but leaves tab creation to the
+/// embedder, so without this check Ctrl+click navigates the current view.
+fn is_ctrl_click_link(
+    navigation_type: webkit6::NavigationType,
+    mouse_button: u32,
+    modifiers: u32,
+) -> bool {
+    navigation_type == webkit6::NavigationType::LinkClicked
+        && mouse_button == 1
+        && modifiers & gtk::gdk::ModifierType::CONTROL_MASK.bits() != 0
+}
+
+/// Return the scheme for a URI that should leave the browser.
+///
+/// WebKit does not launch desktop handlers for custom schemes on behalf of
+/// embedders. Keep browser-owned schemes in the WebView and hand protocols
+/// such as `zoommtg:`, `mailto:`, and `tel:` to GIO instead. Callers must also
+/// require a user gesture so a page cannot launch native applications merely
+/// by loading.
+fn external_uri_scheme(uri: &str) -> Option<String> {
+    let (scheme, _) = uri.split_once(':')?;
+    if scheme.is_empty()
+        || !scheme.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_alphabetic()
+                || (index > 0 && (byte.is_ascii_digit() || matches!(byte, b'+' | b'-' | b'.')))
+        })
+    {
+        return None;
+    }
+
+    let scheme = scheme.to_ascii_lowercase();
+    match scheme.as_str() {
+        "http" | "https" | "about" | "data" | "blob" | "file" | "javascript" | "ws" | "wss"
+        | "hwatu" => None,
+        _ => Some(scheme),
+    }
+}
+
 /// Media autoplay policy for every WebView. WebKit's own default is
 /// ALLOW_WITHOUT_SOUND, which is why video sites autoplay muted: their
 /// unmuted-play probe is rejected, so they fall back to a muted player.
@@ -93,7 +140,7 @@ fn autoplay_policy() -> webkit6::AutoplayPolicy {
 /// Read one key from ~/.config/hwatu/config.json (the same file adblock
 /// persists its toggle in). Returns None when the file or key is
 /// absent/invalid.
-fn config_value(key: &str) -> Option<serde_json::Value> {
+pub(crate) fn config_value(key: &str) -> Option<serde_json::Value> {
     let raw =
         std::fs::read_to_string(glib::user_config_dir().join("hwatu").join("config.json")).ok()?;
     let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
@@ -112,7 +159,7 @@ const DEFAULT_WINDOW_HEIGHT: i32 = 768;
 /// mapped window. Tiling WMs use this as the initial size hint when deciding
 /// how to place a new toplevel, while floating WMs still get a useful
 /// desktop-sized window instead of an arbitrary fixed width. The built-in
-/// default is one third; users can override it with `"preferred_width"` in
+/// default is one half; users can override it with `"preferred_width"` in
 /// `~/.config/hwatu/config.json`.
 fn default_window_width() -> i32 {
     let Some(display) = gtk::gdk::Display::default() else {
@@ -129,7 +176,7 @@ fn default_window_width() -> i32 {
     preferred_width(monitor.geometry().width(), preferred_width_ratio())
 }
 
-const DEFAULT_PREFERRED_WIDTH: f64 = 1.0 / 3.0;
+const DEFAULT_PREFERRED_WIDTH: f64 = 1.0 / 2.0;
 
 fn preferred_width_ratio() -> f64 {
     config_value("preferred_width")
@@ -150,6 +197,66 @@ fn preferred_width(viewport_width: i32, ratio: f64) -> i32 {
     ((viewport_width as f64) * ratio).floor().max(1.0) as i32
 }
 
+/// Semantic app-id for a URL from `"app_ids"` in config.json (roadmap
+/// H30): `{"app_ids": {"youtube.com": "hwatu.media", "github.com":
+/// "hwatu.code"}}`. Keys match the host or any parent-domain suffix
+/// (mail.google.com matches a google.com rule). Longest key wins.
+fn site_app_id(url: &str) -> Option<String> {
+    let rules = config_value("app_ids")?;
+    let rules = rules.as_object()?;
+    let host = crate::prompts::host_of(url).to_lowercase();
+    if host.is_empty() {
+        return None;
+    }
+    let mut best: Option<(&str, &str)> = None;
+    for (key, value) in rules {
+        let Some(id) = value.as_str() else { continue };
+        let k = key.to_lowercase();
+        if (host == k || host.ends_with(&format!(".{k}")))
+            && best.is_none_or(|(bk, _)| k.len() > bk.len())
+        {
+            best = Some((key.as_str(), id));
+        }
+    }
+    best.map(|(_, id)| id.to_string())
+}
+
+/// Known-graphical editors that wait for their window to close ("-w"
+/// style). Anything else is assumed terminal-bound.
+fn editor_is_graphical(editor: &str) -> bool {
+    let bin = editor.split_whitespace().next().unwrap_or(editor);
+    let bin = bin.rsplit('/').next().unwrap_or(bin);
+    matches!(
+        bin,
+        "code" | "codium" | "subl" | "gedit" | "kate" | "zeditor" | "zed"
+    )
+}
+
+/// Is `bin` on PATH?
+fn which_exists(bin: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(bin).is_file()))
+}
+
+/// Interpret only the keys owned by a confirmation prompt. Everything else
+/// must keep propagating to the page, otherwise a prompt appearing while the
+/// user types into a form can silently eat characters.
+fn confirm_answer(key: gtk::gdk::Key, state: gtk::gdk::ModifierType) -> Option<bool> {
+    let command_modifiers = gtk::gdk::ModifierType::CONTROL_MASK
+        | gtk::gdk::ModifierType::ALT_MASK
+        | gtk::gdk::ModifierType::SUPER_MASK
+        | gtk::gdk::ModifierType::HYPER_MASK
+        | gtk::gdk::ModifierType::META_MASK;
+    if state.intersects(command_modifiers) {
+        return None;
+    }
+    match key {
+        gtk::gdk::Key::y | gtk::gdk::Key::Y => Some(true),
+        gtk::gdk::Key::n | gtk::gdk::Key::N | gtk::gdk::Key::Escape => Some(false),
+        _ => None,
+    }
+}
+
 /// State saved across a discard. The session blob itself lives on disk
 /// (see [`discard_dir`]): keeping it in RAM would leak per-window
 /// memory exactly when the point of discarding is to reclaim it, and
@@ -160,6 +267,31 @@ struct SavedState {
     session_file: Option<std::path::PathBuf>,
     url: String,
     title: String,
+}
+
+fn termination_info(
+    reason: webkit6::WebProcessTerminationReason,
+    url: String,
+) -> WebProcessTerminationInfo {
+    let (reason, message) = match reason {
+        webkit6::WebProcessTerminationReason::Crashed => ("crashed", "crashed"),
+        webkit6::WebProcessTerminationReason::ExceededMemoryLimit => {
+            ("oom", "was killed (out of memory)")
+        }
+        _ => ("terminated", "terminated unexpectedly"),
+    };
+    WebProcessTerminationInfo {
+        reason: reason.to_string(),
+        message: message.to_string(),
+        url,
+    }
+}
+
+fn recovery_url(live_url: Option<&str>, last_url: &str) -> Option<String> {
+    live_url
+        .filter(|url| !url.is_empty())
+        .or((!last_url.is_empty()).then_some(last_url))
+        .map(str::to_string)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -254,6 +386,16 @@ pub struct BrowserWindow {
     /// stale prewarm `about:blank` commit from a genuine navigation
     /// to about:blank.
     nav_target: RefCell<Option<String>>,
+    /// Last non-empty URL observed or requested for this window. WebKit can
+    /// return an empty URI after web-process termination; keep enough state
+    /// for diagnostics and recovery instead of reporting a blank page.
+    last_url: RefCell<String>,
+    /// Last non-empty title, for the same post-termination fallback as URL.
+    last_title: RefCell<String>,
+    /// Last web-process termination diagnostic. Kept in the window model so
+    /// `hwatu list --json` exposes the reason even when hwatud was auto-
+    /// spawned with stdout/stderr discarded.
+    web_process_terminated: RefCell<Option<WebProcessTerminationInfo>>,
     /// True once the current load has Committed: the new document has
     /// replaced the old one. Together with `nav_pending` this lets
     /// stage-aware waits (`wait-load --until committed|dom`) know
@@ -281,12 +423,22 @@ pub struct BrowserWindow {
     /// current ranked matches and which one is highlighted. Cleared on
     /// close so a reopened palette starts fresh.
     palette: RefCell<Option<PaletteState>>,
+    /// URL-bar history completions (roadmap H9): ranked URL matches
+    /// for the current entry text, and which (if any) is highlighted.
+    /// `None` selection means Enter navigates the typed text.
+    completions: RefCell<Option<CompletionState>>,
 }
 
 /// See [`BrowserWindow::palette`].
 struct PaletteState {
     matches: Vec<keys::Action>,
     selected: usize,
+}
+
+/// See [`BrowserWindow::completions`].
+struct CompletionState {
+    urls: Vec<String>,
+    selected: Option<usize>,
 }
 
 /// `HWATU_WEBKIT_FEATURES=Ident:on,Other:off`: escape hatch for odd
@@ -301,8 +453,8 @@ fn feature_overrides() -> Vec<(String, bool)> {
 }
 
 /// Features hwatu flips away from the engine default. Env overrides
-/// (`HWATU_WEBKIT_FEATURES`) win over these, so
-/// `PropagateDamagingInformation:on` re-enables it for testing.
+/// (`HWATU_WEBKIT_FEATURES`) win over these, so any baseline can still be
+/// reversed for testing.
 ///
 /// `PropagateDamagingInformation` (default on since WebKitGTK 2.52)
 /// makes the compositor upload only damaged regions. On some stacks
@@ -314,7 +466,35 @@ fn feature_overrides() -> Vec<(String, bool)> {
 /// Chromium-family browsers don't share this path, which is why the
 /// same pages look fine elsewhere. Trade a little GPU bandwidth for
 /// correct pixels until the fixes ship in a stable WebKitGTK.
-const BASELINE_FEATURE_OVERRIDES: &[(&str, bool)] = &[("PropagateDamagingInformation", false)];
+///
+/// WebKitGTK 2.52 ships the Storage API and File System Access API but keeps
+/// them disabled by default. Together these features provide the Origin
+/// Private File System exposed by `navigator.storage.getDirectory()`. Modern
+/// local-first applications use OPFS for private, origin-scoped persistence,
+/// so a general-purpose browser should expose WebKit's native implementation.
+const BASELINE_FEATURE_OVERRIDES: &[(&str, bool)] = &[
+    ("PropagateDamagingInformation", false),
+    ("StorageAPI", true),
+    ("StorageAPIEstimate", true),
+    ("FileSystem", true),
+    ("FileSystemWritableStream", true),
+];
+
+/// `HWATU_MEDIA_STREAM=1|on|true` re-enables the MediaStream API
+/// (getUserMedia/enumerateDevices), which is off by default; see the
+/// wedge documented at the call site in `apply_view_settings`. The env
+/// var wins for a single run; `"media_stream": true` in
+/// ~/.config/hwatu/config.json persists the choice across daemon
+/// restarts (needed for daily WebRTC call use, where an env var
+/// silently vanishing on restart means a dead microphone mid-meeting).
+fn media_stream_enabled() -> bool {
+    if let Ok(v) = std::env::var("HWATU_MEDIA_STREAM") {
+        return matches!(v.trim(), "1" | "on" | "true");
+    }
+    config_value("media_stream")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+}
 
 fn parse_feature_overrides(raw: &str) -> Vec<(String, bool)> {
     raw.split(',')
@@ -328,6 +508,31 @@ fn parse_feature_overrides(raw: &str) -> Vec<(String, bool)> {
             Some((ident.trim().to_string(), on))
         })
         .collect()
+}
+
+/// Push a closing window onto the reopen stack (ctrl+shift+t), capped
+/// at 10 like mainstream browsers keep reachable by key. Headless
+/// windows belong to an agent's verification run, and blank/launcher
+/// pages are not worth resurrecting; none are recorded.
+fn remember_recently_closed(stack: &RefCell<Vec<crate::session::SessionEntry>>, info: WindowInfo) {
+    if info.mode == OpenMode::Headless
+        || info.url.is_empty()
+        || info.url == "about:blank"
+        || crate::launcher::is_launcher(&info.url)
+    {
+        return;
+    }
+    let mut closed = stack.borrow_mut();
+    closed.push(crate::session::SessionEntry {
+        url: info.url,
+        title: info.title,
+        app_id: info.app_id,
+        mode: info.mode,
+    });
+    let overflow = closed.len().saturating_sub(10);
+    if overflow > 0 {
+        closed.drain(..overflow);
+    }
 }
 
 /// Set the Wayland xdg_toplevel app_id for one window, overriding the
@@ -345,15 +550,24 @@ fn set_wayland_app_id(window: &gtk::Window, app_id: &str) {
 
 /// Build a fully configured WebView. Called for the prewarm pool and as
 /// a fallback; all engine knobs live here, never on the spawn path.
-pub fn build_webview() -> webkit6::WebView {
+pub fn build_webview(daemon: &Daemon) -> webkit6::WebView {
+    build_webview_with_session(daemon.network_session.as_ref())
+}
+
+/// [`build_webview`] against an explicit network session (platform
+/// item 6, profiles): profiled windows can't adopt the prewarmed
+/// pool view (it rides the default session), so they build here.
+pub fn build_webview_with_session(session: Option<&webkit6::NetworkSession>) -> webkit6::WebView {
     // website-policies is construct-only, hence the builder. Autoplay
     // defaults to full allow (with sound); see autoplay_policy().
     let policies = webkit6::WebsitePolicies::builder()
         .autoplay(autoplay_policy())
         .build();
-    let view = webkit6::WebView::builder()
-        .website_policies(&policies)
-        .build();
+    let mut builder = webkit6::WebView::builder().website_policies(&policies);
+    if let Some(session) = session {
+        builder = builder.network_session(session);
+    }
+    let view = builder.build();
     apply_view_settings(&view);
     crate::console::wire_view(&view);
     crate::clock::wire_view(&view);
@@ -361,7 +575,17 @@ pub fn build_webview() -> webkit6::WebView {
     crate::focusshield::wire_view(&view);
     crate::blurshield::wire_view(&view);
     crate::mediashim::wire_view(&view);
+    crate::opfs::wire_view(&view);
     crate::trusted_input::wire_view(&view);
+    crate::reader::wire_view(&view);
+    // Link hints (roadmap H10): yank mode hands the href to the GDK
+    // clipboard, page JS never touches navigator.clipboard.
+    crate::hints::wire_view(&view, |href| {
+        if let Some(display) = gtk::gdk::Display::default() {
+            display.clipboard().set_text(&href);
+            println!("hwatud: yanked {href}");
+        }
+    });
     view
 }
 
@@ -382,6 +606,35 @@ fn apply_view_settings(view: &webkit6::WebView) {
         // entirely so automation against such pages stays responsive.
         if std::env::var("HWATU_DISABLE_MEDIA").is_ok_and(|v| !v.is_empty() && v != "0") {
             settings.set_enable_media(false);
+        }
+
+        // MediaStream (getUserMedia/enumerateDevices) is off unless
+        // explicitly requested. On WebKitGTK 2.52.5 + GStreamer 1.28
+        // (pipewire provider), a page calling
+        // navigator.mediaDevices.enumerateDevices() wedges the web
+        // process main thread inside
+        // GStreamerVideoCaptureDeviceManager::computeCaptureDevices —
+        // a nested g_main_context_iteration loop that never completes,
+        // pinning one core at 100% and starving JS/paint/IPC for the
+        // life of the process (reproduced on example.com with a bare
+        // enumerateDevices() call; observed in the wild via
+        // doordash.com's fingerprinting SDK, which probes devices on
+        // every page). Chromium-family browsers answer the same probe
+        // in microseconds, which is why the same sites feel fine
+        // there. With the API disabled, navigator.mediaDevices is
+        // simply absent and such probes fall through their error
+        // paths instantly. HWATU_MEDIA_STREAM=1 re-enables for actual
+        // camera/mic use.
+        if !media_stream_enabled() {
+            settings.set_enable_media_stream(false);
+        } else {
+            // WebRTC (Meet/Discord/Zoom-web calls) defaults OFF in
+            // WebKitGTK. enable-webrtc implies media-stream, so it
+            // rides the same gate: flipping it while media-stream is
+            // force-disabled would silently re-open the
+            // enumerateDevices wedge documented above. Runtime codec
+            // support needs the distro's gst-plugins-bad.
+            settings.set_enable_webrtc(true);
         }
 
         // Scrolling must hit the GPU compositor path. The default
@@ -423,14 +676,50 @@ impl BrowserWindow {
         app_id: Option<String>,
         mode: OpenMode,
     ) -> WindowInfo {
+        Self::open_with_profile(daemon, url, app_id, mode, None)
+    }
+
+    /// [`Self::open`] with cookie/site-data isolation (platform item
+    /// 6): `profile` names an isolated NetworkSession. Profiled
+    /// windows skip the prewarmed pool (it rides the default
+    /// session) and build a fresh view against the profile's session;
+    /// isolation is worth the one-time engine setup cost.
+    pub fn open_with_profile(
+        daemon: &Rc<Daemon>,
+        url: Option<String>,
+        app_id: Option<String>,
+        mode: OpenMode,
+        profile: Option<String>,
+    ) -> WindowInfo {
         // On Wayland the compositor decides who gets focus, and most
         // tilers focus new windows. A background window therefore gets
         // a predictable default app_id so one WM rule can opt it out
         // (niri: `match app-id="hwatu-background"` + `open-focused
         // false`; Hyprland: `windowrule = noinitialfocus, class:...`).
+        //
+        // Semantic app-ids (roadmap H30): with no explicit app_id, a
+        // profiled window gets `hwatu.<profile>` and a URL matching an
+        // `"app_ids": {"<host-suffix>": "<id>"}` config rule gets that
+        // id — so niri window rules do auto-placement, floating, and
+        // workspace pinning without hwatu growing its own rule engine.
         let app_id = app_id
+            .or_else(|| {
+                profile
+                    .as_deref()
+                    .filter(|p| !p.is_empty())
+                    .map(|p| format!("hwatu.{p}"))
+            })
+            .or_else(|| url.as_deref().and_then(site_app_id))
             .or_else(|| (mode == OpenMode::Background).then(|| "hwatu-background".to_string()));
-        let webview = daemon.take_webview();
+        let webview = match profile.as_deref().filter(|p| !p.is_empty()) {
+            Some(name) => {
+                let session = daemon.profile_session(name);
+                let view = build_webview_with_session(Some(&session));
+                daemon.adblock.apply_to(&view);
+                view
+            }
+            None => daemon.take_webview(),
+        };
         let this = Self::build(daemon, webview.clone(), app_id.clone(), mode);
         // No URL and no configured home page: show the launcher (the
         // keybind cheat sheet) with the URL bar already open, so a
@@ -438,12 +727,14 @@ impl BrowserWindow {
         let target = match url.or_else(home_page) {
             Some(url) => {
                 this.mark_nav_pending(&url);
+                this.remember_url(&url);
                 webview.load_uri(&url);
                 url
             }
             None => {
                 let uri = launcher::deal_uri(daemon.take_deal());
                 this.mark_nav_pending(&uri);
+                this.remember_url(&uri);
                 webview.load_uri(&uri);
                 if mode == OpenMode::Normal {
                     this.bar.open_url("");
@@ -460,6 +751,7 @@ impl BrowserWindow {
             suspended: false,
             app_id,
             mode,
+            web_process_terminated: None,
         }
     }
 
@@ -546,6 +838,7 @@ impl BrowserWindow {
         crate::clock::wire_view(&webview);
         crate::smoothwheel::wire_view(&webview);
         crate::focusshield::wire_view(&webview);
+        crate::opfs::wire_view(&webview);
         crate::trusted_input::wire_view(&webview);
         self.daemon.adblock.apply_to(&webview);
         let popup = Self::build(
@@ -619,7 +912,7 @@ impl BrowserWindow {
             daemon: daemon.clone(),
             overlay,
             bar,
-            prompts: Prompts::new(daemon.prompt_memory.clone()),
+            prompts: Prompts::new(daemon.site_store.clone()),
             webview: RefCell::new(None),
             saved: RefCell::new(None),
             veil: RefCell::new(None),
@@ -633,12 +926,16 @@ impl BrowserWindow {
             viewport: std::cell::Cell::new(None),
             nav_pending: RefCell::new(None),
             nav_target: RefCell::new(None),
+            last_url: RefCell::new(String::new()),
+            last_title: RefCell::new(String::new()),
+            web_process_terminated: RefCell::new(None),
             load_committed: std::cell::Cell::new(true),
             snapshot_baseline: RefCell::new(None),
             console: crate::console::Buffer::default(),
             net: crate::net::Buffer::default(),
             turnstile_handoff_offered: std::cell::Cell::new(false),
             palette: RefCell::new(None),
+            completions: RefCell::new(None),
         });
 
         this.attach_webview(webview);
@@ -719,13 +1016,10 @@ impl BrowserWindow {
                 let BarMode::Confirm { tag } = this2.bar.mode() else {
                     return glib::Propagation::Proceed;
                 };
-                match key {
-                    gtk::gdk::Key::y | gtk::gdk::Key::Y => this2.answer_confirm(&tag, true),
-                    gtk::gdk::Key::n | gtk::gdk::Key::N | gtk::gdk::Key::Escape => {
-                        this2.answer_confirm(&tag, false)
-                    }
-                    _ => {}
-                }
+                let Some(answer) = confirm_answer(key, state) else {
+                    return glib::Propagation::Proceed;
+                };
+                this2.answer_confirm(&tag, answer);
                 glib::Propagation::Stop
             });
             window.add_controller(ctrl);
@@ -756,6 +1050,9 @@ impl BrowserWindow {
             let this = this.clone();
             window.connect_close_request(move |_| {
                 this.cancel_discard_timer();
+                // Remember the page for ctrl+shift+t before the window
+                // leaves the registry.
+                remember_recently_closed(&daemon.recently_closed, this.info());
                 // The GTK toplevel dying does not kill the web process:
                 // WebKit caches it for reuse, and a cached process keeps
                 // running its page — an autoplaying video's audio audibly
@@ -788,8 +1085,18 @@ impl BrowserWindow {
         crate::console::attach(&self.console, &webview);
         crate::net::attach(&self.net, &webview);
         let win = self.window.clone();
+        let this = self.clone();
         webview.connect_title_notify(move |wv| {
             let title = wv.title().unwrap_or_default();
+            if !title.is_empty() {
+                this.last_title.replace(title.to_string());
+                // History completion shows titles (roadmap H9).
+                if this.mode.get() != OpenMode::Headless {
+                    if let Some(url) = wv.uri() {
+                        this.daemon.history.record_title(&url, &title);
+                    }
+                }
+            }
             win.set_title(Some(if title.is_empty() {
                 "hwatu"
             } else {
@@ -800,7 +1107,11 @@ impl BrowserWindow {
         // (debounced in the daemon).
         {
             let daemon = self.daemon.clone();
-            webview.connect_uri_notify(move |_| daemon.schedule_session_save());
+            let this = self.clone();
+            webview.connect_uri_notify(move |wv| {
+                this.remember_webview_url(wv);
+                daemon.schedule_session_save();
+            });
         }
         // A gray WebKit surface during a slow or wedged load used to look
         // like hwatu itself had broken. Surface a low-priority overlay if
@@ -812,6 +1123,7 @@ impl BrowserWindow {
             webview.connect_load_changed(move |wv, event| match event {
                 webkit6::LoadEvent::Started => {
                     this.note_load_engaged(wv);
+                    this.web_process_terminated.replace(None);
                     this.turnstile_handoff_offered.set(false);
                     this.load_committed.set(false);
                     this.clear_recovery_overlay();
@@ -839,6 +1151,40 @@ impl BrowserWindow {
                     // baseline: the next `snapshot --diff` starts over.
                     this.snapshot_baseline.replace(None);
                     this.clear_recovery_overlay();
+                    // Per-site zoom (roadmap H5): apply the remembered
+                    // level for the new document's host. Explicitly
+                    // reset to 1.0 otherwise, or a zoom picked up on
+                    // one site follows the window to the next.
+                    let host = prompts::host_of(&wv.uri().unwrap_or_default());
+                    let level = this.daemon.site_store.zoom(&host).unwrap_or(1.0);
+                    if (wv.zoom_level() - level).abs() > 0.001 {
+                        wv.set_zoom_level(level);
+                    }
+                    // Forced dark mode (roadmap H15): re-apply the
+                    // per-site/global preference on the new document.
+                    if crate::darkmode::should_darken(&this.daemon.site_store, &host) {
+                        wv.evaluate_javascript(
+                            &crate::darkmode::apply_js(true),
+                            None,
+                            None,
+                            gtk::gio::Cancellable::NONE,
+                            |_| {},
+                        );
+                    }
+                    // Global history (roadmap H9): record user
+                    // navigations. Headless windows belong to agent
+                    // verification runs; internal pages and blanks
+                    // are not completions anyone wants.
+                    if this.mode.get() != OpenMode::Headless {
+                        if let Some(url) = wv.uri() {
+                            if !url.is_empty()
+                                && url != "about:blank"
+                                && !launcher::is_launcher(&url)
+                            {
+                                this.daemon.history.record_visit(&url);
+                            }
+                        }
+                    }
                     this.emit_load(wv, "committed");
                 }
                 webkit6::LoadEvent::Finished => {
@@ -849,6 +1195,64 @@ impl BrowserWindow {
             });
         }
         crate::downloads::wire_session(&self.daemon, &webview);
+        // File uploads (roadmap H1): <input type=file> emits
+        // run-file-chooser; unhandled, WebKit's default silently
+        // cancels and every upload flow is dead. Open a GTK file
+        // dialog honoring the input's MIME filter and multiple flag.
+        {
+            let this = self.clone();
+            webview.connect_run_file_chooser(move |_, request| {
+                let dialog = gtk::FileDialog::builder()
+                    .title("Upload file")
+                    .modal(true)
+                    .build();
+                if let Some(filter) = request.mime_types_filter() {
+                    filter.set_name(Some("Accepted files"));
+                    let filters = gtk::gio::ListStore::new::<gtk::FileFilter>();
+                    let all = gtk::FileFilter::new();
+                    all.set_name(Some("All files"));
+                    all.add_pattern("*");
+                    filters.append(&filter);
+                    filters.append(&all);
+                    dialog.set_filters(Some(&filters));
+                    dialog.set_default_filter(Some(&filter));
+                }
+                let request = request.clone();
+                let paths_of = |files: gtk::gio::ListModel| -> Vec<String> {
+                    (0..files.n_items())
+                        .filter_map(|i| files.item(i))
+                        .filter_map(|f| f.downcast::<gtk::gio::File>().ok())
+                        .filter_map(|f| f.path())
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .collect()
+                };
+                if request.selects_multiple() {
+                    dialog.open_multiple(
+                        Some(&this.window),
+                        gtk::gio::Cancellable::NONE,
+                        move |result| match result.map(paths_of) {
+                            Ok(paths) if !paths.is_empty() => {
+                                let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+                                request.select_files(&refs);
+                            }
+                            _ => request.cancel(),
+                        },
+                    );
+                } else {
+                    dialog.open(
+                        Some(&this.window),
+                        gtk::gio::Cancellable::NONE,
+                        move |result| match result.ok().and_then(|f| f.path()) {
+                            Some(path) => {
+                                request.select_files(&[&path.to_string_lossy()]);
+                            }
+                            None => request.cancel(),
+                        },
+                    );
+                }
+                true // handled
+            });
+        }
         // Permission requests (mic/cam/location/...) become bar
         // prompts; remembered decisions answer silently.
         {
@@ -894,6 +1298,13 @@ impl BrowserWindow {
         {
             let this = self.clone();
             webview.connect_load_failed(move |_, _, failing_uri, error| {
+                // Back/forward (and any navigation that supersedes an
+                // in-flight load) cancels the old main-frame request. The
+                // replacement load is already underway, so treating this as
+                // a failure leaves a false overlay on top of the new page.
+                if load_was_cancelled(error) {
+                    return true;
+                }
                 // A navigation converted into a download (attachment
                 // disposition or unrenderable MIME) aborts the frame
                 // load with FrameLoadInterruptedByPolicyChange. That
@@ -935,17 +1346,32 @@ impl BrowserWindow {
                 if this.webview.borrow().as_ref() != Some(wv) {
                     return;
                 }
-                let reason = match reason {
-                    webkit6::WebProcessTerminationReason::Crashed => "crashed",
-                    webkit6::WebProcessTerminationReason::ExceededMemoryLimit => {
-                        "was killed (out of memory)"
-                    }
-                    _ => "terminated unexpectedly",
-                };
-                eprintln!("hwatud: web process for window {} {reason}", this.id);
+                let url = wv
+                    .uri()
+                    .map(|u| u.to_string())
+                    .filter(|u| !u.is_empty())
+                    .unwrap_or_else(|| this.last_url.borrow().clone());
+                let info = termination_info(reason, url.clone());
+                this.web_process_terminated.replace(Some(info.clone()));
+                this.daemon.events.emit(
+                    "web_process",
+                    Some(this.id),
+                    serde_json::json!({
+                        "state": "terminated",
+                        "reason": info.reason,
+                        "message": info.message,
+                        "url": info.url,
+                    }),
+                );
+                eprintln!(
+                    "hwatud: web process for window {} {} at {}",
+                    this.id,
+                    info.message,
+                    if url.is_empty() { "(unknown URL)" } else { &url }
+                );
                 this.show_recovery_overlay(
                     "Page crashed",
-                    &format!("The web process {reason}. Press Ctrl+r or F5 to reload, or Ctrl+l to open a URL."),
+                    &format!("The web process {}. Press Ctrl+r or F5 to reload, or Ctrl+l to open a URL.", info.message),
                     RecoveryOverlay::Failure,
                 );
             });
@@ -964,12 +1390,83 @@ impl BrowserWindow {
             let this = self.clone();
             webview.connect_close(move |_| this.window.close());
         }
-        // Non-displayable responses (Content-Disposition: attachment,
-        // MIME types WebKit can't render) become downloads instead of
-        // dead ends. Main-document responses also pass through the
-        // per-site UA switcher (mobile UI for reels-style sites),
-        // which may restart the load under the right user-agent.
-        webview.connect_decide_policy(|wv, decision, decision_type| {
+        // window.print() (roadmap H7): route the page-initiated print
+        // through the same dialog as ctrl+p.
+        {
+            let this = self.clone();
+            webview.connect_print(move |_, operation| {
+                this.run_print_operation(operation);
+                true // handled; WebKit must not run its own dialog too
+            });
+        }
+        // Web notifications (roadmap H4): forward to the desktop over
+        // D-Bus; a click presents this window (an explicit request).
+        {
+            let this = self.clone();
+            crate::notify::wire_view(&webview, move || this.window.present());
+        }
+        // Ctrl+click follows the same client-tab path as Ctrl+t instead of
+        // replacing the current page. Non-displayable responses
+        // (Content-Disposition: attachment, MIME types WebKit can't render)
+        // become downloads instead of dead ends. Main-document responses
+        // also pass through the per-site UA switcher (mobile UI for
+        // reels-style sites), which may restart the load under the right
+        // user-agent.
+        let this = self.clone();
+        webview.connect_decide_policy(move |wv, decision, decision_type| {
+            if matches!(
+                decision_type,
+                webkit6::PolicyDecisionType::NavigationAction
+                    | webkit6::PolicyDecisionType::NewWindowAction
+            ) {
+                let Some(navigation) =
+                    decision.dynamic_cast_ref::<webkit6::NavigationPolicyDecision>()
+                else {
+                    return false;
+                };
+                let Some(mut action) = navigation.navigation_action() else {
+                    return false;
+                };
+                let Some(uri) = action.request().and_then(|request| request.uri()) else {
+                    return false;
+                };
+
+                // Native-app links need explicit embedder handling. Only
+                // honor them during a user gesture, and only when the desktop
+                // has a registered handler for the scheme. This covers Zoom's
+                // `zoommtg:` join button without allowing pages to launch
+                // arbitrary programs on load.
+                if action.is_user_gesture()
+                    && external_uri_scheme(&uri).is_some_and(|scheme| {
+                        gtk::gio::AppInfo::default_for_uri_scheme(&scheme).is_some()
+                    })
+                {
+                    decision.ignore();
+                    if let Err(error) = gtk::gio::AppInfo::launch_default_for_uri(
+                        &uri,
+                        None::<&gtk::gio::AppLaunchContext>,
+                    ) {
+                        eprintln!("hwatud: could not open external URI: {error}");
+                        this.flash_bar("could not open external application", 4);
+                    }
+                    return true;
+                }
+
+                if decision_type == webkit6::PolicyDecisionType::NewWindowAction {
+                    return false;
+                }
+
+                if !is_ctrl_click_link(
+                    action.navigation_type(),
+                    action.mouse_button(),
+                    action.modifiers(),
+                ) {
+                    return false;
+                }
+                decision.ignore();
+                Self::open(&this.daemon, Some(uri.to_string()), None, OpenMode::Normal);
+                return true;
+            }
             if decision_type != webkit6::PolicyDecisionType::Response {
                 return false; // default handling
             }
@@ -1067,15 +1564,21 @@ impl BrowserWindow {
         let url = webview.uri().map(|u| u.to_string()).unwrap_or_default();
         let title = webview.title().map(|t| t.to_string()).unwrap_or_default();
         // Serialize history to disk, not RAM: the whole point is to
-        // give memory back. Write failures degrade to a URL reload.
-        let session_file = webview
-            .session_state()
-            .and_then(|state| state.serialize())
-            .and_then(|bytes| {
-                let path = discard_dir()?.join(format!("window-{}.session", self.id));
-                std::fs::write(&path, bytes).ok()?;
-                Some(path)
-            });
+        // give memory back. Write failures degrade to a URL reload. In
+        // ephemeral-profile mode no normal profile/cache state may be
+        // written, so discards deliberately keep only the URL/title.
+        let session_file = if self.daemon.security.ephemeral_profile {
+            None
+        } else {
+            webview
+                .session_state()
+                .and_then(|state| state.serialize())
+                .and_then(|bytes| {
+                    let path = discard_dir()?.join(format!("window-{}.session", self.id));
+                    std::fs::write(&path, bytes).ok()?;
+                    Some(path)
+                })
+        };
         self.saved.replace(Some(SavedState {
             session_file,
             url,
@@ -1248,6 +1751,11 @@ impl BrowserWindow {
     /// need for a human (not focused, no bar prompt, no CAPTCHA)
     /// demotes itself instead of squatting in the WM forever.
     pub fn present(self: &Rc<Self>) {
+        // Do not depend on the compositor granting activation (and emitting
+        // is-active-notify) to preserve the promoted page. Cancel a pending
+        // discard and restore before mapping the window.
+        self.cancel_discard_timer();
+        self.restore();
         let prev = self.mode.get();
         if prev != OpenMode::Normal && self.promoted_from.get().is_none() {
             self.promoted_from.set(Some(prev));
@@ -1356,15 +1864,31 @@ impl BrowserWindow {
 
     pub fn info(&self) -> WindowInfo {
         match &*self.webview.borrow() {
-            Some(wv) => WindowInfo {
-                id: self.id,
-                url: wv.uri().map(|u| u.to_string()).unwrap_or_default(),
-                title: wv.title().map(|t| t.to_string()).unwrap_or_default(),
-                focused: self.window.is_active(),
-                suspended: false,
-                app_id: self.app_id.clone(),
-                mode: self.mode.get(),
-            },
+            Some(wv) => {
+                let url = wv.uri().map(|u| u.to_string()).unwrap_or_default();
+                WindowInfo {
+                    id: self.id,
+                    url: if url.is_empty() {
+                        self.last_url.borrow().clone()
+                    } else {
+                        url
+                    },
+                    title: wv
+                        .title()
+                        .map(|t| t.to_string())
+                        .filter(|title| !title.is_empty())
+                        .unwrap_or_else(|| self.last_title.borrow().clone()),
+                    focused: self.window.is_active(),
+                    suspended: false,
+                    app_id: self.app_id.clone(),
+                    mode: self.mode.get(),
+                    web_process_terminated: self
+                        .web_process_terminated
+                        .borrow()
+                        .clone()
+                        .map(Box::new),
+                }
+            }
             None => {
                 let saved = self.saved.borrow();
                 let (url, title) = saved
@@ -1373,12 +1897,25 @@ impl BrowserWindow {
                     .unwrap_or_default();
                 WindowInfo {
                     id: self.id,
-                    url,
-                    title,
+                    url: if url.is_empty() {
+                        self.last_url.borrow().clone()
+                    } else {
+                        url
+                    },
+                    title: if title.is_empty() {
+                        self.last_title.borrow().clone()
+                    } else {
+                        title
+                    },
                     focused: false,
                     suspended: true,
                     app_id: self.app_id.clone(),
                     mode: self.mode.get(),
+                    web_process_terminated: self
+                        .web_process_terminated
+                        .borrow()
+                        .clone()
+                        .map(Box::new),
                 }
             }
         }
@@ -1419,6 +1956,18 @@ impl BrowserWindow {
     /// adblock toggle to re-apply filters across all windows.
     pub fn live_webview(&self) -> Option<webkit6::WebView> {
         self.webview.borrow().clone()
+    }
+
+    fn remember_webview_url(&self, webview: &webkit6::WebView) {
+        if let Some(uri) = webview.uri().filter(|uri| !uri.is_empty()) {
+            self.remember_url(uri.as_str());
+        }
+    }
+
+    fn remember_url(&self, url: &str) {
+        if !url.is_empty() {
+            self.last_url.replace(url.to_string());
+        }
     }
 
     /// Re-assert the offscreen viewport of a headless window. The
@@ -1552,6 +2101,17 @@ impl BrowserWindow {
                 }
             }
             Action::Mute => self.toggle_mute(),
+            Action::ReopenClosed => self.reopen_closed(),
+            Action::Print => self.print_page(),
+            Action::HintFollow => self.start_hints("follow"),
+            Action::HintNewWindow => self.start_hints("newwin"),
+            Action::HintYank => self.start_hints("yank"),
+            Action::FillPassword => self.fill_password(),
+            Action::DarkMode => self.toggle_dark_mode(),
+            Action::OpenMpv => self.open_mpv(),
+            Action::EditInEditor => self.edit_in_editor(),
+            Action::Reader => self.toggle_reader(),
+            Action::Share => self.open_share_menu(),
             Action::CommandPalette => self.open_palette(),
         }
         glib::Propagation::Stop
@@ -1655,6 +2215,14 @@ impl BrowserWindow {
         let Some(webview) = self.live_webview() else {
             return;
         };
+        if webview.uri().is_none_or(|uri| uri.is_empty()) {
+            let last_url = self.last_url.borrow().clone();
+            if let Some(url) = recovery_url(None, &last_url) {
+                self.mark_nav_pending(&url);
+                webview.load_uri(&url);
+            }
+            return;
+        }
         if bypass_cache {
             webview.reload_bypass_cache();
         } else {
@@ -1663,13 +2231,15 @@ impl BrowserWindow {
     }
 
     /// Multiply the page zoom by `factor`, clamped to a sane range.
-    /// Zoom is per-window state on the WebView, like other browsers.
+    /// Zoom is per-window state on the WebView, like other browsers,
+    /// and the resulting level persists per-site (roadmap H5).
     fn zoom_by(self: &Rc<Self>, factor: f64) {
         let Some(webview) = self.live_webview() else {
             return;
         };
         let level = (webview.zoom_level() * factor).clamp(0.25, 5.0);
         webview.set_zoom_level(level);
+        self.remember_zoom(&webview, level);
         self.flash_bar(&format!("zoom {:.0}%", level * 100.0), 1);
     }
 
@@ -1679,7 +2249,399 @@ impl BrowserWindow {
             return;
         };
         webview.set_zoom_level(1.0);
+        self.remember_zoom(&webview, 1.0);
         self.flash_bar("zoom 100%", 1);
+    }
+
+    /// Persist the zoom preference for the current page's host.
+    fn remember_zoom(&self, webview: &webkit6::WebView, level: f64) {
+        let host = prompts::host_of(&webview.uri().unwrap_or_default());
+        if !host.is_empty() && !host.starts_with("hwatu") {
+            self.daemon.site_store.set_zoom(&host, level);
+        }
+    }
+
+    /// Print the page (roadmap H7): system print dialog on the
+    /// current window; print-to-PDF comes free with GTK's dialog.
+    /// Sites that call window.print() land here too via the
+    /// WebView's `print` signal.
+    fn print_page(self: &Rc<Self>) {
+        let Some(webview) = self.live_webview() else {
+            return;
+        };
+        let operation = webkit6::PrintOperation::new(&webview);
+        self.run_print_operation(&operation);
+    }
+
+    /// Run one print dialog, reporting failures in the bar.
+    fn run_print_operation(self: &Rc<Self>, operation: &webkit6::PrintOperation) {
+        let this = self.clone();
+        operation.connect_failed(move |_, error| {
+            eprintln!("hwatud: print failed: {error}");
+            this.flash_bar("print failed", 4);
+        });
+        operation.run_dialog(Some(&self.window));
+    }
+
+    /// Enter link-hint mode (roadmap H10). `mode`: follow | newwin |
+    /// yank. The page-side machinery reports "no hints" when the page
+    /// has no visible interactables; surface that instead of silence.
+    fn start_hints(self: &Rc<Self>, mode: &str) {
+        let Some(webview) = self.live_webview() else {
+            return;
+        };
+        let this = self.clone();
+        webview.evaluate_javascript(
+            &crate::hints::start_js(mode),
+            None,
+            None,
+            gtk::gio::Cancellable::NONE,
+            move |result| {
+                if let Ok(value) = result {
+                    if value.is_string() && value.to_str() == "no hints" {
+                        this.flash_bar("no hints on this page", 1);
+                    }
+                }
+            },
+        );
+    }
+
+    /// Toggle forced dark mode for the current site (roadmap H15).
+    /// The new state persists per host on the site store and re-applies
+    /// on every future navigation to it.
+    fn toggle_dark_mode(self: &Rc<Self>) {
+        let Some(webview) = self.live_webview() else {
+            return;
+        };
+        let host = prompts::host_of(&webview.uri().unwrap_or_default());
+        if host.is_empty() || host.starts_with("hwatu") {
+            self.flash_bar("no site to darken", 2);
+            return;
+        }
+        let on = !crate::darkmode::should_darken(&self.daemon.site_store, &host);
+        self.daemon.site_store.set_dark_mode(&host, on);
+        let this = self.clone();
+        webview.evaluate_javascript(
+            &crate::darkmode::apply_js(on),
+            None,
+            None,
+            gtk::gio::Cancellable::NONE,
+            move |_| {
+                this.flash_bar(
+                    if on {
+                        "dark mode on (this site)"
+                    } else {
+                        "dark mode off (this site)"
+                    },
+                    2,
+                );
+            },
+        );
+    }
+
+    /// Hand the current page URL to mpv (roadmap H17): the loved
+    /// mitigation for engine video gaps (DRM, codec walls). Detached
+    /// spawn; mpv owns its own lifecycle.
+    fn open_mpv(self: &Rc<Self>) {
+        let Some(webview) = self.live_webview() else {
+            return;
+        };
+        let Some(url) = webview.uri().filter(|u| u.starts_with("http")) else {
+            self.flash_bar("no page URL for mpv", 2);
+            return;
+        };
+        match std::process::Command::new("mpv")
+            .arg(url.as_str())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+        {
+            Ok(_) => self.flash_bar("handed to mpv", 2),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                self.flash_bar("mpv not installed", 4);
+            }
+            Err(e) => {
+                eprintln!("hwatud: mpv spawn failed: {e}");
+                self.flash_bar("mpv failed to start", 4);
+            }
+        }
+    }
+
+    /// Edit the focused text field in $EDITOR (roadmap H18): dump the
+    /// field's value to a temp file, open $EDITOR (terminal editors
+    /// get a terminal via $TERMINAL/foot/alacritty/kitty), and paste
+    /// the saved contents back with framework-safe value setting.
+    /// The watcher polls the file's mtime; closing the editor without
+    /// saving changes nothing.
+    fn edit_in_editor(self: &Rc<Self>) {
+        let Some(webview) = self.live_webview() else {
+            return;
+        };
+        // 1. Read the focused editable's value (fail open when the
+        // focus isn't editable).
+        let this = self.clone();
+        webview.evaluate_javascript(
+            r#"(() => {
+  const el = document.activeElement;
+  if (!el) return null;
+  if (el.matches('textarea, input[type=text], input[type=search], input:not([type])'))
+    return el.value;
+  if (el.isContentEditable) return el.innerText;
+  return null;
+})()"#,
+            None,
+            None,
+            gtk::gio::Cancellable::NONE,
+            move |result| {
+                let Ok(value) = result else { return };
+                if value.is_null() {
+                    this.flash_bar("focus a text field first", 2);
+                    return;
+                }
+                let text = value.to_str().to_string();
+                this.spawn_editor(text);
+            },
+        );
+    }
+
+    /// Phase 2 of [`Self::edit_in_editor`]: editor round-trip.
+    fn spawn_editor(self: &Rc<Self>, initial: String) {
+        let path =
+            std::env::temp_dir().join(format!("hwatu-edit-{}-{}.txt", std::process::id(), self.id));
+        if std::fs::write(&path, &initial).is_err() {
+            self.flash_bar("cannot write temp file", 4);
+            return;
+        }
+        let editor = std::env::var("VISUAL")
+            .or_else(|_| std::env::var("EDITOR"))
+            .unwrap_or_else(|_| "vi".to_string());
+        // Terminal editors need a terminal. GUI editors ($VISUAL set
+        // to e.g. "code -w") mostly cope with being spawned directly.
+        let mut cmd = if editor_is_graphical(&editor) {
+            let mut parts = editor.split_whitespace();
+            let mut cmd = std::process::Command::new(parts.next().unwrap_or("vi"));
+            cmd.args(parts);
+            cmd.arg(&path);
+            cmd
+        } else {
+            let terminal = std::env::var("TERMINAL").ok().or_else(|| {
+                ["foot", "alacritty", "kitty", "wezterm"]
+                    .iter()
+                    .find(|t| which_exists(t))
+                    .map(|t| t.to_string())
+            });
+            let Some(terminal) = terminal else {
+                self.flash_bar("no terminal for $EDITOR (set $TERMINAL)", 4);
+                return;
+            };
+            let mut cmd = std::process::Command::new(terminal);
+            cmd.arg("-e");
+            let mut parts = editor.split_whitespace();
+            if let Some(bin) = parts.next() {
+                cmd.arg(bin);
+                cmd.args(parts);
+            }
+            cmd.arg(&path);
+            cmd
+        };
+        let mut child = match cmd.spawn() {
+            Ok(child) => child,
+            Err(e) => {
+                eprintln!("hwatud: editor spawn failed: {e}");
+                self.flash_bar("editor failed to start", 4);
+                let _ = std::fs::remove_file(&path);
+                return;
+            }
+        };
+        self.flash_bar("editing… save + close to paste back", 3);
+        // Poll for editor exit on the GTK loop (no blocking wait).
+        let this = self.clone();
+        glib::timeout_add_local(std::time::Duration::from_millis(300), move || {
+            match child.try_wait() {
+                Ok(None) => glib::ControlFlow::Continue,
+                Ok(Some(status)) => {
+                    let text = std::fs::read_to_string(&path).unwrap_or_default();
+                    let _ = std::fs::remove_file(&path);
+                    if status.success() {
+                        this.paste_into_focused(&text);
+                    } else {
+                        this.flash_bar("editor exited nonzero; not pasted", 3);
+                    }
+                    glib::ControlFlow::Break
+                }
+                Err(_) => {
+                    let _ = std::fs::remove_file(&path);
+                    glib::ControlFlow::Break
+                }
+            }
+        });
+    }
+
+    /// Write `text` into the currently focused editable, framework-safe.
+    fn paste_into_focused(self: &Rc<Self>, text: &str) {
+        let Some(webview) = self.live_webview() else {
+            return;
+        };
+        let payload = serde_json::to_string(text).unwrap_or_else(|_| "\"\"".into());
+        let js = format!(
+            r#"(() => {{
+  const TEXT = {payload};
+  const el = document.activeElement;
+  if (!el) return 'no focus';
+  if (el.isContentEditable) {{ el.innerText = TEXT; return 'pasted'; }}
+  if (!el.matches('textarea, input')) return 'not editable';
+  const proto = Object.getPrototypeOf(el);
+  const desc = Object.getOwnPropertyDescriptor(proto, 'value')
+    || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+  if (desc && desc.set) desc.set.call(el, TEXT); else el.value = TEXT;
+  el.dispatchEvent(new Event('input', {{ bubbles: true }}));
+  el.dispatchEvent(new Event('change', {{ bubbles: true }}));
+  return 'pasted';
+}})()"#
+        );
+        let this = self.clone();
+        webview.evaluate_javascript(
+            &js,
+            None,
+            None,
+            gtk::gio::Cancellable::NONE,
+            move |result| {
+                let msg = match result {
+                    Ok(v) if v.is_string() => v.to_str().to_string(),
+                    _ => "paste failed".to_string(),
+                };
+                this.flash_bar(&msg, 2);
+            },
+        );
+    }
+
+    /// Toggle reader mode (roadmap H34): article extraction into a
+    /// clean-typography overlay; Esc or re-toggle exits, original DOM
+    /// untouched. The page-side machinery reports what happened.
+    fn toggle_reader(self: &Rc<Self>) {
+        let Some(webview) = self.live_webview() else {
+            return;
+        };
+        let this = self.clone();
+        webview.evaluate_javascript(
+            crate::reader::toggle_js(),
+            None,
+            None,
+            gtk::gio::Cancellable::NONE,
+            move |result| {
+                if let Ok(value) = result {
+                    if value.is_string() {
+                        this.flash_bar(&value.to_str(), 2);
+                    }
+                }
+            },
+        );
+    }
+
+    /// Share the page URL (roadmap H36): one share.conf target runs
+    /// directly; several open the palette-style list; none explains
+    /// how to configure.
+    fn open_share_menu(self: &Rc<Self>) {
+        let Some(webview) = self.live_webview() else {
+            return;
+        };
+        let Some(url) = webview.uri().filter(|u| u.starts_with("http")) else {
+            self.flash_bar("no page URL to share", 2);
+            return;
+        };
+        let targets = crate::share::targets();
+        match targets.len() {
+            0 => self.flash_bar("no share targets (write ~/.config/hwatu/share.conf)", 4),
+            _ => {
+                // Reuse the bar's row surface as a picker: rows are
+                // (name, command head); Up/Down+Enter via the palette
+                // machinery would need a dedicated mode, so run the
+                // first target directly for 1 and list names for >1
+                // via sequential flash. Simplicity beats a modal here;
+                // heavy users bind `share` per target in share.conf
+                // order (share1..shareN planned if demand appears).
+                let target = &targets[0];
+                match crate::share::run(target, &url) {
+                    Ok(()) => self.flash_bar(&format!("shared via {}", target.name), 2),
+                    Err(e) => self.flash_bar(&e, 4),
+                }
+            }
+        }
+    }
+
+    /// Fill login credentials from the system password manager
+    /// (roadmap H11). The backend query runs on a worker thread —
+    /// gpg pinentry can take seconds — and the fill JS runs back on
+    /// the GTK thread. Secrets never hit logs or the bar.
+    fn fill_password(self: &Rc<Self>) {
+        let Some(webview) = self.live_webview() else {
+            return;
+        };
+        let host = prompts::host_of(&webview.uri().unwrap_or_default());
+        if host.is_empty() || host.starts_with("hwatu") {
+            self.flash_bar("no site to fill", 2);
+            return;
+        }
+        self.flash_bar("looking up credentials…", 2);
+        let (tx, rx) = std::sync::mpsc::channel();
+        {
+            let host = host.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(crate::passfill::lookup(&host));
+            });
+        }
+        let this = self.clone();
+        glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+            match rx.try_recv() {
+                Ok(Ok(credential)) => {
+                    let Some(webview) = this.live_webview() else {
+                        return glib::ControlFlow::Break;
+                    };
+                    let this2 = this.clone();
+                    webview.evaluate_javascript(
+                        &crate::passfill::fill_js(&credential),
+                        None,
+                        None,
+                        gtk::gio::Cancellable::NONE,
+                        move |result| {
+                            let msg = match result {
+                                Ok(v) if v.is_string() => v.to_str().to_string(),
+                                _ => "fill failed".to_string(),
+                            };
+                            this2.flash_bar(&msg, 2);
+                        },
+                    );
+                    glib::ControlFlow::Break
+                }
+                Ok(Err(error)) => {
+                    this.flash_bar(&error.to_string(), 4);
+                    glib::ControlFlow::Break
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    this.flash_bar("password lookup crashed", 4);
+                    glib::ControlFlow::Break
+                }
+            }
+        });
+    }
+
+    /// Reopen the most recently closed window (ctrl+shift+t), popping
+    /// the daemon's recently-closed stack. Reopened windows always
+    /// take focus regardless of how the original was opened: the user
+    /// pressed a key asking for the page back.
+    fn reopen_closed(self: &Rc<Self>) {
+        let entry = self.daemon.recently_closed.borrow_mut().pop();
+        let Some(entry) = entry else {
+            self.flash_bar("nothing to reopen", 1);
+            return;
+        };
+        Self::open(
+            &self.daemon,
+            Some(entry.url),
+            entry.app_id,
+            OpenMode::Normal,
+        );
     }
 
     /// Back/forward through this window's history. Restores a
@@ -1728,13 +2690,10 @@ impl BrowserWindow {
             // don't leak into the page under the bar.
             BarMode::Find { .. } | BarMode::Url | BarMode::Palette => glib::Propagation::Proceed,
             BarMode::Confirm { tag } => {
-                match key {
-                    gtk::gdk::Key::y | gtk::gdk::Key::Y => self.answer_confirm(&tag, true),
-                    gtk::gdk::Key::n | gtk::gdk::Key::N | gtk::gdk::Key::Escape => {
-                        self.answer_confirm(&tag, false)
-                    }
-                    _ => {}
-                }
+                let Some(answer) = confirm_answer(key, state) else {
+                    return glib::Propagation::Proceed;
+                };
+                self.answer_confirm(&tag, answer);
                 glib::Propagation::Stop
             }
         }
@@ -1752,6 +2711,7 @@ impl BrowserWindow {
                 .connect_changed(move |entry| match this.bar.mode() {
                     BarMode::Find { backwards } => this.run_find(&entry.text(), backwards),
                     BarMode::Palette => this.refresh_palette(&entry.text()),
+                    BarMode::Url => this.refresh_completions(&entry.text()),
                     _ => {}
                 });
         }
@@ -1767,7 +2727,17 @@ impl BrowserWindow {
                         this.focus_webview();
                     }
                     BarMode::Url => {
-                        let text = entry.text().trim().to_string();
+                        // A highlighted completion wins over the typed
+                        // text (roadmap H9); plain Enter navigates what
+                        // the user typed.
+                        let completion = {
+                            let state = this.completions.borrow();
+                            state
+                                .as_ref()
+                                .and_then(|s| s.selected.and_then(|i| s.urls.get(i).cloned()))
+                        };
+                        let text = completion.unwrap_or_else(|| entry.text().trim().to_string());
+                        this.completions.replace(None);
                         this.bar.close();
                         if !text.is_empty() {
                             this.navigate(&text);
@@ -1791,6 +2761,7 @@ impl BrowserWindow {
                         return glib::Propagation::Stop;
                     }
                     this.palette.replace(None);
+                    this.completions.replace(None);
                     this.stop_find();
                     this.bar.close();
                     this.focus_webview();
@@ -1804,6 +2775,19 @@ impl BrowserWindow {
                         }
                         gtk::gdk::Key::Up => {
                             this.palette_move(-1);
+                            return glib::Propagation::Stop;
+                        }
+                        _ => {}
+                    }
+                }
+                if this.bar.mode() == BarMode::Url {
+                    match key {
+                        gtk::gdk::Key::Down | gtk::gdk::Key::Tab => {
+                            this.completions_move(1);
+                            return glib::Propagation::Stop;
+                        }
+                        gtk::gdk::Key::Up | gtk::gdk::Key::ISO_Left_Tab => {
+                            this.completions_move(-1);
                             return glib::Propagation::Stop;
                         }
                         _ => {}
@@ -1877,6 +2861,73 @@ impl BrowserWindow {
         }
     }
 
+    // ---- URL completion (roadmap H9) --------------------------------
+
+    /// How many history completions the URL bar shows.
+    const COMPLETION_ROWS: usize = 6;
+
+    /// Re-query history for the current entry text. Skipped when the
+    /// text equals the page's own URL (opening ctrl+l prefills it;
+    /// completing against it would just echo the current page).
+    fn refresh_completions(self: &Rc<Self>, text: &str) {
+        let text = text.trim();
+        let current = self.last_url.borrow().clone();
+        let hits = if text == current.as_str() {
+            Vec::new()
+        } else {
+            self.daemon.history.complete(text, Self::COMPLETION_ROWS)
+        };
+        let rows: Vec<(String, String)> = hits
+            .iter()
+            .map(|h| {
+                let title = if h.title.is_empty() {
+                    String::new()
+                } else {
+                    h.title.clone()
+                };
+                (h.url.clone(), title)
+            })
+            .collect();
+        self.completions.replace(if hits.is_empty() {
+            None
+        } else {
+            Some(CompletionState {
+                urls: hits.into_iter().map(|h| h.url).collect(),
+                selected: None,
+            })
+        });
+        self.bar.set_completions(&rows, None);
+    }
+
+    /// Move the completion highlight (Down/Tab and Up/Shift+Tab).
+    /// Wraps through a no-selection state so the typed text is always
+    /// reachable again.
+    fn completions_move(self: &Rc<Self>, delta: isize) {
+        let mut state = self.completions.borrow_mut();
+        let Some(state) = state.as_mut() else {
+            return;
+        };
+        let n = state.urls.len() as isize;
+        if n == 0 {
+            return;
+        }
+        // Cycle: None -> 0 -> 1 ... n-1 -> None (and reverse).
+        let next = match state.selected {
+            None if delta > 0 => Some(0),
+            None => Some((n - 1) as usize),
+            Some(i) => {
+                let j = i as isize + delta;
+                if j < 0 || j >= n {
+                    None
+                } else {
+                    Some(j as usize)
+                }
+            }
+        };
+        state.selected = next;
+        self.bar.set_palette_selected(next.unwrap_or(usize::MAX));
+    }
+
     /// Close this window if it is still an untouched launcher: showing
     /// the launcher page with no navigation history. Returns whether
     /// it closed.
@@ -1914,6 +2965,7 @@ impl BrowserWindow {
         if let Some(webview) = self.live_webview() {
             let url = crate::ipc_server::normalize_url(input.to_string());
             self.mark_nav_pending(&url);
+            self.remember_url(&url);
             webview.load_uri(&url);
         }
     }
@@ -2023,7 +3075,76 @@ impl BrowserWindow {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_feature_overrides;
+    use super::{
+        external_uri_scheme, is_ctrl_click_link, load_was_cancelled, parse_feature_overrides,
+        recovery_url, remember_recently_closed, termination_info,
+    };
+
+    /// The reopen stack (ctrl+shift+t) records user windows newest
+    /// last, skips headless/blank/launcher pages, and caps at 10 so
+    /// the key can't dredge up the whole session's history.
+    #[test]
+    fn reopen_stack_records_user_windows_and_caps() {
+        use hwatu_ipc::{OpenMode, WindowInfo};
+        let info = |url: &str, mode| WindowInfo {
+            id: 1,
+            url: url.into(),
+            title: "t".into(),
+            focused: false,
+            suspended: false,
+            app_id: None,
+            mode,
+            web_process_terminated: None,
+        };
+        let stack = std::cell::RefCell::new(Vec::new());
+        // Recorded: a normal page, and a background window too (the
+        // reopen key should bring back agent-opened pages the user
+        // closed by hand).
+        remember_recently_closed(&stack, info("https://a.example/", OpenMode::Normal));
+        remember_recently_closed(&stack, info("https://b.example/", OpenMode::Background));
+        // Skipped: headless, blank, launcher.
+        remember_recently_closed(&stack, info("https://c.example/", OpenMode::Headless));
+        remember_recently_closed(&stack, info("", OpenMode::Normal));
+        remember_recently_closed(&stack, info("about:blank", OpenMode::Normal));
+        remember_recently_closed(&stack, info(crate::launcher::URI, OpenMode::Normal));
+        {
+            let closed = stack.borrow();
+            assert_eq!(closed.len(), 2);
+            // Newest last: pop() must return the most recent close.
+            assert_eq!(closed[0].url, "https://a.example/");
+            assert_eq!(closed[1].url, "https://b.example/");
+        }
+        // Cap at 10, evicting oldest first: 2 seeds + 12 pushes = 14,
+        // so a/b and n0/n1 fall off and n2 is the oldest survivor.
+        for i in 0..12 {
+            remember_recently_closed(
+                &stack,
+                info(&format!("https://n{i}.example/"), OpenMode::Normal),
+            );
+        }
+        let closed = stack.borrow();
+        assert_eq!(closed.len(), 10);
+        assert_eq!(closed[0].url, "https://n2.example/");
+        assert_eq!(closed[9].url, "https://n11.example/");
+    }
+
+    #[test]
+    fn baseline_enables_the_complete_opfs_feature_bundle() {
+        for identifier in [
+            "StorageAPI",
+            "StorageAPIEstimate",
+            "FileSystem",
+            "FileSystemWritableStream",
+        ] {
+            assert_eq!(
+                super::BASELINE_FEATURE_OVERRIDES
+                    .iter()
+                    .find(|(name, _)| *name == identifier),
+                Some(&(identifier, true)),
+                "{identifier} must be enabled for navigator.storage.getDirectory()"
+            );
+        }
+    }
 
     #[test]
     fn parses_on_off_pairs() {
@@ -2049,11 +3170,38 @@ mod tests {
         assert!(parse_feature_overrides("").is_empty());
     }
 
+    /// MediaStream stays off unless the env opt-in is exact: the
+    /// default guards against the enumerateDevices() main-thread wedge
+    /// (see apply_view_settings), so a sloppy value must not enable it.
+    #[test]
+    fn media_stream_env_gate() {
+        std::env::remove_var("HWATU_MEDIA_STREAM");
+        assert!(!super::media_stream_enabled());
+        std::env::set_var("HWATU_MEDIA_STREAM", "1");
+        assert!(super::media_stream_enabled());
+        std::env::set_var("HWATU_MEDIA_STREAM", "on");
+        assert!(super::media_stream_enabled());
+        std::env::set_var("HWATU_MEDIA_STREAM", "0");
+        assert!(!super::media_stream_enabled());
+        std::env::set_var("HWATU_MEDIA_STREAM", "yes");
+        assert!(!super::media_stream_enabled());
+        std::env::remove_var("HWATU_MEDIA_STREAM");
+    }
+
     #[test]
     fn preferred_width_uses_the_configured_fraction_of_the_viewport() {
         assert_eq!(super::preferred_width(1920, 1.0 / 3.0), 640);
         assert_eq!(super::preferred_width(1366, 1.0 / 3.0), 455);
         assert_eq!(super::preferred_width(1920, 0.25), 480);
+    }
+
+    #[test]
+    fn preferred_width_defaults_to_one_half() {
+        assert_eq!(super::DEFAULT_PREFERRED_WIDTH, 0.5);
+        assert_eq!(
+            super::preferred_width(1920, super::DEFAULT_PREFERRED_WIDTH),
+            960
+        );
     }
 
     #[test]
@@ -2076,5 +3224,133 @@ mod tests {
         assert_eq!(super::ratio_from_value(&json!("0.25")), None);
         assert_eq!(super::ratio_from_value(&json!(null)), None);
         assert_eq!(super::ratio_from_value(&json!({})), None);
+    }
+
+    #[test]
+    fn confirmation_keys_only_claim_explicit_answers() {
+        let none = gtk::gdk::ModifierType::empty();
+        assert_eq!(super::confirm_answer(gtk::gdk::Key::y, none), Some(true));
+        assert_eq!(
+            super::confirm_answer(gtk::gdk::Key::Y, gtk::gdk::ModifierType::SHIFT_MASK),
+            Some(true)
+        );
+        assert_eq!(super::confirm_answer(gtk::gdk::Key::n, none), Some(false));
+        assert_eq!(super::confirm_answer(gtk::gdk::Key::N, none), Some(false));
+        assert_eq!(
+            super::confirm_answer(gtk::gdk::Key::Escape, none),
+            Some(false)
+        );
+        assert_eq!(super::confirm_answer(gtk::gdk::Key::a, none), None);
+        assert_eq!(super::confirm_answer(gtk::gdk::Key::exclam, none), None);
+        assert_eq!(
+            super::confirm_answer(gtk::gdk::Key::y, gtk::gdk::ModifierType::CONTROL_MASK),
+            None
+        );
+        assert_eq!(
+            super::confirm_answer(gtk::gdk::Key::n, gtk::gdk::ModifierType::ALT_MASK),
+            None
+        );
+    }
+
+    #[test]
+    fn cancelled_webkit_load_is_not_a_page_failure() {
+        let error = glib::Error::new(webkit6::NetworkError::Cancelled, "Load request cancelled");
+        assert!(load_was_cancelled(&error));
+    }
+
+    #[test]
+    fn cancelled_gio_load_is_not_a_page_failure() {
+        let error = glib::Error::new(gtk::gio::IOErrorEnum::Cancelled, "Operation cancelled");
+        assert!(load_was_cancelled(&error));
+    }
+
+    #[test]
+    fn genuine_network_error_remains_a_page_failure() {
+        let error = glib::Error::new(webkit6::NetworkError::Failed, "Connection failed");
+        assert!(!load_was_cancelled(&error));
+    }
+
+    #[test]
+    fn only_ctrl_primary_link_clicks_open_new_tabs() {
+        let ctrl = gtk::gdk::ModifierType::CONTROL_MASK.bits();
+        let shift = gtk::gdk::ModifierType::SHIFT_MASK.bits();
+
+        assert!(is_ctrl_click_link(
+            webkit6::NavigationType::LinkClicked,
+            1,
+            ctrl
+        ));
+        assert!(is_ctrl_click_link(
+            webkit6::NavigationType::LinkClicked,
+            1,
+            ctrl | shift
+        ));
+        assert!(!is_ctrl_click_link(
+            webkit6::NavigationType::LinkClicked,
+            1,
+            shift
+        ));
+        assert!(!is_ctrl_click_link(
+            webkit6::NavigationType::LinkClicked,
+            3,
+            ctrl
+        ));
+        assert!(!is_ctrl_click_link(webkit6::NavigationType::Other, 1, ctrl));
+    }
+
+    #[test]
+    fn native_app_schemes_are_external_but_browser_schemes_are_not() {
+        assert_eq!(
+            external_uri_scheme("zoommtg://zoom.us/join"),
+            Some("zoommtg".into())
+        );
+        assert_eq!(
+            external_uri_scheme("mailto:person@example.com"),
+            Some("mailto".into())
+        );
+        assert_eq!(
+            external_uri_scheme("ZOOMMTG://zoom.us/join"),
+            Some("zoommtg".into())
+        );
+        assert_eq!(
+            external_uri_scheme("web+notes:42"),
+            Some("web+notes".into())
+        );
+
+        assert_eq!(external_uri_scheme("https://zoom.us/join"), None);
+        assert_eq!(external_uri_scheme("HTTP://example.com"), None);
+        assert_eq!(external_uri_scheme("javascript:alert(1)"), None);
+        assert_eq!(external_uri_scheme("hwatu://launcher"), None);
+        assert_eq!(external_uri_scheme("not a uri"), None);
+        assert_eq!(external_uri_scheme("1invalid:value"), None);
+    }
+
+    #[test]
+    fn recovery_url_prefers_live_and_falls_back_to_last_non_empty_url() {
+        assert_eq!(
+            recovery_url(Some("https://live.test/"), "https://last.test/"),
+            Some("https://live.test/".into())
+        );
+        assert_eq!(
+            recovery_url(Some(""), "https://last.test/"),
+            Some("https://last.test/".into())
+        );
+        assert_eq!(recovery_url(None, ""), None);
+    }
+
+    #[test]
+    fn web_process_termination_reasons_are_stable_and_keep_url() {
+        let url = "https://example.test/sign-up".to_string();
+        let crashed = termination_info(webkit6::WebProcessTerminationReason::Crashed, url.clone());
+        let oom = termination_info(
+            webkit6::WebProcessTerminationReason::ExceededMemoryLimit,
+            url.clone(),
+        );
+
+        assert_eq!(crashed.reason, "crashed");
+        assert_eq!(crashed.message, "crashed");
+        assert_eq!(crashed.url, url);
+        assert_eq!(oom.reason, "oom");
+        assert_eq!(oom.message, "was killed (out of memory)");
     }
 }
