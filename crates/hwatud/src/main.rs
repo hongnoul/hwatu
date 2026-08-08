@@ -42,6 +42,7 @@ mod siteua;
 mod smoothwheel;
 mod snapbudget;
 mod snapdiff;
+mod theme;
 mod trusted_input;
 mod verify;
 mod window;
@@ -574,6 +575,9 @@ fn main() -> glib::ExitCode {
         open_sandbox_for_media();
         // Spell check (H6): Enchant backend on, locale-derived language.
         enable_spell_checking();
+        // Theme continuity (H37): follow the desktop color scheme so
+        // prefers-color-scheme resolves like native apps'.
+        theme::follow_system();
         // Internal pages (hwatu://launcher) before any WebView exists.
         launcher::register_scheme();
         adblock::Adblock::init(&daemon);
