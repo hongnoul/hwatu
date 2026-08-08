@@ -2010,6 +2010,7 @@ impl BrowserWindow {
             Action::HintFollow => self.start_hints("follow"),
             Action::HintNewWindow => self.start_hints("newwin"),
             Action::HintYank => self.start_hints("yank"),
+            Action::FillPassword => self.fill_password(),
             Action::CommandPalette => self.open_palette(),
         }
         glib::Propagation::Stop
@@ -2202,6 +2203,63 @@ impl BrowserWindow {
                 }
             },
         );
+    }
+
+    /// Fill login credentials from the system password manager
+    /// (roadmap H11). The backend query runs on a worker thread —
+    /// gpg pinentry can take seconds — and the fill JS runs back on
+    /// the GTK thread. Secrets never hit logs or the bar.
+    fn fill_password(self: &Rc<Self>) {
+        let Some(webview) = self.live_webview() else {
+            return;
+        };
+        let host = prompts::host_of(&webview.uri().unwrap_or_default());
+        if host.is_empty() || host.starts_with("hwatu") {
+            self.flash_bar("no site to fill", 2);
+            return;
+        }
+        self.flash_bar("looking up credentials…", 2);
+        let (tx, rx) = std::sync::mpsc::channel();
+        {
+            let host = host.clone();
+            std::thread::spawn(move || {
+                let _ = tx.send(crate::passfill::lookup(&host));
+            });
+        }
+        let this = self.clone();
+        glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+            match rx.try_recv() {
+                Ok(Ok(credential)) => {
+                    let Some(webview) = this.live_webview() else {
+                        return glib::ControlFlow::Break;
+                    };
+                    let this2 = this.clone();
+                    webview.evaluate_javascript(
+                        &crate::passfill::fill_js(&credential),
+                        None,
+                        None,
+                        gtk::gio::Cancellable::NONE,
+                        move |result| {
+                            let msg = match result {
+                                Ok(v) if v.is_string() => v.to_str().to_string(),
+                                _ => "fill failed".to_string(),
+                            };
+                            this2.flash_bar(&msg, 2);
+                        },
+                    );
+                    glib::ControlFlow::Break
+                }
+                Ok(Err(error)) => {
+                    this.flash_bar(&error.to_string(), 4);
+                    glib::ControlFlow::Break
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    this.flash_bar("password lookup crashed", 4);
+                    glib::ControlFlow::Break
+                }
+            }
+        });
     }
 
     /// Reopen the most recently closed window (ctrl+shift+t), popping

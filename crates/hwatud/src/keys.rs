@@ -64,6 +64,8 @@ pub enum Action {
     HintNewWindow,
     /// Link hints, copy the picked link's URL.
     HintYank,
+    /// Fill login credentials from the system password manager.
+    FillPassword,
     /// Open the command palette (fuzzy action search in the bar).
     CommandPalette,
 }
@@ -95,6 +97,7 @@ impl Action {
         Action::HintFollow,
         Action::HintNewWindow,
         Action::HintYank,
+        Action::FillPassword,
         Action::CommandPalette,
     ];
 
@@ -125,6 +128,7 @@ impl Action {
             Action::HintFollow => "hint_follow",
             Action::HintNewWindow => "hint_new_window",
             Action::HintYank => "hint_yank",
+            Action::FillPassword => "fill_password",
             Action::CommandPalette => "command_palette",
         }
     }
@@ -157,6 +161,7 @@ impl Action {
             Action::HintFollow => "link hints: follow",
             Action::HintNewWindow => "link hints: open in new window",
             Action::HintYank => "link hints: copy link URL",
+            Action::FillPassword => "fill login from password manager",
             Action::CommandPalette => "command palette",
         }
     }
@@ -203,6 +208,7 @@ impl Action {
             Action::HintFollow => "f",
             Action::HintNewWindow => "F",
             Action::HintYank => "ctrl+shift+y",
+            Action::FillPassword => "alt+p",
             // ctrl+shift+p mirrors VS Code; ctrl+k is unclaimed in
             // browsers and one chord shorter for daily use.
             Action::CommandPalette => "ctrl+k, ctrl+shift+p",

@@ -30,6 +30,7 @@ mod notify;
 mod observe;
 mod opfs;
 mod palette;
+mod passfill;
 mod prompts;
 mod search;
 mod session;
