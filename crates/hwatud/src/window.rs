@@ -527,13 +527,20 @@ fn set_wayland_app_id(window: &gtk::Window, app_id: &str) {
 /// Build a fully configured WebView. Called for the prewarm pool and as
 /// a fallback; all engine knobs live here, never on the spawn path.
 pub fn build_webview(daemon: &Daemon) -> webkit6::WebView {
+    build_webview_with_session(daemon.network_session.as_ref())
+}
+
+/// [`build_webview`] against an explicit network session (platform
+/// item 6, profiles): profiled windows can't adopt the prewarmed
+/// pool view (it rides the default session), so they build here.
+pub fn build_webview_with_session(session: Option<&webkit6::NetworkSession>) -> webkit6::WebView {
     // website-policies is construct-only, hence the builder. Autoplay
     // defaults to full allow (with sound); see autoplay_policy().
     let policies = webkit6::WebsitePolicies::builder()
         .autoplay(autoplay_policy())
         .build();
     let mut builder = webkit6::WebView::builder().website_policies(&policies);
-    if let Some(session) = &daemon.network_session {
+    if let Some(session) = session {
         builder = builder.network_session(session);
     }
     let view = builder.build();
@@ -644,6 +651,21 @@ impl BrowserWindow {
         app_id: Option<String>,
         mode: OpenMode,
     ) -> WindowInfo {
+        Self::open_with_profile(daemon, url, app_id, mode, None)
+    }
+
+    /// [`Self::open`] with cookie/site-data isolation (platform item
+    /// 6): `profile` names an isolated NetworkSession. Profiled
+    /// windows skip the prewarmed pool (it rides the default
+    /// session) and build a fresh view against the profile's session;
+    /// isolation is worth the one-time engine setup cost.
+    pub fn open_with_profile(
+        daemon: &Rc<Daemon>,
+        url: Option<String>,
+        app_id: Option<String>,
+        mode: OpenMode,
+        profile: Option<String>,
+    ) -> WindowInfo {
         // On Wayland the compositor decides who gets focus, and most
         // tilers focus new windows. A background window therefore gets
         // a predictable default app_id so one WM rule can opt it out
@@ -651,7 +673,15 @@ impl BrowserWindow {
         // false`; Hyprland: `windowrule = noinitialfocus, class:...`).
         let app_id = app_id
             .or_else(|| (mode == OpenMode::Background).then(|| "hwatu-background".to_string()));
-        let webview = daemon.take_webview();
+        let webview = match profile.as_deref().filter(|p| !p.is_empty()) {
+            Some(name) => {
+                let session = daemon.profile_session(name);
+                let view = build_webview_with_session(Some(&session));
+                daemon.adblock.apply_to(&view);
+                view
+            }
+            None => daemon.take_webview(),
+        };
         let this = Self::build(daemon, webview.clone(), app_id.clone(), mode);
         // No URL and no configured home page: show the launcher (the
         // keybind cheat sheet) with the URL bar already open, so a

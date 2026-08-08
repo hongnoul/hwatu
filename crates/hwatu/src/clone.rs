@@ -268,6 +268,7 @@ fn open_headless(url: &str, timeout_ms: u64) -> Result<u64, String> {
         url: Some(url.to_string()),
         app_id: None,
         mode: OpenMode::Headless,
+        profile: None,
     })?
     else {
         unreachable!("call_ok filters Err")

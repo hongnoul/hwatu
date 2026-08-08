@@ -17,15 +17,20 @@ where
 
 #[test]
 fn legacy_requests_keep_their_defaults() {
-    let Request::Open { url, app_id, mode } =
-        serde_json::from_str(include_str!("fixtures/requests/legacy_open.json"))
-            .expect("legacy open request must parse")
+    let Request::Open {
+        url,
+        app_id,
+        mode,
+        profile,
+    } = serde_json::from_str(include_str!("fixtures/requests/legacy_open.json"))
+        .expect("legacy open request must parse")
     else {
         panic!("legacy open fixture parsed as the wrong command");
     };
     assert_eq!(url.as_deref(), Some("https://example.test/"));
     assert_eq!(app_id, None);
     assert_eq!(mode, OpenMode::Normal);
+    assert_eq!(profile, None, "absent profile must default to None");
 
     let Request::Navigate {
         id,

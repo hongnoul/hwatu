@@ -713,9 +713,14 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
                 Response::value(serde_json::json!({ "history": entries }))
             }
         }
-        Request::Open { url, app_id, mode } => {
+        Request::Open {
+            url,
+            app_id,
+            mode,
+            profile,
+        } => {
             let url = url.map(normalize_url);
-            let info = BrowserWindow::open(daemon, url, app_id, mode);
+            let info = BrowserWindow::open_with_profile(daemon, url, app_id, mode, profile);
             // A fresh open is the natural target for follow-up id-less
             // automation ("open, then eval").
             daemon.last_target.replace(Some(info.id));

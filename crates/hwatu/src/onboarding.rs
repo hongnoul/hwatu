@@ -180,6 +180,7 @@ fn smoke_test() -> Result<String, String> {
         url: Some(url.into()),
         app_id: None,
         mode: OpenMode::Headless,
+        profile: None,
     }) {
         Ok(Response::Ok {
             window: Some(w), ..
@@ -639,6 +640,7 @@ fn demo(args: &[String]) -> i32 {
         url: Some(url.clone()),
         app_id: None,
         mode,
+        profile: None,
     }) {
         Ok(Response::Ok {
             window: Some(w), ..

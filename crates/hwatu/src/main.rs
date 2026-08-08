@@ -372,6 +372,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
     let mut budget: Option<usize> = None;
     let mut reason: Option<String> = None;
     let mut now = false;
+    let mut profile: Option<String> = None;
     let mut expect_watch = false;
     let mut mode = default_mode;
     let mut trusted = false;
@@ -467,6 +468,18 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             reason = Some(v.to_string());
         } else if arg == "--now" {
             now = true;
+        } else if arg == "--profile" {
+            profile = Some(
+                it.next()
+                    .filter(|v| !v.trim().is_empty())
+                    .ok_or("usage: --profile <name|auto>")?
+                    .clone(),
+            );
+        } else if let Some(v) = arg.strip_prefix("--profile=") {
+            if v.trim().is_empty() {
+                return Err("usage: --profile=<name|auto>".into());
+            }
+            profile = Some(v.to_string());
         } else if arg == "--time-ms" {
             time_ms = Some(
                 it.next()
@@ -641,6 +654,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             url: None,
             app_id,
             mode,
+            profile: resolve_profile(profile),
         }),
         Some("list") => Ok(Request::List),
         Some("ping") => Ok(Request::Ping),
@@ -1116,11 +1130,48 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             ),
             app_id,
             mode,
+            profile: resolve_profile(profile),
         }),
     }
 }
 
-const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--focus] [url] \
+/// Resolve the profile choice (platform item 6): explicit flag wins,
+/// then HWATU_PROFILE. The value `auto` derives a stable per-worktree
+/// name from the git repo root (hash of the toplevel path), so N
+/// agents in N worktrees get cookie isolation with zero flags —
+/// export HWATU_PROFILE=auto once in the agent harness.
+fn resolve_profile(flag: Option<String>) -> Option<String> {
+    let choice = flag.or_else(|| {
+        std::env::var("HWATU_PROFILE")
+            .ok()
+            .filter(|v| !v.is_empty())
+    })?;
+    if choice != "auto" {
+        return Some(choice);
+    }
+    // auto: hash the git toplevel (or cwd outside a repo).
+    let root = std::process::Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|p| p.to_string_lossy().into_owned())
+        })?;
+    // FNV-1a, matching the daemon's session-file hashing style.
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in root.as_bytes() {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    Some(format!("wt-{hash:016x}"))
+}
+
+const USAGE: &str = "usage: hwatu [--app-id <id>] [--profile <name|auto>] [--background|--headless|--focus] [url] \
 (agent environments default to --headless; set HWATU_AGENT_MODE or \
 \"agent_mode\" in ~/.config/hwatu/config.json to normal|background|headless) \
 | list [--json] | close <id> | focus <id> | unfocus <id> \
@@ -1863,6 +1914,7 @@ mod tests {
                 url: None,
                 app_id: None,
                 mode: OpenMode::Normal,
+                profile: None,
             })
         ));
     }

@@ -50,6 +50,14 @@ pub enum Request {
         /// wire means [`OpenMode::Normal`], so old clients keep working.
         #[serde(default)]
         mode: OpenMode,
+        /// Cookie/site-data isolation (platform item 6): windows with
+        /// the same profile name share a session; different profiles
+        /// never share cookies, storage, or logins. Absent = the
+        /// daemon's default (persistent) session. The CLI sends
+        /// `HWATU_PROFILE` when set (`auto` derives a per-worktree
+        /// name, so N agents in N worktrees isolate with zero flags).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        profile: Option<String>,
     },
     /// List open windows.
     List,

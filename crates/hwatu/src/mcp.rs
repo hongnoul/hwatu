@@ -238,6 +238,7 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
                 url: opt_str(args, "url"),
                 app_id: opt_str(args, "app_id"),
                 mode,
+                profile: opt_str(args, "profile"),
             })
         }
         "list_windows" => Ok(Request::List),

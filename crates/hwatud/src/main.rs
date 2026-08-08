@@ -124,6 +124,12 @@ pub struct Daemon {
     /// running in ephemeral-profile mode. Holding the object here keeps the
     /// in-memory cookie jar alive while the daemon runs.
     pub network_session: Option<webkit6::NetworkSession>,
+    /// Named profile sessions (platform item 6): profile name ->
+    /// isolated NetworkSession (own cookie jar + site data under
+    /// `~/.local/share/hwatud/profiles/<name>/`). Windows opened with
+    /// the same profile share logins; different profiles never do.
+    /// Under an ephemeral-profile daemon these are memory-only too.
+    pub profiles: RefCell<HashMap<String, webkit6::NetworkSession>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -182,7 +188,58 @@ impl Daemon {
             next_deal: RefCell::new(0),
             security,
             network_session,
+            profiles: RefCell::new(HashMap::new()),
         })
+    }
+
+    /// The NetworkSession for a named profile, created on first use.
+    /// Profile names are sanitized into a directory component; the
+    /// session persists cookies/site data under
+    /// `~/.local/share/hwatud/profiles/<name>/` (memory-only when the
+    /// daemon itself is ephemeral).
+    pub fn profile_session(&self, name: &str) -> webkit6::NetworkSession {
+        if let Some(session) = self.profiles.borrow().get(name) {
+            return session.clone();
+        }
+        let session = if self.security.ephemeral_profile {
+            webkit6::NetworkSession::new_ephemeral()
+        } else {
+            let safe: String = name
+                .chars()
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
+                .collect();
+            let dir = glib::user_data_dir()
+                .join("hwatud")
+                .join("profiles")
+                .join(&safe);
+            let cache = glib::user_cache_dir()
+                .join("hwatud")
+                .join("profiles")
+                .join(&safe);
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::fs::create_dir_all(&cache);
+            let session = webkit6::NetworkSession::new(
+                Some(&dir.to_string_lossy()),
+                Some(&cache.to_string_lossy()),
+            );
+            if let Some(cookies) = session.cookie_manager() {
+                cookies.set_persistent_storage(
+                    &dir.join("cookies.sqlite").to_string_lossy(),
+                    webkit6::CookiePersistentStorage::Sqlite,
+                );
+            }
+            session
+        };
+        self.profiles
+            .borrow_mut()
+            .insert(name.to_string(), session.clone());
+        session
     }
 
     /// Deal the next hanafuda card index and advance the counter,
