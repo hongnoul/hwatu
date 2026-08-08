@@ -587,6 +587,28 @@ pub enum Request {
         #[serde(default)]
         host: Option<String>,
     },
+    /// Generalized human hand-off (platform roadmap items 10-11).
+    /// Flags "this window needs a person" with a reason. Default is
+    /// queueing: the entry waits in the hand-off queue until a human
+    /// drains it (respects flow — an agent that needs a human at
+    /// 14:02 should not steal focus at 14:02). With `now`, the window
+    /// materializes immediately with the reason in the bar (the old
+    /// challenge-style behavior, for when the agent is blocked).
+    Handoff {
+        id: u64,
+        reason: String,
+        /// Materialize immediately instead of queueing.
+        #[serde(default)]
+        now: bool,
+    },
+    /// List pending hand-offs (id, reason, queued_at) or resolve one:
+    /// `take` promotes that window to focus and removes the entry,
+    /// stamping answered_at so waiting cost is a measured number.
+    Handoffs {
+        /// Window id to take (present + remove). Absent = list.
+        #[serde(default)]
+        take: Option<u64>,
+    },
 }
 
 /// Maximum number of actions in one [`Request::Batch`]. This bounds daemon
@@ -631,6 +653,8 @@ impl Request {
             Request::Subscribe { .. } => "subscribe",
             Request::History { .. } => "history",
             Request::ClearSiteData { .. } => "clear_site_data",
+            Request::Handoff { .. } => "handoff",
+            Request::Handoffs { .. } => "handoffs",
         }
     }
 

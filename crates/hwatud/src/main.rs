@@ -79,6 +79,10 @@ pub struct Daemon {
     /// Global visit history for URL completion (roadmap H9).
     /// In-memory under ephemeral profiles.
     pub history: history::Store,
+    /// Pending human hand-offs (platform items 10-11): window id ->
+    /// (reason, queued-at). Agents queue via `hwatu handoff`; the
+    /// human drains via `hwatu handoffs` on their own schedule.
+    pub handoffs: RefCell<Vec<HandoffEntry>>,
     /// Resolved keybindings (defaults + ~/.config/hwatu/keys.conf).
     pub keymap: keys::Keymap,
     /// Window most recently targeted by an automation command (eval,
@@ -128,6 +132,17 @@ pub struct SecurityConfig {
     pub ephemeral_profile: bool,
 }
 
+/// One queued human hand-off (platform items 10-11).
+#[derive(Debug, Clone)]
+pub struct HandoffEntry {
+    pub window_id: u64,
+    pub reason: String,
+    /// Unix seconds when the agent queued it; answered_at is stamped
+    /// (and logged) when the human takes it, so the cost of waiting
+    /// on a human is a measured number, not a vibe.
+    pub queued_at: u64,
+}
+
 impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
@@ -156,6 +171,7 @@ impl Daemon {
             adblock: adblock::Adblock::default(),
             site_store: sitedata::SiteStore::load(!security.ephemeral_profile),
             history: history::History::load(!security.ephemeral_profile),
+            handoffs: RefCell::new(Vec::new()),
             keymap: keys::Keymap::load(),
             last_target: RefCell::new(None),
             recently_closed: RefCell::new(Vec::new()),

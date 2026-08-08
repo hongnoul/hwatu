@@ -370,6 +370,8 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
     let mut diff = false;
     let mut rect = false;
     let mut budget: Option<usize> = None;
+    let mut reason: Option<String> = None;
+    let mut now = false;
     let mut expect_watch = false;
     let mut mode = default_mode;
     let mut trusted = false;
@@ -451,6 +453,20 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             );
         } else if let Some(v) = arg.strip_prefix("--budget=") {
             budget = Some(v.parse().map_err(|_| "usage: --budget=<chars>")?);
+        } else if arg == "--reason" {
+            reason = Some(
+                it.next()
+                    .filter(|v| !v.trim().is_empty())
+                    .ok_or("usage: --reason <text>")?
+                    .clone(),
+            );
+        } else if let Some(v) = arg.strip_prefix("--reason=") {
+            if v.trim().is_empty() {
+                return Err("usage: --reason=<text>".into());
+            }
+            reason = Some(v.to_string());
+        } else if arg == "--now" {
+            now = true;
         } else if arg == "--time-ms" {
             time_ms = Some(
                 it.next()
@@ -1039,6 +1055,25 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
         Some("clear-site-data") => Ok(Request::ClearSiteData {
             host: rest.get(1).map(|s| s.to_string()),
         }),
+        Some("handoff") => {
+            // `hwatu handoff <id> --reason <text> [--now]`
+            let win = rest
+                .get(1)
+                .and_then(|s| s.parse().ok())
+                .or(id)
+                .ok_or("usage: hwatu handoff <id> --reason <text> [--now]")?;
+            let reason = reason
+                .clone()
+                .ok_or("usage: hwatu handoff <id> --reason <text> [--now]")?;
+            Ok(Request::Handoff {
+                id: win,
+                reason,
+                now,
+            })
+        }
+        Some("handoffs") => Ok(Request::Handoffs {
+            take: rest.get(1).and_then(|s| s.parse().ok()),
+        }),
         Some("focus") => {
             let id = rest
                 .get(1)
@@ -1102,6 +1137,7 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--foc
 | snapshot [--id <id>] [--diff] [--rect] [--budget <chars>] \
 | history [<query>] [--limit <n>] [--clear] \
 | clear-site-data [<host>] \
+| handoff <id> --reason <text> [--now] | handoffs [<id>] \
 | expect [--id <id>] <selector> [--contains <filter>] [--text <substring>] [--absent] [--visible] [--nth <n>] [--timeout-ms <ms>] [--watch] \
 	| click [--id <id>] [--trusted] (<selector> [nth] [--contains <text>] | --ref <n>) \
 	| type [--id <id>] [--trusted] (<selector> | --ref <n>) <text> [--enter] [--no-clear] \
