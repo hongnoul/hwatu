@@ -58,6 +58,12 @@ pub enum Action {
     ReopenClosed,
     /// Print the page (system dialog; print-to-PDF included).
     Print,
+    /// Link hints: label visible links/controls, activate in place.
+    HintFollow,
+    /// Link hints, open the picked link in a new window.
+    HintNewWindow,
+    /// Link hints, copy the picked link's URL.
+    HintYank,
     /// Open the command palette (fuzzy action search in the bar).
     CommandPalette,
 }
@@ -86,6 +92,9 @@ impl Action {
         Action::Mute,
         Action::ReopenClosed,
         Action::Print,
+        Action::HintFollow,
+        Action::HintNewWindow,
+        Action::HintYank,
         Action::CommandPalette,
     ];
 
@@ -113,6 +122,9 @@ impl Action {
             Action::Mute => "mute",
             Action::ReopenClosed => "reopen_closed",
             Action::Print => "print",
+            Action::HintFollow => "hint_follow",
+            Action::HintNewWindow => "hint_new_window",
+            Action::HintYank => "hint_yank",
             Action::CommandPalette => "command_palette",
         }
     }
@@ -142,6 +154,9 @@ impl Action {
             Action::Mute => "toggle video mute",
             Action::ReopenClosed => "reopen last closed tab",
             Action::Print => "print page",
+            Action::HintFollow => "link hints: follow",
+            Action::HintNewWindow => "link hints: open in new window",
+            Action::HintYank => "link hints: copy link URL",
             Action::CommandPalette => "command palette",
         }
     }
@@ -183,6 +198,11 @@ impl Action {
             // The mainstream browser convention for "undo close tab".
             Action::ReopenClosed => "ctrl+shift+t",
             Action::Print => "ctrl+p",
+            // Bare keys, bubble phase: an `f` typed into a page text
+            // box still reaches the page (same contract as `m`).
+            Action::HintFollow => "f",
+            Action::HintNewWindow => "F",
+            Action::HintYank => "ctrl+shift+y",
             // ctrl+shift+p mirrors VS Code; ctrl+k is unclaimed in
             // browsers and one chord shorter for daily use.
             Action::CommandPalette => "ctrl+k, ctrl+shift+p",

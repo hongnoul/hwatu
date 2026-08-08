@@ -529,6 +529,14 @@ pub fn build_webview(daemon: &Daemon) -> webkit6::WebView {
     crate::mediashim::wire_view(&view);
     crate::opfs::wire_view(&view);
     crate::trusted_input::wire_view(&view);
+    // Link hints (roadmap H10): yank mode hands the href to the GDK
+    // clipboard, page JS never touches navigator.clipboard.
+    crate::hints::wire_view(&view, |href| {
+        if let Some(display) = gtk::gdk::Display::default() {
+            display.clipboard().set_text(&href);
+            println!("hwatud: yanked {href}");
+        }
+    });
     view
 }
 
@@ -1999,6 +2007,9 @@ impl BrowserWindow {
             Action::Mute => self.toggle_mute(),
             Action::ReopenClosed => self.reopen_closed(),
             Action::Print => self.print_page(),
+            Action::HintFollow => self.start_hints("follow"),
+            Action::HintNewWindow => self.start_hints("newwin"),
+            Action::HintYank => self.start_hints("yank"),
             Action::CommandPalette => self.open_palette(),
         }
         glib::Propagation::Stop
@@ -2168,6 +2179,29 @@ impl BrowserWindow {
             this.flash_bar("print failed", 4);
         });
         operation.run_dialog(Some(&self.window));
+    }
+
+    /// Enter link-hint mode (roadmap H10). `mode`: follow | newwin |
+    /// yank. The page-side machinery reports "no hints" when the page
+    /// has no visible interactables; surface that instead of silence.
+    fn start_hints(self: &Rc<Self>, mode: &str) {
+        let Some(webview) = self.live_webview() else {
+            return;
+        };
+        let this = self.clone();
+        webview.evaluate_javascript(
+            &crate::hints::start_js(mode),
+            None,
+            None,
+            gtk::gio::Cancellable::NONE,
+            move |result| {
+                if let Ok(value) = result {
+                    if value.is_string() && value.to_str() == "no hints" {
+                        this.flash_bar("no hints on this page", 1);
+                    }
+                }
+            },
+        );
     }
 
     /// Reopen the most recently closed window (ctrl+shift+t), popping

@@ -19,6 +19,7 @@ mod downloads;
 mod events;
 mod external;
 mod focusshield;
+mod hints;
 mod history;
 mod ipc_server;
 mod keys;
