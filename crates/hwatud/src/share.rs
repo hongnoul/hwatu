@@ -11,7 +11,7 @@
 //! email     xdg-email --body %s
 //! ```
 //!
-//! The palette lists each entry as "share: <name>"; running one
+//! The palette lists each entry as "share: `<name>`"; running one
 //! spawns the command detached with `%s` replaced by the (shell-
 //! escaped-free — no shell involved) URL. Missing file = no entries,
 //! zero cost. Read per invocation, same contract as search.conf.
