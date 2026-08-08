@@ -72,6 +72,10 @@ pub enum Action {
     OpenMpv,
     /// Edit the focused text field in $EDITOR, paste back on save.
     EditInEditor,
+    /// Toggle reader mode (article extraction, clean typography).
+    Reader,
+    /// Share the page URL via share.conf targets (palette submenu).
+    Share,
     /// Open the command palette (fuzzy action search in the bar).
     CommandPalette,
 }
@@ -107,6 +111,8 @@ impl Action {
         Action::DarkMode,
         Action::OpenMpv,
         Action::EditInEditor,
+        Action::Reader,
+        Action::Share,
         Action::CommandPalette,
     ];
 
@@ -141,6 +147,8 @@ impl Action {
             Action::DarkMode => "dark_mode",
             Action::OpenMpv => "open_mpv",
             Action::EditInEditor => "edit_in_editor",
+            Action::Reader => "reader",
+            Action::Share => "share",
             Action::CommandPalette => "command_palette",
         }
     }
@@ -177,6 +185,8 @@ impl Action {
             Action::DarkMode => "toggle forced dark mode (per site)",
             Action::OpenMpv => "open current page in mpv",
             Action::EditInEditor => "edit focused text field in $EDITOR",
+            Action::Reader => "reader mode (article view)",
+            Action::Share => "share page URL (share.conf)",
             Action::CommandPalette => "command palette",
         }
     }
@@ -227,6 +237,9 @@ impl Action {
             Action::DarkMode => "ctrl+shift+d",
             Action::OpenMpv => "ctrl+shift+m",
             Action::EditInEditor => "ctrl+e",
+            Action::Reader => "alt+r",
+            // Palette-only by default: share targets are a submenu.
+            Action::Share => "",
             // ctrl+shift+p mirrors VS Code; ctrl+k is unclaimed in
             // browsers and one chord shorter for daily use.
             Action::CommandPalette => "ctrl+k, ctrl+shift+p",

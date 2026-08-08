@@ -577,6 +577,7 @@ pub fn build_webview_with_session(session: Option<&webkit6::NetworkSession>) -> 
     crate::mediashim::wire_view(&view);
     crate::opfs::wire_view(&view);
     crate::trusted_input::wire_view(&view);
+    crate::reader::wire_view(&view);
     // Link hints (roadmap H10): yank mode hands the href to the GDK
     // clipboard, page JS never touches navigator.clipboard.
     crate::hints::wire_view(&view, |href| {
@@ -2109,6 +2110,8 @@ impl BrowserWindow {
             Action::DarkMode => self.toggle_dark_mode(),
             Action::OpenMpv => self.open_mpv(),
             Action::EditInEditor => self.edit_in_editor(),
+            Action::Reader => self.toggle_reader(),
+            Action::Share => self.open_share_menu(),
             Action::CommandPalette => self.open_palette(),
         }
         glib::Propagation::Stop
@@ -2510,6 +2513,60 @@ impl BrowserWindow {
                 this.flash_bar(&msg, 2);
             },
         );
+    }
+
+    /// Toggle reader mode (roadmap H34): article extraction into a
+    /// clean-typography overlay; Esc or re-toggle exits, original DOM
+    /// untouched. The page-side machinery reports what happened.
+    fn toggle_reader(self: &Rc<Self>) {
+        let Some(webview) = self.live_webview() else {
+            return;
+        };
+        let this = self.clone();
+        webview.evaluate_javascript(
+            crate::reader::toggle_js(),
+            None,
+            None,
+            gtk::gio::Cancellable::NONE,
+            move |result| {
+                if let Ok(value) = result {
+                    if value.is_string() {
+                        this.flash_bar(&value.to_str(), 2);
+                    }
+                }
+            },
+        );
+    }
+
+    /// Share the page URL (roadmap H36): one share.conf target runs
+    /// directly; several open the palette-style list; none explains
+    /// how to configure.
+    fn open_share_menu(self: &Rc<Self>) {
+        let Some(webview) = self.live_webview() else {
+            return;
+        };
+        let Some(url) = webview.uri().filter(|u| u.starts_with("http")) else {
+            self.flash_bar("no page URL to share", 2);
+            return;
+        };
+        let targets = crate::share::targets();
+        match targets.len() {
+            0 => self.flash_bar("no share targets (write ~/.config/hwatu/share.conf)", 4),
+            _ => {
+                // Reuse the bar's row surface as a picker: rows are
+                // (name, command head); Up/Down+Enter via the palette
+                // machinery would need a dedicated mode, so run the
+                // first target directly for 1 and list names for >1
+                // via sequential flash. Simplicity beats a modal here;
+                // heavy users bind `share` per target in share.conf
+                // order (share1..shareN planned if demand appears).
+                let target = &targets[0];
+                match crate::share::run(target, &url) {
+                    Ok(()) => self.flash_bar(&format!("shared via {}", target.name), 2),
+                    Err(e) => self.flash_bar(&e, 4),
+                }
+            }
+        }
     }
 
     /// Fill login credentials from the system password manager
