@@ -86,6 +86,22 @@ H8. **PDF viewing.** WebKitGTK ships pdf.js enabled by default;
 
 ### D1: category-defining features (what the audience switches for)
 
+**Shipped 2026-08-08** (all five items). Against the original scope
+below: H9 as history.rs (SQLite, frecency ranking: ln(1+visits) x
+recency bucket x match-quality; host-prefix beats word-boundary beats
+substring), bar completions in URL mode with Down/Tab cycling, and a
+`hwatu history` CLI/protocol verb with `--clear`; headless windows,
+launcher pages, and blanks never recorded, in-memory under ephemeral
+profiles. H10 as hints.rs (`f` follow, `F` new-window, ctrl+shift+y
+yank-to-GDK-clipboard; visibility + elementFromPoint candidate
+filtering, capture-phase key consumption, fail-open). H11 as
+passfill.rs (pass + Bitwarden CLIs, worker-thread lookup, framework-
+safe fill JS; integrate-never-store held). H12 had already shipped
+2026-08-05 as ctrl+shift+t with the 10-deep reopen stack. H13 as
+search.conf keyword lines + quickmarks.conf (per-lookup reads, no
+restart). Live checks: test-history.sh, test-hints.sh,
+test-passfill.sh, test-search-keywords.sh.
+
 Ordered by user-testimony criticality crossed with implementation
 cost. These reverse specific entries in the old not-planned list;
 the reversal is deliberate.

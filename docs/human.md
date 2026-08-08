@@ -32,13 +32,34 @@ fraction? Set `"preferred_width"` in `~/.config/hwatu/config.json`
 (see [Configuration](#configuration)). The launcher deals a
 hanafuda card per window so windows are tellable apart at a glance.
 
-If you want history completion and password-manager integration,
-qutebrowser still does those better today (both are now on the
-[browser roadmap](roadmaps/browser.md)). What Hwatu offers instead: one
-warm engine for all windows (~56 MB per extra window), native ad
-blocking with no extension process, and the agent hand-off loop no
-other browser has. Portfolio scope and shared non-goals live in the
+If you want history completion and password-manager integration:
+both arrived in v0.8. Ctrl+L completes against your visit history
+(frecency-ranked, Tab/Down cycles), and alt+p fills logins from
+`pass` or Bitwarden's `bw` (hwatu integrates, never stores). What
+Hwatu offers beyond qutebrowser's versions: one warm engine for all
+windows (~56 MB per extra window), native ad blocking with no
+extension process, and the agent hand-off loop no other browser has.
+Portfolio scope and shared non-goals live in the
 [roadmap index](roadmap.md).
+
+### History, keywords, quickmarks
+
+Every page you visit (in normal or background windows; never agent
+headless runs) lands in a local SQLite history. Ctrl+L shows the top
+matches as you type; `hwatu history [query]` queries it from the
+shell and `hwatu history --clear` wipes it.
+
+`~/.config/hwatu/search.conf` takes keyword lines after the engine
+line, and `~/.config/hwatu/quickmarks.conf` maps names to URLs:
+
+```text
+# search.conf              # quickmarks.conf
+duckduckgo                 news https://news.ycombinator.com/
+w wikipedia-template...    mail https://mail.proton.me/
+```
+
+Then `w rust` searches Wikipedia and typing `news` alone opens HN.
+Both files are read per lookup; edits apply immediately.
 
 ## Keybindings
 
@@ -59,6 +80,9 @@ rebindable in `~/.config/hwatu/keys.conf`, one
 | `fullscreen` | `F11` | toggle fullscreen |
 | `mute` | `m` (bare key) | toggle page audio, preference sticks across videos on the page |
 | `print` | `ctrl+p` | print the page (system dialog; print-to-PDF included) |
+| `hint_follow` / `hint_new_window` | `f` / `F` (bare keys) | link hints: label visible links/controls, type the label to activate / open in a new window |
+| `hint_yank` | `ctrl+shift+y` | link hints: copy the picked link's URL |
+| `fill_password` | `alt+p` | fill login from your password manager (pass or Bitwarden CLI) |
 | `command_palette` | `ctrl+k`, `ctrl+shift+p` | fuzzy action search in the bar |
 
 Bare-key chords like `m` dispatch after the page declines the key, so
@@ -115,6 +139,7 @@ hwatu example.com          # open a URL
 hwatu how to exit vim      # non-URLs become a web search
 hwatu list                 # every window: id, url, title
 hwatu adblock update       # fetch + compile EasyList/EasyPrivacy
+hwatu history [query]      # frecency-ranked visit history (--clear wipes)
 hwatu update               # self-update
 hwatu quit                 # stop the daemon
 ```
@@ -136,6 +161,10 @@ hwatu quit                 # stop the daemon
     `"spell_check_languages": ["en_US", "de_DE"]` overrides the
     locale-derived language list (install matching hunspell
     dictionaries).
+  - `"password_backend": "pass"|"bitwarden"|"off"`: pin the alt+p
+    fill backend. Default auto-detects `pass`
+    (`~/.password-store`) first, then an unlocked Bitwarden vault
+    (`BW_SESSION`).
 - `~/.local/share/hwatud/site.json`: per-site memory (permission
   answers, zoom levels). Delete it (or an entry) to be re-asked;
   never written in ephemeral-profile mode.
