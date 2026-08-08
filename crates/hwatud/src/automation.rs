@@ -2480,6 +2480,7 @@ return {
                     windows,
                     adblock,
                     path,
+                    data,
                 } => {
                     let value = match budget {
                         Some(budget) => crate::snapbudget::apply(value, budget),
@@ -2491,6 +2492,7 @@ return {
                         windows,
                         adblock,
                         path,
+                        data,
                     }
                 }
                 other => other,

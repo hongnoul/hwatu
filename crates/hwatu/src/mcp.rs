@@ -344,9 +344,6 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
             until: parse_until(args)?,
             timeout_ms,
         }),
-        "prefetch" => Ok(Request::Prefetch {
-            url: req_str(args, "url")?,
-        }),
         "eval" => Ok(Request::Eval {
             id,
             js: req_str(args, "js")?,
@@ -528,24 +525,31 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
             clear: opt_bool(args, "clear").unwrap_or(false),
             limit: opt_u64(args, "limit").map(|v| v as usize),
         }),
-        "snapshot" => Ok(Request::Snapshot {
-            id,
-            diff: opt_bool(args, "diff").unwrap_or(false),
-            rect: opt_bool(args, "rect").unwrap_or(false),
-            timeout_ms,
-        }),
         "net" => Ok(Request::Net {
             id,
             clear: opt_bool(args, "clear").unwrap_or(false),
             limit: opt_u64(args, "limit").map(|v| v as usize),
         }),
-        "upload" => Ok(Request::Upload {
-            id,
-            selector: req_str(args, "selector")?,
-            path: req_str(args, "path")?,
-            data: opt_str(args, "data"),
-            timeout_ms,
-        }),
+        "upload" => {
+            let selector = req_str(args, "selector")?;
+            let path = req_str(args, "path")?;
+            let data = if is_tcp_endpoint() {
+                let bytes = std::fs::read(&path).map_err(|e| format!("cannot read upload file '{path}': {e}"))?;
+                if bytes.len() > hwatu_ipc::INLINE_MAX_BYTES {
+                    return Err(format!("upload file '{path}' exceeds {} byte limit", hwatu_ipc::INLINE_MAX_BYTES));
+                }
+                Some(hwatu_ipc::base64::encode(&bytes))
+            } else {
+                opt_str(args, "data")
+            };
+            Ok(Request::Upload {
+                id,
+                selector,
+                path,
+                data,
+                timeout_ms,
+            })
+        }
         "challenge" => Ok(Request::Challenge {
             id,
             wait: opt_bool(args, "wait").unwrap_or(false),
