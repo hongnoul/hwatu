@@ -56,6 +56,8 @@ pub enum Action {
     Mute,
     /// Reopen the most recently closed window (ctrl+shift+t).
     ReopenClosed,
+    /// Print the page (system dialog; print-to-PDF included).
+    Print,
     /// Open the command palette (fuzzy action search in the bar).
     CommandPalette,
 }
@@ -83,6 +85,7 @@ impl Action {
         Action::Fullscreen,
         Action::Mute,
         Action::ReopenClosed,
+        Action::Print,
         Action::CommandPalette,
     ];
 
@@ -109,6 +112,7 @@ impl Action {
             Action::Fullscreen => "fullscreen",
             Action::Mute => "mute",
             Action::ReopenClosed => "reopen_closed",
+            Action::Print => "print",
             Action::CommandPalette => "command_palette",
         }
     }
@@ -137,6 +141,7 @@ impl Action {
             Action::Fullscreen => "toggle fullscreen",
             Action::Mute => "toggle video mute",
             Action::ReopenClosed => "reopen last closed tab",
+            Action::Print => "print page",
             Action::CommandPalette => "command palette",
         }
     }
@@ -177,6 +182,7 @@ impl Action {
             Action::Mute => "m",
             // The mainstream browser convention for "undo close tab".
             Action::ReopenClosed => "ctrl+shift+t",
+            Action::Print => "ctrl+p",
             // ctrl+shift+p mirrors VS Code; ctrl+k is unclaimed in
             // browsers and one chord shorter for daily use.
             Action::CommandPalette => "ctrl+k, ctrl+shift+p",

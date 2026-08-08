@@ -140,7 +140,7 @@ fn autoplay_policy() -> webkit6::AutoplayPolicy {
 /// Read one key from ~/.config/hwatu/config.json (the same file adblock
 /// persists its toggle in). Returns None when the file or key is
 /// absent/invalid.
-fn config_value(key: &str) -> Option<serde_json::Value> {
+pub(crate) fn config_value(key: &str) -> Option<serde_json::Value> {
     let raw =
         std::fs::read_to_string(glib::user_config_dir().join("hwatu").join("config.json")).ok()?;
     let v: serde_json::Value = serde_json::from_str(&raw).ok()?;
@@ -431,10 +431,17 @@ const BASELINE_FEATURE_OVERRIDES: &[(&str, bool)] = &[
 
 /// `HWATU_MEDIA_STREAM=1|on|true` re-enables the MediaStream API
 /// (getUserMedia/enumerateDevices), which is off by default; see the
-/// wedge documented at the call site in `apply_view_settings`.
+/// wedge documented at the call site in `apply_view_settings`. The env
+/// var wins for a single run; `"media_stream": true` in
+/// ~/.config/hwatu/config.json persists the choice across daemon
+/// restarts (needed for daily WebRTC call use, where an env var
+/// silently vanishing on restart means a dead microphone mid-meeting).
 fn media_stream_enabled() -> bool {
-    std::env::var("HWATU_MEDIA_STREAM")
-        .map(|v| matches!(v.trim(), "1" | "on" | "true"))
+    if let Ok(v) = std::env::var("HWATU_MEDIA_STREAM") {
+        return matches!(v.trim(), "1" | "on" | "true");
+    }
+    config_value("media_stream")
+        .and_then(|v| v.as_bool())
         .unwrap_or(false)
 }
 
@@ -553,6 +560,14 @@ fn apply_view_settings(view: &webkit6::WebView) {
         // camera/mic use.
         if !media_stream_enabled() {
             settings.set_enable_media_stream(false);
+        } else {
+            // WebRTC (Meet/Discord/Zoom-web calls) defaults OFF in
+            // WebKitGTK. enable-webrtc implies media-stream, so it
+            // rides the same gate: flipping it while media-stream is
+            // force-disabled would silently re-open the
+            // enumerateDevices wedge documented above. Runtime codec
+            // support needs the distro's gst-plugins-bad.
+            settings.set_enable_webrtc(true);
         }
 
         // Scrolling must hit the GPU compositor path. The default
@@ -794,7 +809,7 @@ impl BrowserWindow {
             daemon: daemon.clone(),
             overlay,
             bar,
-            prompts: Prompts::new(daemon.prompt_memory.clone()),
+            prompts: Prompts::new(daemon.site_store.clone()),
             webview: RefCell::new(None),
             saved: RefCell::new(None),
             veil: RefCell::new(None),
@@ -1026,6 +1041,15 @@ impl BrowserWindow {
                     // baseline: the next `snapshot --diff` starts over.
                     this.snapshot_baseline.replace(None);
                     this.clear_recovery_overlay();
+                    // Per-site zoom (roadmap H5): apply the remembered
+                    // level for the new document's host. Explicitly
+                    // reset to 1.0 otherwise, or a zoom picked up on
+                    // one site follows the window to the next.
+                    let host = prompts::host_of(&wv.uri().unwrap_or_default());
+                    let level = this.daemon.site_store.zoom(&host).unwrap_or(1.0);
+                    if (wv.zoom_level() - level).abs() > 0.001 {
+                        wv.set_zoom_level(level);
+                    }
                     this.emit_load(wv, "committed");
                 }
                 webkit6::LoadEvent::Finished => {
@@ -1036,6 +1060,64 @@ impl BrowserWindow {
             });
         }
         crate::downloads::wire_session(&self.daemon, &webview);
+        // File uploads (roadmap H1): <input type=file> emits
+        // run-file-chooser; unhandled, WebKit's default silently
+        // cancels and every upload flow is dead. Open a GTK file
+        // dialog honoring the input's MIME filter and multiple flag.
+        {
+            let this = self.clone();
+            webview.connect_run_file_chooser(move |_, request| {
+                let dialog = gtk::FileDialog::builder()
+                    .title("Upload file")
+                    .modal(true)
+                    .build();
+                if let Some(filter) = request.mime_types_filter() {
+                    filter.set_name(Some("Accepted files"));
+                    let filters = gtk::gio::ListStore::new::<gtk::FileFilter>();
+                    let all = gtk::FileFilter::new();
+                    all.set_name(Some("All files"));
+                    all.add_pattern("*");
+                    filters.append(&filter);
+                    filters.append(&all);
+                    dialog.set_filters(Some(&filters));
+                    dialog.set_default_filter(Some(&filter));
+                }
+                let request = request.clone();
+                let paths_of = |files: gtk::gio::ListModel| -> Vec<String> {
+                    (0..files.n_items())
+                        .filter_map(|i| files.item(i))
+                        .filter_map(|f| f.downcast::<gtk::gio::File>().ok())
+                        .filter_map(|f| f.path())
+                        .map(|p| p.to_string_lossy().into_owned())
+                        .collect()
+                };
+                if request.selects_multiple() {
+                    dialog.open_multiple(
+                        Some(&this.window),
+                        gtk::gio::Cancellable::NONE,
+                        move |result| match result.map(paths_of) {
+                            Ok(paths) if !paths.is_empty() => {
+                                let refs: Vec<&str> = paths.iter().map(String::as_str).collect();
+                                request.select_files(&refs);
+                            }
+                            _ => request.cancel(),
+                        },
+                    );
+                } else {
+                    dialog.open(
+                        Some(&this.window),
+                        gtk::gio::Cancellable::NONE,
+                        move |result| match result.ok().and_then(|f| f.path()) {
+                            Some(path) => {
+                                request.select_files(&[&path.to_string_lossy()]);
+                            }
+                            None => request.cancel(),
+                        },
+                    );
+                }
+                true // handled
+            });
+        }
         // Permission requests (mic/cam/location/...) become bar
         // prompts; remembered decisions answer silently.
         {
@@ -1172,6 +1254,21 @@ impl BrowserWindow {
         {
             let this = self.clone();
             webview.connect_close(move |_| this.window.close());
+        }
+        // window.print() (roadmap H7): route the page-initiated print
+        // through the same dialog as ctrl+p.
+        {
+            let this = self.clone();
+            webview.connect_print(move |_, operation| {
+                this.run_print_operation(operation);
+                true // handled; WebKit must not run its own dialog too
+            });
+        }
+        // Web notifications (roadmap H4): forward to the desktop over
+        // D-Bus; a click presents this window (an explicit request).
+        {
+            let this = self.clone();
+            crate::notify::wire_view(&webview, move || this.window.present());
         }
         // Ctrl+click follows the same client-tab path as Ctrl+t instead of
         // replacing the current page. Non-displayable responses
@@ -1870,6 +1967,7 @@ impl BrowserWindow {
             }
             Action::Mute => self.toggle_mute(),
             Action::ReopenClosed => self.reopen_closed(),
+            Action::Print => self.print_page(),
             Action::CommandPalette => self.open_palette(),
         }
         glib::Propagation::Stop
@@ -1989,13 +2087,15 @@ impl BrowserWindow {
     }
 
     /// Multiply the page zoom by `factor`, clamped to a sane range.
-    /// Zoom is per-window state on the WebView, like other browsers.
+    /// Zoom is per-window state on the WebView, like other browsers,
+    /// and the resulting level persists per-site (roadmap H5).
     fn zoom_by(self: &Rc<Self>, factor: f64) {
         let Some(webview) = self.live_webview() else {
             return;
         };
         let level = (webview.zoom_level() * factor).clamp(0.25, 5.0);
         webview.set_zoom_level(level);
+        self.remember_zoom(&webview, level);
         self.flash_bar(&format!("zoom {:.0}%", level * 100.0), 1);
     }
 
@@ -2005,7 +2105,38 @@ impl BrowserWindow {
             return;
         };
         webview.set_zoom_level(1.0);
+        self.remember_zoom(&webview, 1.0);
         self.flash_bar("zoom 100%", 1);
+    }
+
+    /// Persist the zoom preference for the current page's host.
+    fn remember_zoom(&self, webview: &webkit6::WebView, level: f64) {
+        let host = prompts::host_of(&webview.uri().unwrap_or_default());
+        if !host.is_empty() && !host.starts_with("hwatu") {
+            self.daemon.site_store.set_zoom(&host, level);
+        }
+    }
+
+    /// Print the page (roadmap H7): system print dialog on the
+    /// current window; print-to-PDF comes free with GTK's dialog.
+    /// Sites that call window.print() land here too via the
+    /// WebView's `print` signal.
+    fn print_page(self: &Rc<Self>) {
+        let Some(webview) = self.live_webview() else {
+            return;
+        };
+        let operation = webkit6::PrintOperation::new(&webview);
+        self.run_print_operation(&operation);
+    }
+
+    /// Run one print dialog, reporting failures in the bar.
+    fn run_print_operation(self: &Rc<Self>, operation: &webkit6::PrintOperation) {
+        let this = self.clone();
+        operation.connect_failed(move |_, error| {
+            eprintln!("hwatud: print failed: {error}");
+            this.flash_bar("print failed", 4);
+        });
+        operation.run_dialog(Some(&self.window));
     }
 
     /// Reopen the most recently closed window (ctrl+shift+t), popping

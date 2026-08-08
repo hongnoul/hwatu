@@ -24,12 +24,14 @@ mod keys;
 mod launcher;
 mod mediashim;
 mod net;
+mod notify;
 mod observe;
 mod opfs;
 mod palette;
 mod prompts;
 mod search;
 mod session;
+mod sitedata;
 mod siteua;
 mod smoothwheel;
 mod snapdiff;
@@ -66,8 +68,9 @@ pub struct Daemon {
     pub prewarmed: RefCell<Option<webkit6::WebView>>,
     /// Built-in content blocker (on by default).
     pub adblock: adblock::Adblock,
-    /// Remembered permission decisions (host+kind), daemon lifetime.
-    pub prompt_memory: prompts::Memory,
+    /// Per-site decisions (permissions, zoom), persistent on disk
+    /// unless the daemon runs an ephemeral profile (roadmap H5).
+    pub site_store: sitedata::Store,
     /// Resolved keybindings (defaults + ~/.config/hwatu/keys.conf).
     pub keymap: keys::Keymap,
     /// Window most recently targeted by an automation command (eval,
@@ -143,7 +146,7 @@ impl Daemon {
             next_id: RefCell::new(1),
             prewarmed: RefCell::new(None),
             adblock: adblock::Adblock::default(),
-            prompt_memory: prompts::Memory::default(),
+            site_store: sitedata::SiteStore::load(!security.ephemeral_profile),
             keymap: keys::Keymap::load(),
             last_target: RefCell::new(None),
             recently_closed: RefCell::new(Vec::new()),
@@ -338,6 +341,47 @@ fn open_sandbox_for_media() {
     }
 }
 
+/// Spell check (roadmap H6): WebKitGTK's Enchant backend is compiled
+/// in but disabled by default. Turn it on with the session locale's
+/// language. `"spell_check": false` in config.json disables;
+/// `"spell_check_languages": ["en_US", "de_DE"]` overrides the
+/// locale-derived list (Enchant needs matching dictionaries, e.g.
+/// hunspell-en_us).
+fn enable_spell_checking() {
+    let Some(context) = webkit6::WebContext::default() else {
+        return;
+    };
+    if let Some(v) = window::config_value("spell_check") {
+        if v.as_bool() == Some(false) {
+            return;
+        }
+    }
+    let languages: Vec<String> = window::config_value("spell_check_languages")
+        .and_then(|v| {
+            let list: Vec<String> = v
+                .as_array()?
+                .iter()
+                .filter_map(|s| s.as_str().map(str::to_string))
+                .collect();
+            (!list.is_empty()).then_some(list)
+        })
+        .unwrap_or_else(|| {
+            // "en_US.UTF-8" -> "en_US"; C/POSIX locales get no list and
+            // Enchant falls back to its own default.
+            std::env::var("LANG")
+                .ok()
+                .map(|l| l.split('.').next().unwrap_or(&l).to_string())
+                .filter(|l| !l.is_empty() && l != "C" && l != "POSIX")
+                .into_iter()
+                .collect()
+        });
+    context.set_spell_checking_enabled(true);
+    if !languages.is_empty() {
+        let refs: Vec<&str> = languages.iter().map(String::as_str).collect();
+        context.set_spell_checking_languages(&refs);
+    }
+}
+
 fn main() -> glib::ExitCode {
     let security = match parse_security_args(std::env::args().skip(1)) {
         Ok(ParseSecurity::Run(security)) => security,
@@ -444,6 +488,8 @@ fn main() -> glib::ExitCode {
         // Local media playback needs the web-process sandbox to see
         // the files. Before any web process exists (hard requirement).
         open_sandbox_for_media();
+        // Spell check (H6): Enchant backend on, locale-derived language.
+        enable_spell_checking();
         // Internal pages (hwatu://launcher) before any WebView exists.
         launcher::register_scheme();
         adblock::Adblock::init(&daemon);
