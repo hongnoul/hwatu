@@ -346,9 +346,10 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
             id,
             diff,
             rect,
+            budget,
             timeout_ms,
         } => {
-            return automation::snapshot(daemon, id, diff, rect, timeout_ms, reply);
+            return automation::snapshot(daemon, id, diff, rect, budget, timeout_ms, reply);
         }
         Request::Expect {
             id,
@@ -780,6 +781,7 @@ mod tests {
             id: None,
             diff: false,
             rect: false,
+            budget: None,
             timeout_ms: None,
         }
     }

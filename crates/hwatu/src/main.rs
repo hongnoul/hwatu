@@ -369,6 +369,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
     let mut keep = false;
     let mut diff = false;
     let mut rect = false;
+    let mut budget: Option<usize> = None;
     let mut expect_watch = false;
     let mut mode = default_mode;
     let mut trusted = false;
@@ -442,6 +443,14 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                     .and_then(|v| v.parse().ok())
                     .ok_or("usage: --limit <n>")?,
             );
+        } else if arg == "--budget" {
+            budget = Some(
+                it.next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("usage: --budget <chars>")?,
+            );
+        } else if let Some(v) = arg.strip_prefix("--budget=") {
+            budget = Some(v.parse().map_err(|_| "usage: --budget=<chars>")?);
         } else if arg == "--time-ms" {
             time_ms = Some(
                 it.next()
@@ -841,6 +850,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             id,
             diff,
             rect,
+            budget,
             timeout_ms,
         }),
         Some("expect") => {
@@ -1089,7 +1099,7 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--foc
     | challenge [--id <id>] [--wait] \
     | upload [--id <id>] <selector> <path> \
 | scroll [--id <id>] [<selector> [nth]] [--contains <text>] [--to-y <px>] [--by <pages>] \
-| snapshot [--id <id>] [--diff] [--rect] \
+| snapshot [--id <id>] [--diff] [--rect] [--budget <chars>] \
 | history [<query>] [--limit <n>] [--clear] \
 | clear-site-data [<host>] \
 | expect [--id <id>] <selector> [--contains <filter>] [--text <substring>] [--absent] [--visible] [--nth <n>] [--timeout-ms <ms>] [--watch] \

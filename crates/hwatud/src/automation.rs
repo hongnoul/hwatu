@@ -2298,6 +2298,7 @@ pub fn snapshot(
     id: Option<u64>,
     diff: bool,
     rect: bool,
+    budget: Option<usize>,
     timeout_ms: Option<u64>,
     reply: Reply,
 ) {
@@ -2371,6 +2372,40 @@ return {
         "__HWATU_INCLUDE_RECTS__",
         if rect { "true" } else { "false" },
     );
+    // Injection quarantine (verification P3 item 13) applies to every
+    // snapshot: page text is untrusted input headed for agent context.
+    // Budgeted mode (P3 item 12) additionally degrades the reply
+    // coarse-to-fine to fit `budget` chars instead of truncating
+    // arbitrarily. Wraps whichever reply path (full or diff) produces
+    // the value.
+    let reply: Reply = {
+        let budget = budget.filter(|b| *b > 0);
+        Box::new(move |resp| {
+            let resp = match resp {
+                Response::Ok {
+                    value: Some(value),
+                    window,
+                    windows,
+                    adblock,
+                    path,
+                } => {
+                    let value = match budget {
+                        Some(budget) => crate::snapbudget::apply(value, budget),
+                        None => crate::snapbudget::quarantine(value),
+                    };
+                    Response::Ok {
+                        value: Some(value),
+                        window,
+                        windows,
+                        adblock,
+                        path,
+                    }
+                }
+                other => other,
+            };
+            reply(resp)
+        })
+    };
     if !diff {
         return eval(daemon, id, js, timeout_ms, reply);
     }

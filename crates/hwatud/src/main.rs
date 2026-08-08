@@ -38,6 +38,7 @@ mod session;
 mod sitedata;
 mod siteua;
 mod smoothwheel;
+mod snapbudget;
 mod snapdiff;
 mod trusted_input;
 mod verify;

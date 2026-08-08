@@ -285,6 +285,13 @@ pub enum Request {
         /// token-cheap and preserve the original response shape.
         #[serde(default, skip_serializing_if = "is_false")]
         rect: bool,
+        /// Character budget for the reply (verification P3): the
+        /// snapshot degrades coarse-to-fine instead of truncating
+        /// arbitrarily — page text shrinks first, then interactable
+        /// text/href fields shorten, then interactables reduce to
+        /// landmark counts. 0/absent = unbudgeted (classic shape).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        budget: Option<usize>,
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
@@ -1460,6 +1467,7 @@ mod tests {
                 id: None,
                 diff: false,
                 rect: false,
+                budget: None,
                 timeout_ms: None,
             };
             BATCH_MAX_ACTIONS + 1
@@ -1473,6 +1481,7 @@ mod tests {
                 id: None,
                 diff: false,
                 rect: false,
+                budget: None,
                 timeout_ms: None,
             }],
         }];
@@ -1565,6 +1574,7 @@ mod tests {
             id: Some(2),
             diff: false,
             rect: false,
+            budget: None,
             timeout_ms: None,
         };
         let wire = serde_json::to_string(&plain).unwrap();
@@ -1573,16 +1583,22 @@ mod tests {
             "non-diff snapshot must omit the field for old daemons: {wire}"
         );
         assert!(!wire.contains("rect"));
+        assert!(
+            !wire.contains("budget"),
+            "absent budget must stay off the wire"
+        );
 
         let diffing = Request::Snapshot {
             id: Some(2),
             diff: true,
             rect: true,
+            budget: Some(2000),
             timeout_ms: None,
         };
         let wire = serde_json::to_string(&diffing).unwrap();
         assert!(wire.contains("\"diff\":true"));
         assert!(wire.contains("\"rect\":true"));
+        assert!(wire.contains("\"budget\":2000"));
         let Ok(Request::Snapshot { diff, .. }) = serde_json::from_str::<Request>(&wire) else {
             panic!("diff snapshot failed to roundtrip");
         };

@@ -668,6 +668,7 @@ fn demo(args: &[String]) -> i32 {
         id: Some(id),
         diff: false,
         rect: false,
+        budget: None,
         timeout_ms: Some(15_000),
     }) {
         Ok(Response::Ok { value: Some(v), .. }) => {

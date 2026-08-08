@@ -355,6 +355,7 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
             id,
             diff: opt_bool(args, "diff").unwrap_or(false),
             rect: opt_bool(args, "rect").unwrap_or(false),
+            budget: opt_u64(args, "budget").map(|n| n as usize),
             timeout_ms,
         }),
         "expect" => Ok(Request::Expect {
