@@ -19,6 +19,7 @@ mod downloads;
 mod events;
 mod external;
 mod focusshield;
+mod history;
 mod ipc_server;
 mod keys;
 mod launcher;
@@ -71,6 +72,9 @@ pub struct Daemon {
     /// Per-site decisions (permissions, zoom), persistent on disk
     /// unless the daemon runs an ephemeral profile (roadmap H5).
     pub site_store: sitedata::Store,
+    /// Global visit history for URL completion (roadmap H9).
+    /// In-memory under ephemeral profiles.
+    pub history: history::Store,
     /// Resolved keybindings (defaults + ~/.config/hwatu/keys.conf).
     pub keymap: keys::Keymap,
     /// Window most recently targeted by an automation command (eval,
@@ -147,6 +151,7 @@ impl Daemon {
             prewarmed: RefCell::new(None),
             adblock: adblock::Adblock::default(),
             site_store: sitedata::SiteStore::load(!security.ephemeral_profile),
+            history: history::History::load(!security.ephemeral_profile),
             keymap: keys::Keymap::load(),
             last_target: RefCell::new(None),
             recently_closed: RefCell::new(Vec::new()),

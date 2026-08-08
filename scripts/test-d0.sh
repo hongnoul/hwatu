@@ -92,14 +92,22 @@ out="$("$bin/hwatu" check "http://127.0.0.1:$port/doc.pdf" --until committed \
 check "H8: application/pdf renders (no download conversion)" "$?" "$out"
 
 # ---- 3. per-site zoom applied on navigation ------------------------
-# Zoom 2.0 halves the CSS viewport: innerWidth ~= viewport_px / 2.
-# Headless default viewport is 1024 wide, so innerWidth <= 600 proves
-# the level applied (unzoomed would be ~1024).
-out="$("$bin/hwatu" check "http://127.0.0.1:$port/page.html" --until dom \
+# site.json zooms host 127.0.0.1 to 2.0; the same server reached as
+# `localhost` has no entry. Zoom halves the CSS viewport, so the
+# zoomed host must report about half the unzoomed host's innerWidth
+# (exact 2:1 modulo rounding), regardless of the machine's viewport.
+out_plain="$("$bin/hwatu" check "http://localhost:$port/page.html" --until dom \
     --eval "window.innerWidth" 2>&1)" || true
-width="$(printf '%s' "$out" | grep -oE '[0-9]+' | head -1)"
-[[ -n "$width" && "$width" -le 600 ]]
-check "H5: persisted per-site zoom applied on load" "$?" "innerWidth=$width (want <=600)"
+out_zoom="$("$bin/hwatu" check "http://127.0.0.1:$port/page.html" --until dom \
+    --eval "window.innerWidth" 2>&1)" || true
+w_plain="$(printf '%s' "$out_plain" | python3 -c 'import json,sys; print(json.load(sys.stdin)["eval"])' 2>/dev/null || echo 0)"
+w_zoom="$(printf '%s' "$out_zoom" | python3 -c 'import json,sys; print(json.load(sys.stdin)["eval"])' 2>/dev/null || echo 0)"
+if [[ "$w_plain" -gt 0 && "$w_zoom" -gt 0 ]] \
+    && (( w_zoom * 2 >= w_plain - 4 && w_zoom * 2 <= w_plain + 4 )); then
+    check "H5: persisted per-site zoom applied on load" 0
+else
+    check "H5: persisted per-site zoom applied on load" 1 "plain=$w_plain zoomed=$w_zoom (want 2:1)"
+fi
 
 # ---- 4. store survives restart, daemon healthy ---------------------
 "$bin/hwatu" quit >/dev/null 2>&1 || true

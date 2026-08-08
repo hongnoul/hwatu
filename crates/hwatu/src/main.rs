@@ -1013,6 +1013,19 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
         }
         Some("console") => Ok(Request::Console { id, clear, limit }),
         Some("net") => Ok(Request::Net { id, clear, limit }),
+        Some("history") => {
+            // `hwatu history [query...] [--limit N] [--clear]`
+            let query = rest[1..]
+                .iter()
+                .map(|s| s.as_str())
+                .collect::<Vec<_>>()
+                .join(" ");
+            Ok(Request::History {
+                query,
+                limit,
+                clear,
+            })
+        }
         Some("focus") => {
             let id = rest
                 .get(1)
@@ -1074,6 +1087,7 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--background|--headless|--foc
     | upload [--id <id>] <selector> <path> \
 | scroll [--id <id>] [<selector> [nth]] [--contains <text>] [--to-y <px>] [--by <pages>] \
 | snapshot [--id <id>] [--diff] [--rect] \
+| history [<query>] [--limit <n>] [--clear] \
 | expect [--id <id>] <selector> [--contains <filter>] [--text <substring>] [--absent] [--visible] [--nth <n>] [--timeout-ms <ms>] [--watch] \
 	| click [--id <id>] [--trusted] (<selector> [nth] [--contains <text>] | --ref <n>) \
 	| type [--id <id>] [--trusted] (<selector> | --ref <n>) <text> [--enter] [--no-clear] \

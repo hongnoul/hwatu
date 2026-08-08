@@ -559,6 +559,18 @@ pub enum Request {
         #[serde(default)]
         window: Option<u64>,
     },
+    /// Query (or clear) the global visit history (roadmap H9). With a
+    /// query, returns frecency-ranked completions; empty query returns
+    /// the most relevant recent pages. `clear` wipes history and
+    /// reports the removed row count.
+    History {
+        #[serde(default)]
+        query: String,
+        #[serde(default)]
+        limit: Option<usize>,
+        #[serde(default)]
+        clear: bool,
+    },
 }
 
 /// Maximum number of actions in one [`Request::Batch`]. This bounds daemon
@@ -601,6 +613,7 @@ impl Request {
             Request::Resize { .. } => "resize",
             Request::Batch { .. } => "batch",
             Request::Subscribe { .. } => "subscribe",
+            Request::History { .. } => "history",
         }
     }
 

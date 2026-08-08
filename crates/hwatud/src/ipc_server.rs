@@ -353,6 +353,31 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
         })),
         Request::Console { id, clear, limit } => automation::console(daemon, id, clear, limit),
         Request::Net { id, clear, limit } => automation::net(daemon, id, clear, limit),
+        Request::History {
+            query,
+            limit,
+            clear,
+        } => {
+            if clear {
+                let removed = daemon.history.clear();
+                Response::value(serde_json::json!({ "cleared": removed }))
+            } else {
+                let hits = daemon
+                    .history
+                    .complete(&query, limit.unwrap_or(20).min(100));
+                let entries: Vec<_> = hits
+                    .into_iter()
+                    .map(|h| {
+                        serde_json::json!({
+                            "url": h.url,
+                            "title": h.title,
+                            "score": h.score,
+                        })
+                    })
+                    .collect();
+                Response::value(serde_json::json!({ "history": entries }))
+            }
+        }
         Request::Open { url, app_id, mode } => {
             let url = url.map(normalize_url);
             let info = BrowserWindow::open(daemon, url, app_id, mode);

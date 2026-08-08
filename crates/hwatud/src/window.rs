@@ -382,12 +382,22 @@ pub struct BrowserWindow {
     /// current ranked matches and which one is highlighted. Cleared on
     /// close so a reopened palette starts fresh.
     palette: RefCell<Option<PaletteState>>,
+    /// URL-bar history completions (roadmap H9): ranked URL matches
+    /// for the current entry text, and which (if any) is highlighted.
+    /// `None` selection means Enter navigates the typed text.
+    completions: RefCell<Option<CompletionState>>,
 }
 
 /// See [`BrowserWindow::palette`].
 struct PaletteState {
     matches: Vec<keys::Action>,
     selected: usize,
+}
+
+/// See [`BrowserWindow::completions`].
+struct CompletionState {
+    urls: Vec<String>,
+    selected: Option<usize>,
 }
 
 /// `HWATU_WEBKIT_FEATURES=Ident:on,Other:off`: escape hatch for odd
@@ -832,6 +842,7 @@ impl BrowserWindow {
             net: crate::net::Buffer::default(),
             turnstile_handoff_offered: std::cell::Cell::new(false),
             palette: RefCell::new(None),
+            completions: RefCell::new(None),
         });
 
         this.attach_webview(webview);
@@ -986,6 +997,12 @@ impl BrowserWindow {
             let title = wv.title().unwrap_or_default();
             if !title.is_empty() {
                 this.last_title.replace(title.to_string());
+                // History completion shows titles (roadmap H9).
+                if this.mode.get() != OpenMode::Headless {
+                    if let Some(url) = wv.uri() {
+                        this.daemon.history.record_title(&url, &title);
+                    }
+                }
             }
             win.set_title(Some(if title.is_empty() {
                 "hwatu"
@@ -1049,6 +1066,20 @@ impl BrowserWindow {
                     let level = this.daemon.site_store.zoom(&host).unwrap_or(1.0);
                     if (wv.zoom_level() - level).abs() > 0.001 {
                         wv.set_zoom_level(level);
+                    }
+                    // Global history (roadmap H9): record user
+                    // navigations. Headless windows belong to agent
+                    // verification runs; internal pages and blanks
+                    // are not completions anyone wants.
+                    if this.mode.get() != OpenMode::Headless {
+                        if let Some(url) = wv.uri() {
+                            if !url.is_empty()
+                                && url != "about:blank"
+                                && !launcher::is_launcher(&url)
+                            {
+                                this.daemon.history.record_visit(&url);
+                            }
+                        }
                     }
                     this.emit_load(wv, "committed");
                 }
@@ -2224,6 +2255,7 @@ impl BrowserWindow {
                 .connect_changed(move |entry| match this.bar.mode() {
                     BarMode::Find { backwards } => this.run_find(&entry.text(), backwards),
                     BarMode::Palette => this.refresh_palette(&entry.text()),
+                    BarMode::Url => this.refresh_completions(&entry.text()),
                     _ => {}
                 });
         }
@@ -2239,7 +2271,17 @@ impl BrowserWindow {
                         this.focus_webview();
                     }
                     BarMode::Url => {
-                        let text = entry.text().trim().to_string();
+                        // A highlighted completion wins over the typed
+                        // text (roadmap H9); plain Enter navigates what
+                        // the user typed.
+                        let completion = {
+                            let state = this.completions.borrow();
+                            state
+                                .as_ref()
+                                .and_then(|s| s.selected.and_then(|i| s.urls.get(i).cloned()))
+                        };
+                        let text = completion.unwrap_or_else(|| entry.text().trim().to_string());
+                        this.completions.replace(None);
                         this.bar.close();
                         if !text.is_empty() {
                             this.navigate(&text);
@@ -2263,6 +2305,7 @@ impl BrowserWindow {
                         return glib::Propagation::Stop;
                     }
                     this.palette.replace(None);
+                    this.completions.replace(None);
                     this.stop_find();
                     this.bar.close();
                     this.focus_webview();
@@ -2276,6 +2319,19 @@ impl BrowserWindow {
                         }
                         gtk::gdk::Key::Up => {
                             this.palette_move(-1);
+                            return glib::Propagation::Stop;
+                        }
+                        _ => {}
+                    }
+                }
+                if this.bar.mode() == BarMode::Url {
+                    match key {
+                        gtk::gdk::Key::Down | gtk::gdk::Key::Tab => {
+                            this.completions_move(1);
+                            return glib::Propagation::Stop;
+                        }
+                        gtk::gdk::Key::Up | gtk::gdk::Key::ISO_Left_Tab => {
+                            this.completions_move(-1);
                             return glib::Propagation::Stop;
                         }
                         _ => {}
@@ -2347,6 +2403,73 @@ impl BrowserWindow {
         if let Some(action) = action {
             self.run_action(action);
         }
+    }
+
+    // ---- URL completion (roadmap H9) --------------------------------
+
+    /// How many history completions the URL bar shows.
+    const COMPLETION_ROWS: usize = 6;
+
+    /// Re-query history for the current entry text. Skipped when the
+    /// text equals the page's own URL (opening ctrl+l prefills it;
+    /// completing against it would just echo the current page).
+    fn refresh_completions(self: &Rc<Self>, text: &str) {
+        let text = text.trim();
+        let current = self.last_url.borrow().clone();
+        let hits = if text == current.as_str() {
+            Vec::new()
+        } else {
+            self.daemon.history.complete(text, Self::COMPLETION_ROWS)
+        };
+        let rows: Vec<(String, String)> = hits
+            .iter()
+            .map(|h| {
+                let title = if h.title.is_empty() {
+                    String::new()
+                } else {
+                    h.title.clone()
+                };
+                (h.url.clone(), title)
+            })
+            .collect();
+        self.completions.replace(if hits.is_empty() {
+            None
+        } else {
+            Some(CompletionState {
+                urls: hits.into_iter().map(|h| h.url).collect(),
+                selected: None,
+            })
+        });
+        self.bar.set_completions(&rows, None);
+    }
+
+    /// Move the completion highlight (Down/Tab and Up/Shift+Tab).
+    /// Wraps through a no-selection state so the typed text is always
+    /// reachable again.
+    fn completions_move(self: &Rc<Self>, delta: isize) {
+        let mut state = self.completions.borrow_mut();
+        let Some(state) = state.as_mut() else {
+            return;
+        };
+        let n = state.urls.len() as isize;
+        if n == 0 {
+            return;
+        }
+        // Cycle: None -> 0 -> 1 ... n-1 -> None (and reverse).
+        let next = match state.selected {
+            None if delta > 0 => Some(0),
+            None => Some((n - 1) as usize),
+            Some(i) => {
+                let j = i as isize + delta;
+                if j < 0 || j >= n {
+                    None
+                } else {
+                    Some(j as usize)
+                }
+            }
+        };
+        state.selected = next;
+        self.bar.set_palette_selected(next.unwrap_or(usize::MAX));
     }
 
     /// Close this window if it is still an untouched launcher: showing
