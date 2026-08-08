@@ -22,7 +22,7 @@
 //!   (BW_SESSION set in the daemon's environment).
 //!
 //! Passwords never touch logs or the bar; failures name the reason
-//! ("no entry for <host>", "vault locked"), never the secret.
+//! ("no entry for `<host>`", "vault locked"), never the secret.
 
 use std::path::PathBuf;
 
