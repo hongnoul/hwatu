@@ -357,6 +357,16 @@ pub enum Request {
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
+    /// Press a page-local keyboard key without presenting or focusing the
+    /// native window. `Tab` advances DOM focus and `Enter` activates the
+    /// focused element, including in headless windows.
+    Press {
+        #[serde(default)]
+        id: Option<u64>,
+        key: PressKey,
+        #[serde(default)]
+        timeout_ms: Option<u64>,
+    },
     /// Paste from the compositor clipboard into an element targeted like
     /// [`Request::Click`]. Always uses trusted native input synthesis: the
     /// daemon clicks/focuses the target, then asks `wtype` to press Ctrl+V
@@ -659,6 +669,7 @@ impl Request {
             Request::Snapshot { .. } => "snapshot",
             Request::Click { .. } => "click",
             Request::Type { .. } => "type",
+            Request::Press { .. } => "press",
             Request::Paste { .. } => "paste",
             Request::Console { .. } => "console",
             Request::Net { .. } => "net",
@@ -705,6 +716,7 @@ impl Request {
                 | Request::Snapshot { .. }
                 | Request::Click { .. }
                 | Request::Type { .. }
+                | Request::Press { .. }
                 | Request::Paste { .. }
                 | Request::Console { .. }
         ) || matches!(self, Request::Expect { watch: false, .. })
@@ -736,7 +748,7 @@ impl Request {
             }
             if !action.is_batch_action() {
                 return Err(format!(
-                    "batch action {index} ({}) is unsupported; allowed actions are eval, navigate, screenshot, wait_load, scroll, snapshot, click, type, console, expect",
+                    "batch action {index} ({}) is unsupported; allowed actions are eval, navigate, screenshot, wait_load, scroll, snapshot, click, type, press, paste, console, expect",
                     action.kind()
                 ));
             }
@@ -866,6 +878,36 @@ impl LoadStage {
             "dom" | "ready" => Some(Self::Dom),
             "settled" | "load" | "full" => Some(Self::Settled),
             _ => None,
+        }
+    }
+}
+
+/// Page-local keys supported by [`Request::Press`]. Keeping this typed avoids
+/// silently accepting keys whose browser default behavior cannot be reproduced
+/// by headless DOM automation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PressKey {
+    Tab,
+    Enter,
+}
+
+impl PressKey {
+    /// Parse a user-facing key name case-insensitively.
+    pub fn parse(value: &str) -> Option<Self> {
+        if value.eq_ignore_ascii_case("tab") {
+            Some(Self::Tab)
+        } else if value.eq_ignore_ascii_case("enter") || value.eq_ignore_ascii_case("return") {
+            Some(Self::Enter)
+        } else {
+            None
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Tab => "Tab",
+            Self::Enter => "Enter",
         }
     }
 }
@@ -1116,6 +1158,31 @@ mod tests {
         assert_eq!(url.as_deref(), Some("http://localhost:3000"));
         assert_eq!(render, None);
         assert_eq!(base, None);
+    }
+
+    #[test]
+    fn press_key_parses_and_roundtrips_on_the_wire() {
+        assert_eq!(PressKey::parse("Tab"), Some(PressKey::Tab));
+        assert_eq!(PressKey::parse("enter"), Some(PressKey::Enter));
+        assert_eq!(PressKey::parse("Return"), Some(PressKey::Enter));
+        assert_eq!(PressKey::parse("Escape"), None);
+
+        let request = Request::Press {
+            id: Some(4),
+            key: PressKey::Tab,
+            timeout_ms: Some(750),
+        };
+        let wire = serde_json::to_string(&request).unwrap();
+        assert_eq!(
+            wire,
+            r#"{"cmd":"press","id":4,"key":"tab","timeout_ms":750}"#
+        );
+        let Request::Press { id, key, .. } = serde_json::from_str::<Request>(&wire).unwrap() else {
+            panic!("press failed to roundtrip");
+        };
+        assert_eq!(id, Some(4));
+        assert_eq!(key, PressKey::Tab);
+        assert!(request.is_batch_action());
     }
 
     /// A render-check roundtrips through the wire format, and the

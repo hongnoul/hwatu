@@ -10,7 +10,9 @@ mod mcp;
 mod onboarding;
 mod update;
 
-use hwatu_ipc::{AdblockCmd, ClockAction, LoadStage, OpenMode, Request, Response, Viewport};
+use hwatu_ipc::{
+    AdblockCmd, ClockAction, LoadStage, OpenMode, PressKey, Request, Response, Viewport,
+};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::process::Command;
@@ -1029,6 +1031,18 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 timeout_ms,
             })
         }
+        Some("press") => {
+            const USAGE_PRESS: &str = "usage: hwatu press [--id <id>] (Tab | Enter)";
+            if rest.len() != 2 {
+                return Err(USAGE_PRESS.into());
+            }
+            let key = PressKey::parse(rest[1]).ok_or(USAGE_PRESS)?;
+            Ok(Request::Press {
+                id,
+                key,
+                timeout_ms,
+            })
+        }
         Some("paste") => {
             let selector = if r#ref.is_some() {
                 None
@@ -1204,6 +1218,7 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--profile <name|auto>] [--bac
 | expect [--id <id>] <selector> [--contains <filter>] [--text <substring>] [--absent] [--visible] [--nth <n>] [--timeout-ms <ms>] [--watch] \
 	| click [--id <id>] [--trusted] (<selector> [nth] [--contains <text>] | --ref <n>) \
 	| type [--id <id>] [--trusted] (<selector> | --ref <n>) <text> [--enter] [--no-clear] \
+	| press [--id <id>] (Tab | Enter) \
 	| paste [--id <id>] (<selector> | --ref <n>) \
 	| console [--id <id>] [--clear] [--limit <n>] \
 | net [--id <id>] [--clear] [--limit <n>] \
@@ -1429,7 +1444,7 @@ mod tests {
         is_current_gio_launch, is_onboarding_command, normalize_request_paths,
         parse_with_default_mode, should_default_to_normal, OpenMode,
     };
-    use hwatu_ipc::Request;
+    use hwatu_ipc::{PressKey, Request};
 
     #[test]
     fn onboarding_commands_are_handled_before_url_parsing() {
@@ -2245,6 +2260,40 @@ mod tests {
         assert!(!clear);
         assert!(parse(&args(&["type", "input"])).is_err());
         assert!(parse(&args(&["type"])).is_err());
+    }
+
+    #[test]
+    fn press_parses_tab_enter_and_optional_id() {
+        assert!(matches!(
+            parse(&args(&["press", "Tab"])),
+            Ok(Request::Press {
+                id: None,
+                key: PressKey::Tab,
+                timeout_ms: None,
+            })
+        ));
+        assert!(matches!(
+            parse(&args(&[
+                "press",
+                "--id",
+                "7",
+                "--timeout-ms",
+                "500",
+                "enter"
+            ])),
+            Ok(Request::Press {
+                id: Some(7),
+                key: PressKey::Enter,
+                timeout_ms: Some(500),
+            })
+        ));
+    }
+
+    #[test]
+    fn press_rejects_missing_unknown_and_extra_keys() {
+        assert!(parse(&args(&["press"])).is_err());
+        assert!(parse(&args(&["press", "Escape"])).is_err());
+        assert!(parse(&args(&["press", "Tab", "Enter"])).is_err());
     }
 
     #[test]

@@ -488,6 +488,13 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
                 timeout_ms, reply,
             );
         }
+        Request::Press {
+            id,
+            key,
+            timeout_ms,
+        } => {
+            return automation::press(daemon, id, key, timeout_ms, reply);
+        }
         Request::Paste {
             id,
             selector,
@@ -913,6 +920,7 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
         | Request::Snapshot { .. }
         | Request::Click { .. }
         | Request::Type { .. }
+        | Request::Press { .. }
         | Request::Paste { .. }
         | Request::Motion { .. }
         | Request::Seek { .. }

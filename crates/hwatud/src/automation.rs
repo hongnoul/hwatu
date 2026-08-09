@@ -12,7 +12,7 @@ use crate::window::BrowserWindow;
 use crate::Daemon;
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
-use hwatu_ipc::{LoadStage, OpenMode, Response, Viewport};
+use hwatu_ipc::{LoadStage, OpenMode, PressKey, Response, Viewport};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use webkit6::prelude::*;
@@ -2902,6 +2902,152 @@ return {{ typed: matched, value: String(value).slice(0, 200), url: location.href
     eval_with(daemon, id, js, timeout_ms, NavPolicy::Success, reply);
 }
 
+const PRESS_JS: &str = r#"
+const key = __HWATU_KEY__;
+const describe = (el) => {
+  if (!el || el.nodeType !== 1) return null;
+  const out = { tag: el.tagName.toLowerCase() };
+  if (el.id) out.id = el.id;
+  const text = (el.getAttribute('aria-label') || el.textContent || el.value || '')
+    .replace(/\s+/g, ' ').trim().slice(0, 120);
+  if (text) out.text = text;
+  return out;
+};
+const deepActive = () => {
+  let active = document.activeElement;
+  for (;;) {
+    let nested = active && active.shadowRoot && active.shadowRoot.activeElement;
+    if (!nested && active && (active.localName === 'iframe' || active.localName === 'frame')) {
+      try {
+        const child = active.contentDocument;
+        if (child && child.activeElement && child.activeElement !== child.body)
+          nested = child.activeElement;
+      } catch (_) {}
+    }
+    if (!nested) return active;
+    active = nested;
+  }
+};
+const eventTarget = (active) => active || document.body || document.documentElement;
+const dispatchKey = (target, type) => {
+  const view = target.ownerDocument.defaultView || window;
+  const code = key === 'Tab' ? 9 : 13;
+  return target.dispatchEvent(new view.KeyboardEvent(type, {
+    bubbles: true, cancelable: true, composed: true,
+    key, code: key, keyCode: code, which: code
+  }));
+};
+if (key === 'Tab') {
+  let sequence = 0;
+  const stops = [];
+  const tabbable = (el) => {
+    const natural = el.matches(
+      'a[href], area[href], button, input:not([type=hidden]), select, textarea, summary, iframe, frame, audio[controls], video[controls], [contenteditable=""], [contenteditable=true]'
+    );
+    if (!natural && !el.hasAttribute('tabindex')) return false;
+    if (el.tabIndex < 0 || el.matches(':disabled') || el.closest('[inert]')) return false;
+    const view = el.ownerDocument.defaultView || window;
+    const style = view.getComputedStyle(el);
+    return style.display !== 'none' && style.visibility !== 'hidden'
+      && el.getClientRects().length > 0;
+  };
+  const visit = (root) => {
+    const doc = root.nodeType === 9 ? root : root.ownerDocument;
+    const walker = doc.createTreeWalker(root, 1);
+    let el;
+    while ((el = walker.nextNode())) {
+      if (tabbable(el)) stops.push({ el, sequence: sequence++, tabIndex: el.tabIndex });
+      if (el.shadowRoot) visit(el.shadowRoot);
+      if (el.localName === 'iframe' || el.localName === 'frame') {
+        try {
+          if (el.contentDocument) visit(el.contentDocument);
+        } catch (_) {}
+      }
+    }
+  };
+  visit(document);
+  stops.sort((a, b) => {
+    const ap = a.tabIndex > 0, bp = b.tabIndex > 0;
+    if (ap !== bp) return ap ? -1 : 1;
+    if (ap && a.tabIndex !== b.tabIndex) return a.tabIndex - b.tabIndex;
+    return a.sequence - b.sequence;
+  });
+  const active = deepActive();
+  const target = eventTarget(active);
+  const allowed = dispatchKey(target, 'keydown');
+  let focused = active;
+  let wrapped = false;
+  if (allowed && stops.length) {
+    const current = stops.findIndex((stop) => stop.el === active);
+    const next = (current + 1) % stops.length;
+    wrapped = current === stops.length - 1;
+    focused = stops[next].el;
+    focused.focus();
+  }
+  dispatchKey(eventTarget(focused), 'keyup');
+  return { pressed: key, focused: describe(focused), wrapped, canceled: !allowed };
+}
+
+const active = deepActive();
+const target = eventTarget(active);
+const downAllowed = dispatchKey(target, 'keydown');
+if (downAllowed) dispatchKey(target, 'keypress');
+dispatchKey(target, 'keyup');
+let activated = false;
+let submitted = false;
+if (downAllowed && active) {
+  const activatable = active.matches(
+    'a[href], button, summary, input[type=button], input[type=submit], input[type=reset], input[type=checkbox], input[type=radio], [role=button], [role=link], [onclick]'
+  );
+  if (activatable && typeof active.click === 'function') {
+    active.click();
+    activated = true;
+  } else {
+    const view = active.ownerDocument.defaultView || window;
+    if (active instanceof view.HTMLInputElement && active.form) {
+      active.form.requestSubmit();
+      submitted = true;
+    }
+  }
+}
+await hwatuSleep(0);
+return {
+  pressed: key,
+  focused: describe(deepActive()),
+  activated,
+  submitted,
+  canceled: !downAllowed,
+  url: location.href
+};
+"#;
+
+fn press_js(key: PressKey) -> String {
+    format!(
+        "{NATIVE_TIME_JS}\n{}",
+        PRESS_JS.replace("__HWATU_KEY__", &js_string(key.as_str()))
+    )
+}
+
+/// Press a page-local key through DOM focus and activation semantics. Unlike
+/// trusted compositor input, this works on headless windows and never presents
+/// or focuses the native toplevel.
+pub fn press(
+    daemon: &Rc<Daemon>,
+    id: Option<u64>,
+    key: PressKey,
+    timeout_ms: Option<u64>,
+    reply: Reply,
+) {
+    eval_with(
+        daemon,
+        id,
+        press_js(key),
+        timeout_ms,
+        NavPolicy::Success,
+        reply,
+    );
+}
+
 /// Paste from the compositor clipboard into an element with native trusted
 /// input. This intentionally has no JS fallback: clipboard pasting must happen
 /// through the compositor while the trusted input session owns focus.
@@ -3026,9 +3172,9 @@ fn mime_from_extension(path: &str) -> &'static str {
 mod tests {
     use super::{
         base64, challenge_detect_js, challenge_wait_js, expect_watch_js, plan_eval_source,
-        trusted_input_mode_error, ExpectSpec, VISIBILITY_INSPECTOR_JS,
+        press_js, trusted_input_mode_error, ExpectSpec, VISIBILITY_INSPECTOR_JS,
     };
-    use hwatu_ipc::OpenMode;
+    use hwatu_ipc::{OpenMode, PressKey};
 
     #[test]
     fn base64_matches_rfc_vectors() {
@@ -3048,6 +3194,30 @@ mod tests {
             let message = trusted_input_mode_error(mode).expect("mode must be refused");
             assert!(message.contains("would promote and focus the window"));
         }
+    }
+
+    #[test]
+    fn tab_press_uses_page_local_focus_traversal() {
+        let js = press_js(PressKey::Tab);
+        assert!(js.contains("const key = \"Tab\""));
+        assert!(js.contains("createTreeWalker"));
+        assert!(js.contains("el.shadowRoot"));
+        assert!(js.contains("el.contentDocument"));
+        assert!(js.contains("focused.focus()"));
+        assert!(js.contains("current + 1"));
+        assert!(!js.contains("window.present"));
+    }
+
+    #[test]
+    fn enter_press_dispatches_keys_and_activates_focused_element() {
+        let js = press_js(PressKey::Enter);
+        assert!(js.contains("const key = \"Enter\""));
+        assert!(js.contains("'keydown'"));
+        assert!(js.contains("'keypress'"));
+        assert!(js.contains("'keyup'"));
+        assert!(js.contains("active.click()"));
+        assert!(js.contains("active.form.requestSubmit()"));
+        assert!(js.contains("await hwatuSleep(0)"));
     }
 
     #[test]
