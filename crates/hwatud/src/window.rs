@@ -985,8 +985,12 @@ impl BrowserWindow {
         // Ctrl+w (or ctrl+q) closes the window; the daemon (and engine) stay warm.
         {
             let ctrl = gtk::EventControllerKey::new();
-            let this2 = this.clone();
-            ctrl.connect_key_pressed(move |_, key, _, state| this2.on_window_key(key, state));
+            let weak = Rc::downgrade(&this);
+            ctrl.connect_key_pressed(move |_, key, _, state| {
+                weak.upgrade().map_or(glib::Propagation::Proceed, |this| {
+                    this.on_window_key(key, state)
+                })
+            });
             window.add_controller(ctrl);
         }
 
@@ -997,29 +1001,32 @@ impl BrowserWindow {
         {
             let ctrl = gtk::EventControllerKey::new();
             ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
-            let this2 = this.clone();
+            let weak = Rc::downgrade(&this);
             ctrl.connect_key_pressed(move |_, key, _, state| {
+                let Some(this) = weak.upgrade() else {
+                    return glib::Propagation::Proceed;
+                };
                 // While the bar's entry owns focus (find/URL/palette
                 // typing), global chords stay out of the way: Ctrl+o in
                 // a URL prompt must not navigate history under the bar.
                 let entry_open = matches!(
-                    this2.bar.mode(),
+                    this.bar.mode(),
                     BarMode::Find { .. } | BarMode::Url | BarMode::Palette
                 );
                 if !entry_open {
                     if let Some(action) =
-                        this2.daemon.keymap.lookup(keys::Phase::Capture, key, state)
+                        this.daemon.keymap.lookup(keys::Phase::Capture, key, state)
                     {
-                        return this2.run_action(action);
+                        return this.run_action(action);
                     }
                 }
-                let BarMode::Confirm { tag } = this2.bar.mode() else {
+                let BarMode::Confirm { tag } = this.bar.mode() else {
                     return glib::Propagation::Proceed;
                 };
                 let Some(answer) = confirm_answer(key, state) else {
                     return glib::Propagation::Proceed;
                 };
-                this2.answer_confirm(&tag, answer);
+                this.answer_confirm(&tag, answer);
                 glib::Propagation::Stop
             });
             window.add_controller(ctrl);
@@ -1028,8 +1035,9 @@ impl BrowserWindow {
         // Focus-driven lifecycle: unfocused windows are scheduled for
         // discard, focused ones are restored immediately.
         {
-            let this = this.clone();
+            let weak = Rc::downgrade(&this);
             window.connect_is_active_notify(move |win| {
+                let Some(this) = weak.upgrade() else { return };
                 if win.is_active() {
                     this.cancel_discard_timer();
                     this.restore();
@@ -1047,8 +1055,11 @@ impl BrowserWindow {
         // Drop from the registry when the WM closes us.
         {
             let daemon = daemon.clone();
-            let this = this.clone();
+            let weak = Rc::downgrade(&this);
             window.connect_close_request(move |_| {
+                let Some(this) = weak.upgrade() else {
+                    return glib::Propagation::Proceed;
+                };
                 this.cancel_discard_timer();
                 // Remember the page for ctrl+shift+t before the window
                 // leaves the registry.
@@ -1059,7 +1070,7 @@ impl BrowserWindow {
                 // outlives the window (and the agent session that opened
                 // it). Kill it here, on the same shared-process guard as
                 // the discard path.
-                this.terminate_web_process_unless_shared();
+                this.detach_webview_and_terminate_unless_shared();
                 // A discarded window closed for good: its blob is dead.
                 if let Some(saved) = this.saved.borrow_mut().take() {
                     if let Some(path) = saved.session_file {
@@ -1925,14 +1936,17 @@ impl BrowserWindow {
         self.window.close();
     }
 
-    /// Kill this window's web process unless a related window (popup ↔
-    /// opener) still runs in it. Closing a window only destroys the GTK
-    /// toplevel; WebKit keeps the web process cached for reuse, and a
-    /// cached process keeps running its page — an autoplaying video's
-    /// audio audibly outlives the window (and the agent session that
-    /// opened it). Same rationale as the discard path in
-    /// [`Self::finish_discard`].
-    fn terminate_web_process_unless_shared(&self) {
+    /// Detach and drop this window's WebView, killing its web process unless
+    /// a related window (popup ↔ opener) still runs in it.
+    ///
+    /// `terminate_web_process()` alone is not enough: every WebView signal
+    /// owns callbacks that reference the BrowserWindow. Leaving the WebView
+    /// in `self.webview` after close forms a Rust/GObject reference cycle,
+    /// which lets WebKit retain (or restart) the supposedly closed page
+    /// process. Detaching the widget and taking the field breaks that cycle.
+    fn detach_webview_and_terminate_unless_shared(&self) {
+        let webview = self.webview.borrow_mut().take();
+        self.overlay.set_child(None::<&gtk::Widget>);
         let shared = self
             .process_group
             .borrow_mut()
@@ -1941,7 +1955,7 @@ impl BrowserWindow {
         if shared {
             return;
         }
-        if let Some(webview) = self.webview.borrow().as_ref() {
+        if let Some(webview) = webview {
             webview.terminate_web_process();
         }
     }
@@ -2705,23 +2719,24 @@ impl BrowserWindow {
         // Incremental search on every keystroke; palette re-ranks on
         // every keystroke the same way.
         {
-            let this = self.clone();
-            self.bar
-                .entry
-                .connect_changed(move |entry| match this.bar.mode() {
+            let weak = Rc::downgrade(self);
+            self.bar.entry.connect_changed(move |entry| {
+                let Some(this) = weak.upgrade() else { return };
+                match this.bar.mode() {
                     BarMode::Find { backwards } => this.run_find(&entry.text(), backwards),
                     BarMode::Palette => this.refresh_palette(&entry.text()),
                     BarMode::Url => this.refresh_completions(&entry.text()),
                     _ => {}
-                });
+                }
+            });
         }
         // Enter: find keeps highlights and returns focus to the page;
         // URL mode navigates.
         {
-            let this = self.clone();
-            self.bar
-                .entry
-                .connect_activate(move |entry| match this.bar.mode() {
+            let weak = Rc::downgrade(self);
+            self.bar.entry.connect_activate(move |entry| {
+                let Some(this) = weak.upgrade() else { return };
+                match this.bar.mode() {
                     BarMode::Find { .. } => {
                         this.bar.close();
                         this.focus_webview();
@@ -2746,16 +2761,20 @@ impl BrowserWindow {
                     }
                     BarMode::Palette => this.run_palette_selected(),
                     _ => {}
-                });
+                }
+            });
         }
         // Escape inside the entry: cancel find/URL entry entirely.
         // On a bare launcher window, cancelling means the window
         // itself was a mis-fire: close it. Up/Down while the palette
         // is open move its highlight instead of the entry cursor.
         {
-            let this = self.clone();
+            let weak = Rc::downgrade(self);
             let ctrl = gtk::EventControllerKey::new();
             ctrl.connect_key_pressed(move |_, key, _, _| {
+                let Some(this) = weak.upgrade() else {
+                    return glib::Propagation::Proceed;
+                };
                 if key == gtk::gdk::Key::Escape {
                     if this.close_if_bare_launcher() {
                         return glib::Propagation::Stop;
