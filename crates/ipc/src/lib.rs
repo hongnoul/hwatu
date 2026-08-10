@@ -892,6 +892,8 @@ pub enum PressKey {
     Tab,
     Enter,
     Escape,
+    ArrowLeft,
+    ArrowRight,
 }
 
 impl PressKey {
@@ -903,6 +905,10 @@ impl PressKey {
             Some(Self::Enter)
         } else if value.eq_ignore_ascii_case("escape") || value.eq_ignore_ascii_case("esc") {
             Some(Self::Escape)
+        } else if value.eq_ignore_ascii_case("arrowleft") {
+            Some(Self::ArrowLeft)
+        } else if value.eq_ignore_ascii_case("arrowright") {
+            Some(Self::ArrowRight)
         } else {
             None
         }
@@ -913,6 +919,8 @@ impl PressKey {
             Self::Tab => "Tab",
             Self::Enter => "Enter",
             Self::Escape => "Escape",
+            Self::ArrowLeft => "ArrowLeft",
+            Self::ArrowRight => "ArrowRight",
         }
     }
 }
@@ -1172,6 +1180,8 @@ mod tests {
         assert_eq!(PressKey::parse("Return"), Some(PressKey::Enter));
         assert_eq!(PressKey::parse("Escape"), Some(PressKey::Escape));
         assert_eq!(PressKey::parse("esc"), Some(PressKey::Escape));
+        assert_eq!(PressKey::parse("ArrowLeft"), Some(PressKey::ArrowLeft));
+        assert_eq!(PressKey::parse("arrowright"), Some(PressKey::ArrowRight));
 
         let request = Request::Press {
             id: Some(4),
@@ -1188,6 +1198,29 @@ mod tests {
         };
         assert_eq!(id, Some(4));
         assert_eq!(key, PressKey::Tab);
+
+        for (key, wire_name) in [
+            (PressKey::ArrowLeft, "arrowleft"),
+            (PressKey::ArrowRight, "arrowright"),
+        ] {
+            let request = Request::Press {
+                id: None,
+                key,
+                timeout_ms: None,
+            };
+            let wire = serde_json::to_string(&request).unwrap();
+            assert_eq!(
+                wire,
+                format!(r#"{{"cmd":"press","id":null,"key":"{wire_name}","timeout_ms":null}}"#)
+            );
+            let Request::Press {
+                key: roundtripped, ..
+            } = serde_json::from_str::<Request>(&wire).unwrap()
+            else {
+                panic!("arrow press failed to roundtrip");
+            };
+            assert_eq!(roundtripped, key);
+        }
         assert!(request.is_batch_action());
     }
 

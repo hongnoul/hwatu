@@ -1032,7 +1032,8 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             })
         }
         Some("press") => {
-            const USAGE_PRESS: &str = "usage: hwatu press [--id <id>] (Tab | Enter | Escape)";
+            const USAGE_PRESS: &str =
+                "usage: hwatu press [--id <id>] (Tab | Enter | Escape | ArrowLeft | ArrowRight)";
             if rest.len() != 2 {
                 return Err(USAGE_PRESS.into());
             }
@@ -1218,7 +1219,7 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--profile <name|auto>] [--bac
 | expect [--id <id>] <selector> [--contains <filter>] [--text <substring>] [--absent] [--visible] [--nth <n>] [--timeout-ms <ms>] [--watch] \
 	| click [--id <id>] [--trusted] (<selector> [nth] [--contains <text>] | --ref <n>) \
 	| type [--id <id>] [--trusted] (<selector> | --ref <n>) <text> [--enter] [--no-clear] \
-	| press [--id <id>] (Tab | Enter | Escape) \
+		| press [--id <id>] (Tab | Enter | Escape | ArrowLeft | ArrowRight) \
 	| paste [--id <id>] (<selector> | --ref <n>) \
 	| console [--id <id>] [--clear] [--limit <n>] \
 | net [--id <id>] [--clear] [--limit <n>] \
@@ -2263,7 +2264,7 @@ mod tests {
     }
 
     #[test]
-    fn press_parses_tab_enter_escape_and_optional_id() {
+    fn press_parses_supported_keys_and_optional_id() {
         assert!(matches!(
             parse(&args(&["press", "Tab"])),
             Ok(Request::Press {
@@ -2292,6 +2293,22 @@ mod tests {
             Ok(Request::Press {
                 id: None,
                 key: PressKey::Escape,
+                timeout_ms: None,
+            })
+        ));
+        assert!(matches!(
+            parse(&args(&["press", "ArrowLeft"])),
+            Ok(Request::Press {
+                id: None,
+                key: PressKey::ArrowLeft,
+                timeout_ms: None,
+            })
+        ));
+        assert!(matches!(
+            parse(&args(&["press", "arrowright"])),
+            Ok(Request::Press {
+                id: None,
+                key: PressKey::ArrowRight,
                 timeout_ms: None,
             })
         ));

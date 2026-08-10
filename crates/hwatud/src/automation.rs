@@ -2931,7 +2931,11 @@ const deepActive = () => {
 const eventTarget = (active) => active || document.body || document.documentElement;
 const dispatchKey = (target, type) => {
   const view = target.ownerDocument.defaultView || window;
-  const code = key === 'Tab' ? 9 : key === 'Escape' ? 27 : 13;
+  const code = key === 'Tab' ? 9
+    : key === 'Escape' ? 27
+    : key === 'ArrowLeft' ? 37
+    : key === 'ArrowRight' ? 39
+    : 13;
   return target.dispatchEvent(new view.KeyboardEvent(type, {
     bubbles: true, cancelable: true, composed: true,
     key, code: key, keyCode: code, which: code
@@ -3010,6 +3014,29 @@ if (key === 'Escape') {
     focused: describe(deepActive()),
     dialogClosed: Boolean(dialog) && !dialog.open,
     canceled: !downAllowed || cancelAllowed === false,
+    url: location.href
+  };
+}
+
+if (key === 'ArrowLeft' || key === 'ArrowRight') {
+  const active = deepActive();
+  const target = eventTarget(active);
+  const downAllowed = dispatchKey(target, 'keydown');
+  const before = active && active.scrollLeft;
+  let scrolled = false;
+  if (downAllowed && active && active.scrollWidth > active.clientWidth) {
+    const direction = key === 'ArrowLeft' ? -1 : 1;
+    active.scrollBy({ left: direction * 40, behavior: 'instant' });
+    scrolled = active.scrollLeft !== before;
+  }
+  dispatchKey(target, 'keyup');
+  await hwatuSleep(0);
+  return {
+    pressed: key,
+    focused: describe(deepActive()),
+    scrolled,
+    scrollLeft: active && active.scrollLeft,
+    canceled: !downAllowed,
     url: location.href
   };
 }
@@ -3254,6 +3281,24 @@ mod tests {
         assert!(js.contains("querySelectorAll('dialog[open]')"));
         assert!(js.contains("new view.Event('cancel', { cancelable: true })"));
         assert!(js.contains("if (cancelAllowed && dialog.open) dialog.close()"));
+    }
+
+    #[test]
+    fn arrow_press_preserves_focused_horizontal_scroll_default() {
+        for (key, name, code) in [
+            (PressKey::ArrowLeft, "ArrowLeft", "37"),
+            (PressKey::ArrowRight, "ArrowRight", "39"),
+        ] {
+            let js = press_js(key);
+            assert!(js.contains(&format!("const key = \"{name}\"")));
+            assert!(js.contains(&format!("key === '{name}' ? {code}")));
+            assert!(js
+                .contains("if (downAllowed && active && active.scrollWidth > active.clientWidth)"));
+            assert!(js.contains("const direction = key === 'ArrowLeft' ? -1 : 1"));
+            assert!(js.contains("active.scrollBy({ left: direction * 40, behavior: 'instant' })"));
+            assert!(js.contains("dispatchKey(target, 'keyup')"));
+            assert!(!js.contains("window.present"));
+        }
     }
 
     #[test]
