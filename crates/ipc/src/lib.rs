@@ -358,8 +358,9 @@ pub enum Request {
         timeout_ms: Option<u64>,
     },
     /// Press a page-local keyboard key without presenting or focusing the
-    /// native window. `Tab` advances DOM focus and `Enter` activates the
-    /// focused element, including in headless windows.
+    /// native window. `Tab` advances DOM focus, `Enter` activates the focused
+    /// element, and `Escape` runs dialog cancel semantics, including in
+    /// headless windows.
     Press {
         #[serde(default)]
         id: Option<u64>,
@@ -890,6 +891,7 @@ impl LoadStage {
 pub enum PressKey {
     Tab,
     Enter,
+    Escape,
 }
 
 impl PressKey {
@@ -899,6 +901,8 @@ impl PressKey {
             Some(Self::Tab)
         } else if value.eq_ignore_ascii_case("enter") || value.eq_ignore_ascii_case("return") {
             Some(Self::Enter)
+        } else if value.eq_ignore_ascii_case("escape") || value.eq_ignore_ascii_case("esc") {
+            Some(Self::Escape)
         } else {
             None
         }
@@ -908,6 +912,7 @@ impl PressKey {
         match self {
             Self::Tab => "Tab",
             Self::Enter => "Enter",
+            Self::Escape => "Escape",
         }
     }
 }
@@ -1165,7 +1170,8 @@ mod tests {
         assert_eq!(PressKey::parse("Tab"), Some(PressKey::Tab));
         assert_eq!(PressKey::parse("enter"), Some(PressKey::Enter));
         assert_eq!(PressKey::parse("Return"), Some(PressKey::Enter));
-        assert_eq!(PressKey::parse("Escape"), None);
+        assert_eq!(PressKey::parse("Escape"), Some(PressKey::Escape));
+        assert_eq!(PressKey::parse("esc"), Some(PressKey::Escape));
 
         let request = Request::Press {
             id: Some(4),

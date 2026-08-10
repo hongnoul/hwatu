@@ -1032,7 +1032,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             })
         }
         Some("press") => {
-            const USAGE_PRESS: &str = "usage: hwatu press [--id <id>] (Tab | Enter)";
+            const USAGE_PRESS: &str = "usage: hwatu press [--id <id>] (Tab | Enter | Escape)";
             if rest.len() != 2 {
                 return Err(USAGE_PRESS.into());
             }
@@ -1218,7 +1218,7 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--profile <name|auto>] [--bac
 | expect [--id <id>] <selector> [--contains <filter>] [--text <substring>] [--absent] [--visible] [--nth <n>] [--timeout-ms <ms>] [--watch] \
 	| click [--id <id>] [--trusted] (<selector> [nth] [--contains <text>] | --ref <n>) \
 	| type [--id <id>] [--trusted] (<selector> | --ref <n>) <text> [--enter] [--no-clear] \
-	| press [--id <id>] (Tab | Enter) \
+	| press [--id <id>] (Tab | Enter | Escape) \
 	| paste [--id <id>] (<selector> | --ref <n>) \
 	| console [--id <id>] [--clear] [--limit <n>] \
 | net [--id <id>] [--clear] [--limit <n>] \
@@ -2263,7 +2263,7 @@ mod tests {
     }
 
     #[test]
-    fn press_parses_tab_enter_and_optional_id() {
+    fn press_parses_tab_enter_escape_and_optional_id() {
         assert!(matches!(
             parse(&args(&["press", "Tab"])),
             Ok(Request::Press {
@@ -2287,12 +2287,20 @@ mod tests {
                 timeout_ms: Some(500),
             })
         ));
+        assert!(matches!(
+            parse(&args(&["press", "Escape"])),
+            Ok(Request::Press {
+                id: None,
+                key: PressKey::Escape,
+                timeout_ms: None,
+            })
+        ));
     }
 
     #[test]
     fn press_rejects_missing_unknown_and_extra_keys() {
         assert!(parse(&args(&["press"])).is_err());
-        assert!(parse(&args(&["press", "Escape"])).is_err());
+        assert!(parse(&args(&["press", "Space"])).is_err());
         assert!(parse(&args(&["press", "Tab", "Enter"])).is_err());
     }
 

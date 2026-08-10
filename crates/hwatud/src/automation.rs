@@ -2931,7 +2931,7 @@ const deepActive = () => {
 const eventTarget = (active) => active || document.body || document.documentElement;
 const dispatchKey = (target, type) => {
   const view = target.ownerDocument.defaultView || window;
-  const code = key === 'Tab' ? 9 : 13;
+  const code = key === 'Tab' ? 9 : key === 'Escape' ? 27 : 13;
   return target.dispatchEvent(new view.KeyboardEvent(type, {
     bubbles: true, cancelable: true, composed: true,
     key, code: key, keyCode: code, which: code
@@ -2986,6 +2986,32 @@ if (key === 'Tab') {
   }
   dispatchKey(eventTarget(focused), 'keyup');
   return { pressed: key, focused: describe(focused), wrapped, canceled: !allowed };
+}
+
+if (key === 'Escape') {
+  const active = deepActive();
+  const target = eventTarget(active);
+  const downAllowed = dispatchKey(target, 'keydown');
+  dispatchKey(target, 'keyup');
+  let dialog = null;
+  let cancelAllowed = null;
+  if (downAllowed) {
+    const openDialogs = [...document.querySelectorAll('dialog[open]')];
+    dialog = openDialogs.at(-1) || null;
+    if (dialog) {
+      const view = dialog.ownerDocument.defaultView || window;
+      cancelAllowed = dialog.dispatchEvent(new view.Event('cancel', { cancelable: true }));
+      if (cancelAllowed && dialog.open) dialog.close();
+    }
+  }
+  await hwatuSleep(0);
+  return {
+    pressed: key,
+    focused: describe(deepActive()),
+    dialogClosed: Boolean(dialog) && !dialog.open,
+    canceled: !downAllowed || cancelAllowed === false,
+    url: location.href
+  };
 }
 
 const active = deepActive();
@@ -3218,6 +3244,16 @@ mod tests {
         assert!(js.contains("active.click()"));
         assert!(js.contains("active.form.requestSubmit()"));
         assert!(js.contains("await hwatuSleep(0)"));
+    }
+
+    #[test]
+    fn escape_press_runs_dialog_cancel_semantics() {
+        let js = press_js(PressKey::Escape);
+        assert!(js.contains("const key = \"Escape\""));
+        assert!(js.contains("key === 'Escape' ? 27"));
+        assert!(js.contains("querySelectorAll('dialog[open]')"));
+        assert!(js.contains("new view.Event('cancel', { cancelable: true })"));
+        assert!(js.contains("if (cancelAllowed && dialog.open) dialog.close()"));
     }
 
     #[test]
