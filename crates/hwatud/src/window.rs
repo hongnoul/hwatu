@@ -374,6 +374,11 @@ pub struct BrowserWindow {
     /// ensure_viewport() re-assert whichever is current, so a resized
     /// window keeps its size across navigations.
     viewport: std::cell::Cell<Option<(i32, i32)>>,
+    /// A local path queued by `hwatu upload` for the next WebKit file chooser.
+    /// Consuming it through `FileChooserRequest::select_files` gives WebKit a
+    /// real path-backed file instead of a JS-created `File` whose bytes can be
+    /// lost when WebKit serializes multipart form data.
+    pending_upload: RefCell<Option<String>>,
     /// URI of a requested-but-not-yet-Started navigation. `is_loading`
     /// is false between `load_uri` and WebKit's LoadEvent::Started, so
     /// `wait_load` needs this to not answer early and let the caller's
@@ -924,6 +929,7 @@ impl BrowserWindow {
             promoted_from: std::cell::Cell::new(None),
             demote_timer: RefCell::new(None),
             viewport: std::cell::Cell::new(None),
+            pending_upload: RefCell::new(None),
             nav_pending: RefCell::new(None),
             nav_target: RefCell::new(None),
             last_url: RefCell::new(String::new()),
@@ -1213,6 +1219,15 @@ impl BrowserWindow {
         {
             let this = self.clone();
             webview.connect_run_file_chooser(move |_, request| {
+                // Automation arms the chooser before activating the input.
+                // Taking the path before select_files is important: WebKit can
+                // synchronously dispatch the page's change handler, whose IPC
+                // completion clears any still-pending automation state.
+                let upload = this.pending_upload.borrow_mut().take();
+                if let Some(path) = upload {
+                    request.select_files(&[path.as_str()]);
+                    return true;
+                }
                 let dialog = gtk::FileDialog::builder()
                     .title("Upload file")
                     .modal(true)
@@ -1970,6 +1985,22 @@ impl BrowserWindow {
     /// adblock toggle to re-apply filters across all windows.
     pub fn live_webview(&self) -> Option<webkit6::WebView> {
         self.webview.borrow().clone()
+    }
+
+    /// Queue an automation path for the next `run-file-chooser` signal.
+    /// Refuse overlap so one upload can never satisfy another command's input.
+    pub(crate) fn arm_upload(&self, path: String) -> Result<(), &'static str> {
+        let mut pending = self.pending_upload.borrow_mut();
+        if pending.is_some() {
+            return Err("another upload is already waiting for a file chooser");
+        }
+        pending.replace(path);
+        Ok(())
+    }
+
+    /// Disarm an upload if activation failed or the evaluation timed out.
+    pub(crate) fn clear_pending_upload(&self) {
+        self.pending_upload.borrow_mut().take();
     }
 
     fn remember_webview_url(&self, webview: &webkit6::WebView) {
