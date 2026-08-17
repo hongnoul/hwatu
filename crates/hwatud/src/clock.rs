@@ -239,8 +239,15 @@ const CLOCK_JS: &str = r#"(() => {
   if (NativeIO) {
     g.IntersectionObserver = class IntersectionObserver extends NativeIO {
       constructor(cb, options) {
-        super(cb, options);
-        this.__hwatu = { cb, options: options || {}, targets: new Set(), last: new WeakMap() };
+        const state = { cb, options: options || {}, targets: new Set(), last: new WeakMap() };
+        super((entries, observer) => {
+          // Keep the manual headless pump in sync with native delivery so a
+          // rendering opportunity immediately before a pump cannot invoke the
+          // page callback twice for the same state.
+          for (const entry of entries) state.last.set(entry.target, entry.isIntersecting);
+          cb(entries, observer);
+        }, options);
+        this.__hwatu = state;
         ioInstances.add(this);
       }
       observe(t) { this.__hwatu.targets.add(t); return super.observe(t); }
@@ -294,6 +301,13 @@ const CLOCK_JS: &str = r#"(() => {
   // scrollers are not tracked: agent scrolls drive the window.
   let lastScrollX = g.scrollX;
   let lastScrollY = g.scrollY;
+  const syncScroll = () => {
+    lastScrollX = g.scrollX;
+    lastScrollY = g.scrollY;
+  };
+  // Native scroll delivery, when WebKit does get a rendering opportunity,
+  // wins over the fallback pump and suppresses a duplicate synthetic event.
+  document.addEventListener('scroll', syncScroll, { capture: true });
   const pumpScroll = () => {
     if (g.scrollX === lastScrollX && g.scrollY === lastScrollY) return;
     lastScrollX = g.scrollX;
@@ -301,6 +315,10 @@ const CLOCK_JS: &str = r#"(() => {
     try {
       document.dispatchEvent(new Event('scroll', { bubbles: true }));
     } catch (e) {}
+  };
+  const pumpViewport = () => {
+    pumpScroll();
+    pumpIO();
   };
 
   // ---- control surface ----------------------------------------------
@@ -412,6 +430,7 @@ const CLOCK_JS: &str = r#"(() => {
       clearTimeout: nativeClearTimeout,
       now: () => realNow(),
       dateNow: () => Math.round(dateBase + realNow()),
+      pumpViewport,
     },
   };
 })();"#;
@@ -576,6 +595,22 @@ mod tests {
         assert!(CLOCK_JS.contains("new Event('scroll', { bubbles: true })"));
         // Fires only on change: unchanged offsets are a no-op.
         assert!(CLOCK_JS.contains("g.scrollX === lastScrollX && g.scrollY === lastScrollY"));
+    }
+
+    #[test]
+    fn clock_js_exposes_viewport_pump_without_advancing_time() {
+        assert!(CLOCK_JS.contains("const pumpViewport = () => {"));
+        assert!(CLOCK_JS.contains("pumpScroll();\n    pumpIO();"));
+        assert!(CLOCK_JS
+            .contains("dateNow: () => Math.round(dateBase + realNow()),\n      pumpViewport,"));
+    }
+
+    #[test]
+    fn clock_js_native_delivery_suppresses_duplicate_viewport_callbacks() {
+        assert!(CLOCK_JS.contains("state.last.set(entry.target, entry.isIntersecting)"));
+        assert!(
+            CLOCK_JS.contains("document.addEventListener('scroll', syncScroll, { capture: true })")
+        );
     }
 
     /// The seeded-PRNG surface must exist in the injected shim: the

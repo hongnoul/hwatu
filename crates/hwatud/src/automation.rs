@@ -53,6 +53,12 @@ const hwatuSleep = (ms) => new Promise((r) =>
 const hwatuNow = () => (__hwatuNative ? __hwatuNative.dateNow() : Date.now());
 "#;
 
+/// Deliver the viewport update callbacks that WebKit ties to rendering
+/// opportunities. Headless/unmapped views do not receive those opportunities,
+/// so an automation scroll explicitly pumps the clock shim's tracked scroll
+/// listeners and IntersectionObservers after the offset settles.
+const VIEWPORT_PUMP_JS: &str = "__hwatuNative?.pumpViewport?.();";
+
 /// Pick the target window: explicit id, else the focused window, else
 /// the last window an automation command targeted (if still open),
 /// else the only window. Every successful resolution records the
@@ -1786,6 +1792,7 @@ if (selector !== null) {{
 // update scrollY synchronously; one macrotask covers layout shifts.
 // Native-clock sleep so a paused virtual clock cannot stall it.
 await hwatuSleep(0);
+{viewport_pump}
 const doc = document.documentElement;
 const maxY = Math.max(0, doc.scrollHeight - window.innerHeight);
 return {{
@@ -1796,6 +1803,7 @@ return {{
   ...(typeof matched === 'undefined' ? {{}} : {{ matched }}),
 }};"#,
         native = NATIVE_TIME_JS,
+        viewport_pump = VIEWPORT_PUMP_JS,
         selector = json_or_null(selector.as_deref()),
         nth = nth.unwrap_or(0),
         contains = json_or_null(contains.as_deref()),
@@ -3190,7 +3198,7 @@ fn js_string(s: &str) -> String {
 mod tests {
     use super::{
         challenge_detect_js, challenge_wait_js, expect_watch_js, plan_eval_source, press_js,
-        trusted_input_mode_error, upload_js, ExpectSpec, VISIBILITY_INSPECTOR_JS,
+        trusted_input_mode_error, upload_js, ExpectSpec, VIEWPORT_PUMP_JS, VISIBILITY_INSPECTOR_JS,
     };
     use hwatu_ipc::{OpenMode, PressKey};
 
@@ -3263,6 +3271,11 @@ mod tests {
             assert!(js.contains("dispatchKey(target, 'keyup')"));
             assert!(!js.contains("window.present"));
         }
+    }
+
+    #[test]
+    fn scroll_pumps_headless_viewport_callbacks_after_settling() {
+        assert_eq!(VIEWPORT_PUMP_JS, "__hwatuNative?.pumpViewport?.();");
     }
 
     #[test]
