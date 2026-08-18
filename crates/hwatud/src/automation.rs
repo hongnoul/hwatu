@@ -3120,6 +3120,18 @@ pub fn press(
     timeout_ms: Option<u64>,
     reply: Reply,
 ) {
+    // WebKit only applies the :focus / :focus-visible pseudo-classes while
+    // its WebView owns GTK focus.  A headless window is deliberately never
+    // mapped, so JavaScript element.focus() alone updates activeElement but
+    // leaves those pseudo-classes false and screenshots omit focus rings.
+    // Grabbing widget focus is compositor-local: it does not map or present
+    // the toplevel, but it gives WebKit the page-focus state its CSS engine
+    // needs before PRESS_JS advances the active element.
+    if key == PressKey::Tab {
+        if let Ok(view) = resolve(daemon, id).and_then(|w| live_view(&w)) {
+            view.grab_focus();
+        }
+    }
     eval_with(
         daemon,
         id,
