@@ -1730,7 +1730,7 @@ fn upload_js(selector: &str) -> String {
 		  }}, {{ once: true }});
 		  el.click();
 		}});"#,
-        selector = js_string(&selector),
+        selector = js_string(selector),
     )
 }
 
