@@ -138,6 +138,17 @@ hwatu check localhost:5173 --eval 'document.title' --shot=/tmp/after.png
 #  "console":[...],"load_ms":13,"total_ms":35}
 ```
 
+For a repeatable repo-level contract that also owns the preflight, local dev
+server, responsive screenshots, source-staleness check, and evidence report:
+
+```sh
+hwatu verify .hwatu/about.verify.json
+```
+
+The same executor is exposed to MCP clients as `verify_ui`, so different agent
+harnesses do not need to rebuild the orchestration loop. See the
+[agent guide](docs/agents.md#verification-jobs-one-contract-for-every-harness).
+
 Generated HTML in hand and no server? `hwatu render` is the same
 one-call pass with the markup as input: no temp file, no
 `python3 -m http.server`:

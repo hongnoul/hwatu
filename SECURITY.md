@@ -17,6 +17,12 @@ The default automation surface includes JavaScript evaluation:
 
 If an untrusted or prompt-injected agent reaches these tools while the daemon has authenticated browser state, it can execute same-origin JavaScript in pages the daemon loads. That may expose `document.cookie` when cookies are not `HttpOnly`, web storage, visible DOM content, CSRF-protected form state, and other page-accessible secrets. HttpOnly cookies are not readable via `document.cookie`, but authenticated actions may still be possible through normal browser requests.
 
+## Verification-job command execution
+
+`hwatu verify <spec.json>` and the MCP `verify_ui` tool with `spec_path` can run optional `preflight` and `server` commands from that file. Commands use explicit argv arrays rather than a shell, but they still execute with the invoking user's permissions. Treat command-bearing verification specs as executable project configuration and review them before use.
+
+MCP callers cannot place process commands in an inline `spec`. Inline specs containing `preflight` or `server` are rejected. They also cannot override `cwd`, `artifacts_dir`, or `report_path`, and their source paths and resolved symlinks must remain inside the MCP process working directory. Inline evidence uses a runtime-scoped Hwatu output directory. This prevents an unreviewed tool-call payload from directly creating a local process, selecting an arbitrary local output path, or hashing a file outside the workspace, but it does not make a referenced on-disk spec trustworthy.
+
 ## Operator opt-outs
 
 For authenticated sessions or untrusted agent workflows, start the daemon with eval disabled:

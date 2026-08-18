@@ -410,6 +410,47 @@ mismatch regions, and the envelope (engine/viewport/caveats), same
 output as `hwatu diff`. One command answers both "is the DOM right"
 (`--eval`) and "does it look right" (`--baseline`).
 
+### Verification jobs: one contract for every harness
+
+Use `hwatu verify` when the verification contract also needs to own a
+preflight gate, local server lifecycle, responsive viewport sweep, source
+staleness check, and evidence report:
+
+```json
+{
+  "version": 1,
+  "name": "about-layout",
+  "cwd": "..",
+  "url": "http://127.0.0.1:4321/about",
+  "tier": "layout",
+  "preflight": { "argv": ["npm", "run", "build"], "timeout_ms": 120000 },
+  "server": { "argv": ["npm", "run", "dev", "--", "--host", "127.0.0.1"] },
+  "viewports": ["390x844", "768x1024", "1440x1000"],
+  "assertion_js": "return { ok: !!document.querySelector('main') };",
+  "source_files": ["src/pages/about.astro"]
+}
+```
+
+```sh
+hwatu verify .hwatu/about.verify.json
+```
+
+Commands are argv arrays, never shell strings. The client reuses an existing
+TCP server or starts and owns one, polls readiness, sends one daemon `check`,
+then cleans up the owned process group, including on SIGINT or SIGTERM. It
+fingerprints the parsed job contract, sources before and after browser work,
+and screenshot artifacts, then atomically writes the stable JSON report under
+`.hwatu/verify/<name>/report.json` by default. The `interactive` tier requires
+an explicit `assertion_js`.
+
+MCP clients call `verify_ui` with the same `spec_path`, so Jcode, Claude Code,
+and other MCP harnesses execute the same implementation rather than recreating
+the loop in prompts. Inline MCP specs are browser-only. They reject process
+commands, working-directory and output-path overrides, and source paths or
+symlinks that escape the MCP working directory. Their evidence is written to a
+runtime-scoped Hwatu directory. Command-bearing job files should be reviewed as
+executable project configuration.
+
 ### First render: verify before a baseline exists
 
 A new page has nothing trustworthy to pixel-diff against. Do not seed a
