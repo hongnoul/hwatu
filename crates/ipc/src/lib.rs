@@ -2,15 +2,14 @@
 // Copyright (c) 2026 Justin Hong
 //! Wire protocol between the `hana` client and the `hwatud` daemon.
 //!
-//! Newline-delimited JSON over a Unix domain socket. A connection may
-//! carry multiple [`Request`] lines and receives one [`Response`] line
-//! per request, strictly in request order. Legacy one-shot clients still
-//! work: connect, send one request, read one response, disconnect. A
-//! [`Request::Subscribe`] hands the connection to the event stream and
-//! does not accept further request lines.
+//! Newline-delimited JSON over a Unix domain socket or authenticated loopback
+//! TCP. A connection may carry multiple [`Request`] lines and receives one
+//! [`Response`] line per request, strictly in request order. Legacy one-shot
+//! clients still work: connect, send one request, read one response,
+//! disconnect. A [`Request::Subscribe`] hands the connection to the event
+//! stream and does not accept further request lines.
 
 use serde::{Deserialize, Serialize};
-#[cfg(unix)]
 use std::path::PathBuf;
 
 /// Resolve the daemon socket path: `$XDG_RUNTIME_DIR/hwatu.sock`,
@@ -34,6 +33,101 @@ pub fn socket_path() -> PathBuf {
 extern "C" {
     #[link_name = "geteuid"]
     fn libc_geteuid() -> u32;
+}
+
+/// Default port for hwatu's optional loopback TCP transport.
+pub const HWATU_TCP_PORT: u16 = 8741;
+
+/// Maximum serialized request or response frame, including its newline.
+pub const MAX_FRAME_BYTES: usize = 32 * 1024 * 1024;
+
+/// Maximum authentication frame. Tokens are intentionally tiny compared with
+/// normal protocol frames so unauthenticated peers cannot reserve large buffers.
+pub const MAX_AUTH_FRAME_BYTES: usize = 4 * 1024;
+
+/// Maximum decoded inline payload. Base64 expansion keeps one payload below
+/// [`MAX_FRAME_BYTES`] with more than 10 MiB left for JSON and metadata.
+pub const INLINE_MAX_BYTES: usize = 16 * 1024 * 1024;
+
+/// Where a client reaches the daemon. TCP authorities remain unresolved until
+/// connect time so clients can try every address returned for a hostname.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Endpoint {
+    Unix(PathBuf),
+    Tcp(String),
+}
+
+/// Resolve the configured endpoint. `HWATU_ENDPOINT` takes precedence over
+/// the legacy Unix-only `HWATU_SOCKET` setting.
+pub fn endpoint() -> Result<Endpoint, String> {
+    if let Ok(value) = std::env::var("HWATU_ENDPOINT") {
+        if !value.trim().is_empty() {
+            return parse_endpoint(value.trim());
+        }
+    }
+    #[cfg(unix)]
+    {
+        Ok(Endpoint::Unix(socket_path()))
+    }
+    #[cfg(not(unix))]
+    {
+        Err("HWATU_ENDPOINT must be set on this platform".to_string())
+    }
+}
+
+/// Parse one endpoint without touching DNS or process environment.
+pub fn parse_endpoint(value: &str) -> Result<Endpoint, String> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err("endpoint cannot be empty".to_string());
+    }
+    if let Some(authority) = value.strip_prefix("tcp://") {
+        validate_tcp_authority(authority)?;
+        return Ok(Endpoint::Tcp(authority.to_string()));
+    }
+    if let Some(path) = value.strip_prefix("unix://") {
+        if path.is_empty() {
+            return Err("unix endpoint path cannot be empty".to_string());
+        }
+        return Ok(Endpoint::Unix(PathBuf::from(path)));
+    }
+    if value.contains("://") {
+        return Err(format!("unsupported endpoint scheme in {value:?}"));
+    }
+    if value.contains(':') {
+        validate_tcp_authority(value)?;
+        return Ok(Endpoint::Tcp(value.to_string()));
+    }
+    Ok(Endpoint::Unix(PathBuf::from(value)))
+}
+
+fn validate_tcp_authority(authority: &str) -> Result<(), String> {
+    if authority.chars().any(char::is_whitespace) {
+        return Err(format!(
+            "whitespace is not allowed in TCP authority {authority:?}"
+        ));
+    }
+    let (_host, port) = if let Some(rest) = authority.strip_prefix('[') {
+        let (host, port) = rest
+            .split_once("]:")
+            .ok_or_else(|| format!("invalid bracketed TCP authority {authority:?}"))?;
+        if host.is_empty() || host.contains('[') || port.contains(':') {
+            return Err(format!("invalid TCP authority {authority:?}"));
+        }
+        (host, port)
+    } else {
+        let (host, port) = authority
+            .rsplit_once(':')
+            .ok_or_else(|| format!("TCP endpoint needs host:port, got {authority:?}"))?;
+        if host.is_empty() || host.contains(':') || host.contains('/') {
+            return Err(format!("invalid TCP host in {authority:?}"));
+        }
+        (host, port)
+    };
+    if port.parse::<u16>().ok().filter(|port| *port != 0).is_none() {
+        return Err(format!("invalid TCP port in {authority:?}"));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,6 +207,10 @@ pub enum Request {
         /// use this instead of scroll-and-shoot loops.
         #[serde(default)]
         full: bool,
+        /// Return PNG bytes in [`Response::Ok::data`] instead of writing a
+        /// daemon-host path.
+        #[serde(default, skip_serializing_if = "is_false")]
+        data: bool,
     },
     /// Block until the window's load reaches `until` (default:
     /// settled) or `timeout_ms` expires.
@@ -160,6 +258,9 @@ pub enum Request {
         /// Screenshot destination; implies `shot`.
         #[serde(default)]
         shot_path: Option<String>,
+        /// Return screenshot bytes inline for a remote client.
+        #[serde(default, skip_serializing_if = "is_false")]
+        shot_data: bool,
         /// Screenshot the full document instead of the viewport.
         #[serde(default)]
         full: bool,
@@ -170,12 +271,18 @@ pub enum Request {
         /// `--baseline` answers "does it look right".
         #[serde(default)]
         baseline: Option<String>,
+        /// Base64 PNG supplied by a client that cannot share daemon paths.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        baseline_data: Option<String>,
         /// Per-channel diff tolerance 0-255 (default 8); only with `baseline`.
         #[serde(default)]
         tolerance: Option<u8>,
         /// Write a mismatch heatmap PNG here; only with `baseline`.
         #[serde(default)]
         heatmap: Option<String>,
+        /// Return the generated heatmap inline instead of writing a path.
+        #[serde(default, skip_serializing_if = "is_false")]
+        heatmap_data: bool,
         /// Load stage gating eval/shot (default: settled).
         #[serde(default)]
         until: LoadStage,
@@ -229,16 +336,16 @@ pub enum Request {
     /// window back out of the user's way once it no longer needs
     /// human attention.
     Unfocus { id: u64 },
-    /// Set a `<input type=file>`'s files from a path on disk. The
-    /// daemon reads the file and injects it into the page as a `File`
-    /// via `DataTransfer`, the standard automation-harness technique
-    /// (programmatically clicking the OS picker is blocked by WebKit,
-    /// but assigning `input.files` is not).
+    /// Select a file through WebKit's native chooser. Local clients pass a
+    /// daemon-visible path. Remote clients pass base64 data that the daemon
+    /// stages privately before activating the same chooser path.
     Upload {
         #[serde(default)]
         id: Option<u64>,
         selector: String,
         path: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data: Option<String>,
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
@@ -475,6 +582,9 @@ pub enum Request {
         /// ...or a baseline PNG on disk (exactly one of the two).
         #[serde(default)]
         baseline: Option<String>,
+        /// Base64 PNG supplied by a remote client.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        baseline_data: Option<String>,
         /// Per-channel tolerance 0-255 before a pixel counts as
         /// different (default 8, forgiving of AA/compression noise).
         #[serde(default)]
@@ -483,6 +593,9 @@ pub enum Request {
         /// to this path.
         #[serde(default)]
         heatmap: Option<String>,
+        /// Return the generated heatmap inline instead of writing a path.
+        #[serde(default, skip_serializing_if = "is_false")]
+        heatmap_data: bool,
         /// Diff the full document instead of the visible viewport.
         #[serde(default)]
         full: bool,
@@ -1005,6 +1118,9 @@ pub enum Response {
         /// File path produced by a screenshot.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         path: Option<String>,
+        /// Base64 payload for transports that do not share a filesystem.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        data: Option<String>,
     },
     Err {
         message: String,
@@ -1019,6 +1135,7 @@ impl Response {
             adblock: None,
             value: None,
             path: None,
+            data: None,
         }
     }
     pub fn window(w: WindowInfo) -> Self {
@@ -1056,10 +1173,45 @@ impl Response {
         }
         r
     }
+    pub fn data(payload: impl Into<String>) -> Self {
+        let mut r = Response::ok();
+        if let Response::Ok { data, .. } = &mut r {
+            *data = Some(payload.into());
+        }
+        r
+    }
     pub fn err(message: impl Into<String>) -> Self {
         Response::Err {
             message: message.into(),
         }
+    }
+}
+
+/// First frame sent on every TCP connection.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AuthRequest {
+    pub token: String,
+}
+
+/// Authentication reply. An error is always followed by connection close.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum AuthReply {
+    Ok,
+    Err { message: String },
+}
+
+/// Canonical padded RFC 4648 base64 used by inline binary fields.
+pub mod base64 {
+    use base64::engine::general_purpose::STANDARD;
+    use base64::Engine;
+
+    pub fn encode(data: &[u8]) -> String {
+        STANDARD.encode(data)
+    }
+
+    pub fn decode(input: &str) -> Result<Vec<u8>, String> {
+        STANDARD.decode(input).map_err(|error| error.to_string())
     }
 }
 
@@ -1156,6 +1308,132 @@ fn is_false(v: &bool) -> bool {
 mod tests {
     use super::*;
 
+    #[test]
+    fn endpoint_parser_distinguishes_tcp_and_unix() {
+        assert_eq!(
+            parse_endpoint("tcp://127.0.0.1:8741"),
+            Ok(Endpoint::Tcp("127.0.0.1:8741".into()))
+        );
+        assert_eq!(
+            parse_endpoint("[::1]:8741"),
+            Ok(Endpoint::Tcp("[::1]:8741".into()))
+        );
+        assert_eq!(
+            parse_endpoint("tcp://daemon.internal:9000"),
+            Ok(Endpoint::Tcp("daemon.internal:9000".into()))
+        );
+        assert_eq!(
+            parse_endpoint("unix:///run/user/1000/hwatu.sock"),
+            Ok(Endpoint::Unix(PathBuf::from("/run/user/1000/hwatu.sock")))
+        );
+        assert_eq!(
+            parse_endpoint("/tmp/hwatu.sock"),
+            Ok(Endpoint::Unix(PathBuf::from("/tmp/hwatu.sock")))
+        );
+    }
+
+    #[test]
+    fn endpoint_parser_rejects_ambiguous_or_malformed_tcp() {
+        for invalid in [
+            "",
+            "tcp://localhost",
+            "tcp://localhost:0",
+            "localhost:not-a-port",
+            "[::1]",
+            "tcp://[::1]:8741:9",
+            "tcp://local host:8741",
+            "http://localhost:8741",
+            "unix://",
+        ] {
+            assert!(
+                parse_endpoint(invalid).is_err(),
+                "malformed endpoint unexpectedly parsed: {invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn authentication_frames_have_stable_wire_shapes() {
+        let request = AuthRequest {
+            token: "correct horse battery staple".into(),
+        };
+        let wire = serde_json::to_string(&request).unwrap();
+        assert_eq!(wire, r#"{"token":"correct horse battery staple"}"#);
+        assert_eq!(serde_json::from_str::<AuthRequest>(&wire).unwrap(), request);
+
+        assert_eq!(
+            serde_json::to_string(&AuthReply::Ok).unwrap(),
+            r#"{"status":"ok"}"#
+        );
+        let denied = AuthReply::Err {
+            message: "authentication failed".into(),
+        };
+        assert_eq!(
+            serde_json::to_string(&denied).unwrap(),
+            r#"{"status":"err","message":"authentication failed"}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<AuthReply>(
+                r#"{"status":"err","message":"authentication failed"}"#
+            )
+            .unwrap(),
+            denied
+        );
+    }
+
+    #[test]
+    fn inline_base64_is_canonical_and_strict() {
+        for (plain, encoded) in [
+            (b"".as_slice(), ""),
+            (b"f".as_slice(), "Zg=="),
+            (b"fo".as_slice(), "Zm8="),
+            (b"foo".as_slice(), "Zm9v"),
+            (b"foobar".as_slice(), "Zm9vYmFy"),
+        ] {
+            assert_eq!(base64::encode(plain), encoded);
+            assert_eq!(base64::decode(encoded).unwrap(), plain);
+        }
+
+        for invalid in ["Zg", "Zg=", "Zg===", "Zh==", "Zm9v\n"] {
+            assert!(
+                base64::decode(invalid).is_err(),
+                "non-canonical base64 unexpectedly decoded: {invalid:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn maximum_inline_payload_fits_in_one_protocol_frame() {
+        let encoded_len = ((INLINE_MAX_BYTES + 2) / 3) * 4;
+        const ENVELOPE_ALLOWANCE: usize = 1024 * 1024;
+        assert!(encoded_len + ENVELOPE_ALLOWANCE < MAX_FRAME_BYTES);
+    }
+
+    #[test]
+    fn old_payload_requests_and_responses_default_new_fields() {
+        let Request::Screenshot { data, .. } =
+            serde_json::from_str::<Request>(r#"{"cmd":"screenshot","full":true}"#).unwrap()
+        else {
+            panic!("old screenshot request failed to parse");
+        };
+        assert!(!data);
+
+        let Request::Upload { data, .. } = serde_json::from_str::<Request>(
+            r#"{"cmd":"upload","selector":"input","path":"/tmp/file"}"#,
+        )
+        .unwrap() else {
+            panic!("old upload request failed to parse");
+        };
+        assert_eq!(data, None);
+
+        let Response::Ok { data, .. } =
+            serde_json::from_str::<Response>(r#"{"status":"ok"}"#).unwrap()
+        else {
+            panic!("old response failed to parse");
+        };
+        assert_eq!(data, None);
+    }
+
     /// An old client's check request (url as a bare string, no
     /// render/base fields) must deserialize unchanged: the wire
     /// invariant that lets sessions ship incrementally.
@@ -1237,10 +1515,13 @@ mod tests {
             eval: None,
             shot: false,
             shot_path: None,
+            shot_data: false,
             full: false,
             baseline: None,
+            baseline_data: None,
             tolerance: None,
             heatmap: None,
+            heatmap_data: false,
             until: LoadStage::Dom,
             keep: false,
             timeout_ms: None,
@@ -1306,10 +1587,13 @@ mod tests {
             eval: None,
             shot: false,
             shot_path: None,
+            shot_data: false,
             full: false,
             baseline: None,
+            baseline_data: None,
             tolerance: None,
             heatmap: None,
+            heatmap_data: false,
             until: LoadStage::default(),
             keep: false,
             timeout_ms: None,
@@ -1342,10 +1626,13 @@ mod tests {
             eval: None,
             shot: false,
             shot_path: None,
+            shot_data: false,
             full: false,
             baseline: None,
+            baseline_data: None,
             tolerance: None,
             heatmap: None,
+            heatmap_data: false,
             until: LoadStage::default(),
             keep: false,
             timeout_ms: None,
@@ -1551,10 +1838,13 @@ mod tests {
             eval: None,
             shot: false,
             shot_path: None,
+            shot_data: false,
             full: false,
             baseline: None,
+            baseline_data: None,
             tolerance: None,
             heatmap: None,
+            heatmap_data: false,
             until: LoadStage::default(),
             keep: false,
             timeout_ms: None,

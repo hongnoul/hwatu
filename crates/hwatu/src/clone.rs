@@ -543,6 +543,7 @@ fn crop_blank_canvases(cap: &serde_json::Value, live: u64, out: &Path) -> Result
             id: Some(live),
             path: Some(shot.to_string_lossy().into_owned()),
             full: false,
+            data: false,
         })?
         else {
             unreachable!()
@@ -1750,8 +1751,10 @@ fn verify_with(opts: &Opts, live: u64, clone_win: u64) -> Result<serde_json::Val
             id: live,
             other: Some(clone_win),
             baseline: None,
+            baseline_data: None,
             tolerance: opts.tolerance,
             heatmap: None,
+            heatmap_data: false,
             full: false,
             timeout_ms: Some(30_000),
         })?

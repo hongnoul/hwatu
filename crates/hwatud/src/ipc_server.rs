@@ -347,7 +347,12 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
         } => {
             return automation::navigate(daemon, id, url, wait, until, timeout_ms, reply);
         }
-        Request::Screenshot { id, path, full } => {
+        Request::Screenshot {
+            id,
+            path,
+            full,
+            data: _,
+        } => {
             return automation::screenshot(daemon, id, path, full, reply);
         }
         Request::WaitLoad {
@@ -364,10 +369,13 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
             eval,
             shot,
             shot_path,
+            shot_data: _,
             full,
             baseline,
+            baseline_data: _,
             tolerance,
             heatmap,
+            heatmap_data: _,
             until,
             keep,
             timeout_ms,
@@ -411,6 +419,7 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
             id,
             selector,
             path,
+            data: _,
             timeout_ms,
         } => {
             return automation::upload(daemon, id, selector, path, timeout_ms, reply);
@@ -543,8 +552,10 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
             id,
             other,
             baseline,
+            baseline_data: _,
             tolerance,
             heatmap,
+            heatmap_data: _,
             full,
             timeout_ms: _,
         } => {

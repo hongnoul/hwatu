@@ -136,6 +136,7 @@ fn main() {
             adblock,
             value,
             path,
+            ..
         }) => {
             if let Some(w) = window {
                 if json {
@@ -701,6 +702,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             id,
             path: rest.get(1).map(|s| s.to_string()),
             full,
+            data: false,
         }),
         Some("wait-load") => Ok(Request::WaitLoad {
             id,
@@ -771,10 +773,13 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 eval: eval_js,
                 shot,
                 shot_path,
+                shot_data: false,
                 full,
                 baseline,
+                baseline_data: None,
                 tolerance,
                 heatmap,
+                heatmap_data: false,
                 until: until.unwrap_or_default(),
                 keep,
                 timeout_ms,
@@ -830,10 +835,13 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 eval: eval_js,
                 shot,
                 shot_path,
+                shot_data: false,
                 full,
                 baseline,
+                baseline_data: None,
                 tolerance,
                 heatmap,
+                heatmap_data: false,
                 until: until.unwrap_or_default(),
                 keep,
                 timeout_ms,
@@ -879,6 +887,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 id,
                 selector,
                 path,
+                data: None,
                 timeout_ms,
             })
         }
@@ -969,8 +978,10 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             id: id.ok_or("usage: hwatu diff --id <id> (--other <id> | --baseline <png>) [--tolerance <n>] [--heatmap <png>] [--full]")?,
             other,
             baseline,
+            baseline_data: None,
             tolerance,
             heatmap,
+            heatmap_data: false,
             full,
             timeout_ms,
         }),
