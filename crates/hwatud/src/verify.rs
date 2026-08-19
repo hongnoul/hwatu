@@ -22,7 +22,6 @@ use crate::Daemon;
 use gtk::gdk;
 use gtk::gdk::prelude::TextureExt;
 use gtk::gio;
-use gtk::glib;
 use hwatu_ipc::Response;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -415,6 +414,79 @@ impl Frame {
             .map_err(|e| format!("cannot read baseline {path}: {e}"))?;
         Ok(Frame::from_texture(&texture))
     }
+
+    fn from_base64(encoded: &str) -> Result<Frame, String> {
+        let max_encoded = hwatu_ipc::INLINE_MAX_BYTES.div_ceil(3) * 4;
+        if encoded.len() > max_encoded {
+            return Err("inline baseline exceeds the encoded size limit".to_string());
+        }
+        let bytes = hwatu_ipc::base64::decode(encoded)
+            .map_err(|error| format!("inline baseline is not valid base64: {error}"))?;
+        if bytes.len() > hwatu_ipc::INLINE_MAX_BYTES {
+            return Err(format!(
+                "inline baseline is {} bytes; limit is {} bytes",
+                bytes.len(),
+                hwatu_ipc::INLINE_MAX_BYTES
+            ));
+        }
+        Frame::from_png_bytes(&bytes)
+    }
+
+    fn from_png_bytes(bytes: &[u8]) -> Result<Frame, String> {
+        const MAX_RGBA_BYTES: usize = 256 * 1024 * 1024;
+        let mut decoder = png::Decoder::new(std::io::Cursor::new(bytes));
+        decoder.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+        let mut reader = decoder
+            .read_info()
+            .map_err(|error| format!("cannot decode inline baseline PNG: {error}"))?;
+        let info = reader.info();
+        let width = info.width as usize;
+        let height = info.height as usize;
+        let rgba_size = width
+            .checked_mul(height)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .filter(|size| *size <= MAX_RGBA_BYTES)
+            .ok_or_else(|| "inline baseline dimensions are too large".to_string())?;
+        let output_size = reader.output_buffer_size();
+        if output_size > MAX_RGBA_BYTES {
+            return Err("decoded inline baseline is too large".to_string());
+        }
+        let mut decoded = vec![0; output_size];
+        let frame = reader
+            .next_frame(&mut decoded)
+            .map_err(|error| format!("cannot decode inline baseline PNG: {error}"))?;
+        let data = &decoded[..frame.buffer_size()];
+        let mut rgba = Vec::with_capacity(rgba_size);
+        match frame.color_type {
+            png::ColorType::Rgba => rgba.extend_from_slice(data),
+            png::ColorType::Rgb => {
+                for pixel in data.chunks_exact(3) {
+                    rgba.extend_from_slice(&[pixel[0], pixel[1], pixel[2], 255]);
+                }
+            }
+            png::ColorType::GrayscaleAlpha => {
+                for pixel in data.chunks_exact(2) {
+                    rgba.extend_from_slice(&[pixel[0], pixel[0], pixel[0], pixel[1]]);
+                }
+            }
+            png::ColorType::Grayscale => {
+                for value in data {
+                    rgba.extend_from_slice(&[*value, *value, *value, 255]);
+                }
+            }
+            png::ColorType::Indexed => {
+                return Err("PNG palette expansion unexpectedly remained indexed".to_string());
+            }
+        }
+        if rgba.len() != rgba_size {
+            return Err("decoded inline baseline has inconsistent dimensions".to_string());
+        }
+        Ok(Frame {
+            width,
+            height,
+            rgba,
+        })
+    }
 }
 
 /// Compare two frames. Overlapping area is diffed pixel-by-pixel with
@@ -430,10 +502,18 @@ struct DiffResult {
     union_h: usize,
 }
 
-fn diff_frames(a: &Frame, b: &Frame, tolerance: u8) -> DiffResult {
+fn diff_frames(a: &Frame, b: &Frame, tolerance: u8) -> Result<DiffResult, String> {
+    const MAX_DIFF_PIXELS: usize = 64 * 1024 * 1024;
     let union_w = a.width.max(b.width);
     let union_h = a.height.max(b.height);
-    let total = union_w * union_h;
+    let total = union_w
+        .checked_mul(union_h)
+        .filter(|pixels| *pixels <= MAX_DIFF_PIXELS)
+        .ok_or_else(|| {
+            format!(
+                "diff union canvas {union_w}x{union_h} exceeds the {MAX_DIFF_PIXELS}-pixel limit"
+            )
+        })?;
     let mut mask = vec![false; total];
     let mut mismatched = 0;
     let tol = tolerance as i16;
@@ -458,13 +538,13 @@ fn diff_frames(a: &Frame, b: &Frame, tolerance: u8) -> DiffResult {
             }
         }
     }
-    DiffResult {
+    Ok(DiffResult {
         total,
         mismatched,
         mask,
         union_w,
         union_h,
-    }
+    })
 }
 
 /// Coarse mismatch regions: the union canvas is cut into a grid of
@@ -548,7 +628,7 @@ fn mismatch_regions(diff: &DiffResult) -> Vec<serde_json::Value> {
 /// Write a heatmap PNG: frame `a` dimmed to 1/3 brightness, mismatched
 /// pixels painted red. The picture an agent (or human) opens to see
 /// *where* the copy is wrong.
-fn write_heatmap(a: &Frame, diff: &DiffResult, path: &str) -> Result<(), String> {
+fn heatmap_png(a: &Frame, diff: &DiffResult) -> Result<Vec<u8>, String> {
     let (w, h) = (diff.union_w, diff.union_h);
     let mut out = vec![0u8; w * h * 4];
     for y in 0..h {
@@ -568,17 +648,18 @@ fn write_heatmap(a: &Frame, diff: &DiffResult, path: &str) -> Result<(), String>
             }
         }
     }
-    let bytes = glib::Bytes::from_owned(out);
-    let texture = gdk::MemoryTexture::new(
-        w as i32,
-        h as i32,
-        gdk::MemoryFormat::R8g8b8a8,
-        &bytes,
-        w * 4,
-    );
-    texture
-        .save_to_png(path)
-        .map_err(|e| format!("heatmap write to {path} failed: {e}"))
+    let mut png = Vec::with_capacity(out.len() / 2 + 64);
+    let mut encoder = png::Encoder::new(&mut png, w as u32, h as u32);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    encoder.set_compression(png::Compression::Fast);
+    encoder.set_filter(png::FilterType::Sub);
+    let mut writer = encoder.write_header().map_err(|error| error.to_string())?;
+    writer
+        .write_image_data(&out)
+        .map_err(|error| error.to_string())?;
+    writer.finish().map_err(|error| error.to_string())?;
+    Ok(png)
 }
 
 /// Capture a window's frame asynchronously, then hand it to `done`.
@@ -618,20 +699,19 @@ fn diff_value(
     b: &Frame,
     tolerance: u8,
     heatmap: Option<String>,
+    heatmap_data: bool,
     full: bool,
 ) -> Result<serde_json::Value, String> {
-    let result = diff_frames(a, b, tolerance);
+    let result = diff_frames(a, b, tolerance)?;
     let match_percent = if result.total == 0 {
         100.0
     } else {
         100.0 * (result.total - result.mismatched) as f64 / result.total as f64
     };
     let regions = mismatch_regions(&result);
-    let mut heatmap_path = None;
-    if let Some(path) = heatmap {
-        write_heatmap(a, &result, &path)?;
-        heatmap_path = Some(path);
-    }
+    let heatmap_png = (heatmap.is_some() || heatmap_data)
+        .then(|| heatmap_png(a, &result))
+        .transpose()?;
     // The envelope: exactly what this score is a claim about, and
     // nothing more. A diff verifies one engine at one viewport at
     // one moment; scores quoted without their envelope get read as
@@ -658,8 +738,21 @@ fn diff_value(
         "regions": regions,
         "envelope": envelope,
     });
-    if let Some(p) = heatmap_path {
-        value["heatmap"] = serde_json::Value::String(p);
+    if let (Some(path), Some(png)) = (heatmap, heatmap_png.as_ref()) {
+        std::fs::write(&path, png)
+            .map_err(|error| format!("heatmap write to {path} failed: {error}"))?;
+        value["heatmap"] = serde_json::Value::String(path);
+    }
+    if heatmap_data {
+        let png = heatmap_png.expect("heatmap requested above");
+        if png.len() > hwatu_ipc::INLINE_MAX_BYTES {
+            return Err(format!(
+                "encoded heatmap is {} bytes; inline limit is {} bytes",
+                png.len(),
+                hwatu_ipc::INLINE_MAX_BYTES
+            ));
+        }
+        value["heatmap_data"] = serde_json::Value::String(hwatu_ipc::base64::encode(&png));
     }
     Ok(value)
 }
@@ -667,24 +760,65 @@ fn diff_value(
 /// Diff window `id` against a baseline PNG and hand the structured
 /// diff JSON to `done`. The callback shape (instead of a `Reply`)
 /// lets `check` embed the diff as one field of its combined reply.
+pub struct DiffOptions {
+    pub tolerance: Option<u8>,
+    pub heatmap: Option<String>,
+    pub heatmap_data: bool,
+    pub full: bool,
+}
+
 pub fn diff_against_baseline(
     daemon: &Rc<Daemon>,
     id: u64,
     baseline: String,
-    tolerance: Option<u8>,
-    heatmap: Option<String>,
-    full: bool,
+    options: DiffOptions,
     done: Box<dyn FnOnce(Result<serde_json::Value, String>)>,
 ) {
-    let tolerance = tolerance.unwrap_or(8);
+    let tolerance = options.tolerance.unwrap_or(8);
     capture(
         daemon,
         id,
-        full,
+        options.full,
         Box::new(move |a| {
             let value = a.and_then(|a| {
                 let b = Frame::from_png(&baseline)?;
-                diff_value(&a, &b, tolerance, heatmap, full)
+                diff_value(
+                    &a,
+                    &b,
+                    tolerance,
+                    options.heatmap,
+                    options.heatmap_data,
+                    options.full,
+                )
+            });
+            done(value);
+        }),
+    );
+}
+
+pub fn diff_against_baseline_data(
+    daemon: &Rc<Daemon>,
+    id: u64,
+    baseline_data: String,
+    options: DiffOptions,
+    done: Box<dyn FnOnce(Result<serde_json::Value, String>)>,
+) {
+    let tolerance = options.tolerance.unwrap_or(8);
+    capture(
+        daemon,
+        id,
+        options.full,
+        Box::new(move |a| {
+            let value = a.and_then(|a| {
+                let b = Frame::from_base64(&baseline_data)?;
+                diff_value(
+                    &a,
+                    &b,
+                    tolerance,
+                    options.heatmap,
+                    options.heatmap_data,
+                    options.full,
+                )
             });
             done(value);
         }),
@@ -699,27 +833,37 @@ pub fn diff(
     id: u64,
     other: Option<u64>,
     baseline: Option<String>,
+    baseline_data: Option<String>,
     tolerance: Option<u8>,
     heatmap: Option<String>,
+    heatmap_data: bool,
     full: bool,
     reply: Reply,
 ) {
     let tolerance = tolerance.unwrap_or(8);
-    if other.is_some() == baseline.is_some() {
+    let inputs = usize::from(other.is_some())
+        + usize::from(baseline.is_some())
+        + usize::from(baseline_data.is_some());
+    if inputs != 1 {
         return reply(Response::err(
-            "pass exactly one of --other <window id> or --baseline <png path>",
+            "pass exactly one of --other, --baseline, or inline baseline data",
         ));
     }
 
     let finish = move |a: Frame, b: Frame, reply: Reply| match diff_value(
-        &a, &b, tolerance, heatmap, full,
+        &a,
+        &b,
+        tolerance,
+        heatmap,
+        heatmap_data,
+        full,
     ) {
         Ok(value) => reply(Response::value(value)),
         Err(e) => reply(Response::err(e)),
     };
 
-    match (other, baseline) {
-        (None, Some(path)) => {
+    match (other, baseline, baseline_data) {
+        (None, Some(path), None) => {
             capture(
                 daemon,
                 id,
@@ -730,7 +874,18 @@ pub fn diff(
                 }),
             );
         }
-        (Some(other_id), None) => {
+        (None, None, Some(encoded)) => {
+            capture(
+                daemon,
+                id,
+                full,
+                Box::new(move |a| match (a, Frame::from_base64(&encoded)) {
+                    (Ok(a), Ok(b)) => finish(a, b, reply),
+                    (Err(e), _) | (_, Err(e)) => reply(Response::err(e)),
+                }),
+            );
+        }
+        (Some(other_id), None, None) => {
             // Capture sequentially: both captures run on the GTK main
             // loop anyway, and sequencing keeps the state machine flat.
             let daemon2 = daemon.clone();
@@ -768,7 +923,51 @@ pub fn diff(
 
 #[cfg(test)]
 mod tests {
-    use super::corrected_allocation;
+    use super::{corrected_allocation, diff_frames, diff_value, Frame};
+
+    #[test]
+    fn extreme_aspect_ratios_cannot_expand_the_union_canvas() {
+        let tall = Frame {
+            width: 1,
+            height: 10_000,
+            rgba: vec![0; 10_000 * 4],
+        };
+        let wide = Frame {
+            width: 10_000,
+            height: 1,
+            rgba: vec![0; 10_000 * 4],
+        };
+        let Err(error) = diff_frames(&tall, &wide, 0) else {
+            panic!("oversized union canvas was accepted");
+        };
+        assert!(error.contains("10000x10000"));
+        assert!(error.contains("pixel limit"));
+    }
+
+    #[test]
+    fn inline_png_decode_and_heatmap_encode_never_touch_temp_paths() {
+        let mut baseline = Vec::new();
+        {
+            let mut encoder = png::Encoder::new(&mut baseline, 1, 1);
+            encoder.set_color(png::ColorType::Rgb);
+            encoder.set_depth(png::BitDepth::Eight);
+            let mut writer = encoder.write_header().unwrap();
+            writer.write_image_data(&[1, 2, 3]).unwrap();
+        }
+        let decoded = Frame::from_png_bytes(&baseline).unwrap();
+        assert_eq!((decoded.width, decoded.height), (1, 1));
+        assert_eq!(decoded.rgba, [1, 2, 3, 255]);
+
+        let actual = Frame {
+            width: 1,
+            height: 1,
+            rgba: vec![255, 255, 255, 255],
+        };
+        let value = diff_value(&actual, &decoded, 0, None, true, false).unwrap();
+        let heatmap = value["heatmap_data"].as_str().unwrap();
+        let bytes = hwatu_ipc::base64::decode(heatmap).unwrap();
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+    }
 
     /// The regression this pins: `resize WxH` must request the CSS
     /// size as-is (logical px == CSS px in WebKitGTK), never W*dpr.

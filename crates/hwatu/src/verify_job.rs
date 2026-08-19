@@ -12,7 +12,7 @@
 use hwatu_ipc::{LoadStage, Request, Response, Viewport};
 use serde_json::{json, Value};
 use std::fs::{self, File, OpenOptions};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::OpenOptionsExt;
@@ -595,10 +595,13 @@ fn dispatch_check(spec: &VerifySpec) -> Result<Value, String> {
         eval: Some(spec.assertion_js.clone()),
         shot: true,
         shot_path: Some(shot_path.to_string_lossy().into_owned()),
+        shot_data: false,
         full: spec.full,
         baseline: None,
+        baseline_data: None,
         tolerance: None,
         heatmap: None,
+        heatmap_data: false,
         until: LoadStage::Settled,
         keep: false,
         timeout_ms: spec.timeout_ms,
@@ -1123,18 +1126,7 @@ fn fnv(value: &str) -> u64 {
 }
 
 fn transact(request: &Request) -> Result<Response, String> {
-    let mut stream =
-        crate::connect_or_spawn().map_err(|e| format!("cannot reach hwatu daemon: {e}"))?;
-    let mut payload = serde_json::to_vec(request).map_err(|e| e.to_string())?;
-    payload.push(b'\n');
-    stream
-        .write_all(&payload)
-        .map_err(|e| format!("write failed: {e}"))?;
-    let mut line = String::new();
-    BufReader::new(stream)
-        .read_line(&mut line)
-        .map_err(|e| format!("read failed: {e}"))?;
-    serde_json::from_str(line.trim()).map_err(|e| format!("bad daemon response: {e} ({line:?})"))
+    crate::transact_request(request).map_err(|e| format!("daemon request failed: {e}"))
 }
 
 #[cfg(test)]

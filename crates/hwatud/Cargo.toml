@@ -26,3 +26,4 @@ png = "0.17"
 wayland-client = "0.31"
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+subtle = "2.6"

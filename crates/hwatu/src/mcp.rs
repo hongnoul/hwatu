@@ -156,15 +156,9 @@ fn subscribe_events(args: &Value) -> Result<String, String> {
     let mut stream =
         crate::connect_or_spawn().map_err(|e| format!("cannot reach hwatu daemon: {e}"))?;
     let request = Request::Subscribe { kinds, window };
-    let mut payload = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
-    payload.push(b'\n');
-    stream
-        .write_all(&payload)
-        .map_err(|e| format!("write failed: {e}"))?;
+    crate::write_request(&mut stream, &request).map_err(|e| format!("write failed: {e}"))?;
     std::thread::spawn(move || {
-        let reader = std::io::BufReader::new(stream);
-        for line in reader.lines() {
-            let Ok(line) = line else { break };
+        while let Ok(Some(line)) = crate::read_text_frame(&mut stream) {
             let Ok(event) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };
@@ -182,18 +176,7 @@ fn subscribe_events(args: &Value) -> Result<String, String> {
 
 /// One request per connection, like the CLI.
 fn transact(request: &Request) -> Result<Response, String> {
-    let mut stream =
-        crate::connect_or_spawn().map_err(|e| format!("cannot reach hwatu daemon: {e}"))?;
-    let mut payload = serde_json::to_vec(request).map_err(|e| e.to_string())?;
-    payload.push(b'\n');
-    stream
-        .write_all(&payload)
-        .map_err(|e| format!("write failed: {e}"))?;
-    let mut line = String::new();
-    std::io::BufReader::new(stream)
-        .read_line(&mut line)
-        .map_err(|e| format!("read failed: {e}"))?;
-    serde_json::from_str(line.trim()).map_err(|e| format!("bad daemon response: {e} ({line:?})"))
+    crate::transact_request(request).map_err(|e| format!("daemon request failed: {e}"))
 }
 
 // ---- argument extraction helpers ----------------------------------
@@ -273,6 +256,7 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
             id,
             path: opt_str(args, "path"),
             full: opt_bool(args, "full").unwrap_or(false),
+            data: false,
         }),
         "wait_load" => Ok(Request::WaitLoad {
             id,
@@ -312,10 +296,13 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
                 eval: opt_str(args, "eval"),
                 shot: opt_bool(args, "shot").unwrap_or(false),
                 shot_path: opt_str(args, "shot_path"),
+                shot_data: false,
                 full: opt_bool(args, "full").unwrap_or(false),
                 baseline: opt_str(args, "baseline"),
+                baseline_data: None,
                 tolerance: opt_u64(args, "tolerance").map(|v| v.min(255) as u8),
                 heatmap: opt_str(args, "heatmap"),
+                heatmap_data: false,
                 until: parse_until(args)?,
                 keep: opt_bool(args, "keep").unwrap_or(false),
                 timeout_ms,
@@ -344,10 +331,13 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
                 eval: opt_str(args, "eval"),
                 shot: opt_bool(args, "shot").unwrap_or(false),
                 shot_path: opt_str(args, "shot_path"),
+                shot_data: false,
                 full: opt_bool(args, "full").unwrap_or(false),
                 baseline: opt_str(args, "baseline"),
+                baseline_data: None,
                 tolerance: opt_u64(args, "tolerance").map(|v| v.min(255) as u8),
                 heatmap: opt_str(args, "heatmap"),
+                heatmap_data: false,
                 until: parse_until(args)?,
                 keep: opt_bool(args, "keep").unwrap_or(false),
                 timeout_ms,
@@ -449,6 +439,7 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
             id,
             selector: req_str(args, "selector")?,
             path: req_str(args, "path")?,
+            data: None,
             timeout_ms,
         }),
         "challenge" => Ok(Request::Challenge {
@@ -517,8 +508,10 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
                 id: opt_u64(args, "id").ok_or("missing required argument: id")?,
                 other,
                 baseline,
+                baseline_data: None,
                 tolerance: opt_u64(args, "tolerance").map(|v| v.min(255) as u8),
                 heatmap: opt_str(args, "heatmap"),
+                heatmap_data: false,
                 full: opt_bool(args, "full").unwrap_or(false),
                 timeout_ms,
             })

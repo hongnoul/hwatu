@@ -32,6 +32,7 @@ mod observe;
 mod opfs;
 mod palette;
 mod passfill;
+mod private_files;
 mod prompts;
 mod reader;
 mod search;
@@ -135,10 +136,29 @@ pub struct Daemon {
     pub profiles: RefCell<HashMap<String, webkit6::NetworkSession>>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
+pub struct SecretToken(String);
+
+impl SecretToken {
+    pub(crate) fn as_bytes(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+}
+
+impl std::fmt::Debug for SecretToken {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("<redacted>")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SecurityConfig {
     pub eval_enabled: bool,
     pub ephemeral_profile: bool,
+    /// Optional loopback listener (`port` or a numeric loopback `host:port`).
+    pub tcp_listen: Option<String>,
+    /// Required whenever the TCP listener is enabled.
+    pub tcp_token: Option<SecretToken>,
 }
 
 /// One queued human hand-off (platform items 10-11).
@@ -157,6 +177,8 @@ impl Default for SecurityConfig {
         Self {
             eval_enabled: true,
             ephemeral_profile: false,
+            tcp_listen: None,
+            tcp_token: None,
         }
     }
 }
@@ -345,7 +367,7 @@ impl Daemon {
 /// the XDG data dir, so logins survive daemon restarts. All WebViews
 /// share the default session (persistence is what makes the shared
 /// engine feel like one browser instead of a fleet of incognito tabs).
-fn persist_cookies(security: SecurityConfig) {
+fn persist_cookies(security: &SecurityConfig) {
     if security.ephemeral_profile {
         println!("hwatud: ephemeral profile enabled; persistent cookies disabled");
         return;
@@ -471,15 +493,25 @@ fn main() -> glib::ExitCode {
     let security = match parse_security_args(std::env::args().skip(1)) {
         Ok(ParseSecurity::Run(security)) => security,
         Ok(ParseSecurity::Help) => {
-            println!("usage: hwatud [--no-eval] [--ephemeral-profile]");
+            println!(
+                "usage: hwatud [--no-eval] [--ephemeral-profile] \
+                 [--listen <port|loopback:port> --token-file <path>]"
+            );
             return glib::ExitCode::SUCCESS;
         }
         Err(message) => {
             eprintln!("hwatud: {message}");
-            eprintln!("usage: hwatud [--no-eval] [--ephemeral-profile]");
+            eprintln!(
+                "usage: hwatud [--no-eval] [--ephemeral-profile] \
+                 [--listen <port|loopback:port> --token-file <path>]"
+            );
             return glib::ExitCode::FAILURE;
         }
     };
+    // WebKit subprocesses inherit the daemon environment. Keep bearer-token
+    // material out of those less-trusted child processes after startup parsed it.
+    std::env::remove_var("HWATU_TOKEN");
+    std::env::remove_var("HWATU_TOKEN_FILE");
     // Keep RAM predictable: cap glibc arena explosion under GTK threads.
     std::env::set_var("MALLOC_ARENA_MAX", "2");
     // Full-refresh-rate scrolling: WebKitGTK's default DMA-BUF
@@ -554,14 +586,22 @@ fn main() -> glib::ExitCode {
     let app = gtk::Application::new(Some(APP_ID), gio::ApplicationFlags::NON_UNIQUE);
     // Daemon lives even with zero windows open.
     let _hold = app.hold();
+    // `connect_startup` accepts `Fn`, so keep the non-Copy secret in a
+    // one-shot cell rather than cloning bearer material into the signal closure.
+    let startup_security = Rc::new(RefCell::new(Some(security)));
 
     app.connect_activate(|_| {});
     app.connect_startup(move |app| {
+        let security = startup_security
+            .borrow_mut()
+            .take()
+            .expect("application startup runs once");
         bar::install_css();
         // Reclaim session blobs orphaned by a crashed/killed daemon.
         if !security.ephemeral_profile {
             window::sweep_discard_dir();
         }
+        persist_cookies(&security);
         let daemon = Daemon::new(app.clone(), security);
         // Cookies persist across daemon restarts. WebKit's default
         // network session keeps its jar in RAM only until told
@@ -569,7 +609,6 @@ fn main() -> glib::ExitCode {
         // browser: logins vanish, and sites like GitHub answer the
         // fresh jar with their strictest anti-bot login path (device
         // verification, captcha). Must run before any WebView exists.
-        persist_cookies(security);
         // Local media playback needs the web-process sandbox to see
         // the files. Before any web process exists (hard requirement).
         open_sandbox_for_media();
@@ -589,7 +628,7 @@ fn main() -> glib::ExitCode {
         // Crash resilience: a leftover session file means the previous
         // daemon died uncleanly (clean quits delete it); reopen its
         // windows. After the socket is up so spawn timing stays honest.
-        let leftovers = if security.ephemeral_profile {
+        let leftovers = if daemon.security.ephemeral_profile {
             Vec::new()
         } else {
             session::take()
@@ -656,7 +695,7 @@ fn parse_dpr(raw: Option<&str>) -> Option<i32> {
     raw?.trim().parse::<i32>().ok().filter(|&n| n > 0)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ParseSecurity {
     Run(SecurityConfig),
     Help,
@@ -668,6 +707,9 @@ where
     S: AsRef<str>,
 {
     let mut config = SecurityConfig::default();
+    let mut token_file = std::env::var_os("HWATU_TOKEN_FILE")
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from);
 
     if std::env::var_os("HWATUD_NO_EVAL").is_some_and(|v| !v.is_empty() && v != "0") {
         config.eval_enabled = false;
@@ -676,20 +718,55 @@ where
         config.ephemeral_profile = true;
     }
 
-    for arg in args {
+    if let Ok(value) = std::env::var("HWATU_LISTEN") {
+        if !value.trim().is_empty() {
+            config.tcp_listen = Some(value);
+        }
+    }
+
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
         match arg.as_ref() {
             "--no-eval" => config.eval_enabled = false,
             "--ephemeral-profile" | "--ephemeral" => config.ephemeral_profile = true,
+            "--listen" => {
+                let value = args
+                    .next()
+                    .ok_or("--listen requires <port|loopback:port>")?;
+                config.tcp_listen = Some(value.as_ref().to_string());
+            }
+            "--token-file" => {
+                let value = args.next().ok_or("--token-file requires <path>")?;
+                token_file = Some(std::path::PathBuf::from(value.as_ref()));
+            }
+            "--token" => {
+                return Err(
+                    "--token is intentionally unsupported because process arguments are public; \
+                     use --token-file or HWATU_TOKEN"
+                        .to_string(),
+                );
+            }
             "--help" | "-h" => return Ok(ParseSecurity::Help),
             other => return Err(format!("unknown argument `{other}`")),
         }
+    }
+
+    if config.tcp_listen.is_some() {
+        let token = match token_file {
+            Some(path) => hwatu_ipc::load_token_file(path)?,
+            None => std::env::var("HWATU_TOKEN").map_err(|_| {
+                "TCP listener requires --token-file, HWATU_TOKEN_FILE, or HWATU_TOKEN".to_string()
+            })?,
+        };
+        hwatu_ipc::validate_token(&token)?;
+        config.tcp_token = Some(SecretToken(token));
     }
     Ok(ParseSecurity::Run(config))
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_dpr, parse_security_args, ParseSecurity, SecurityConfig};
+    use super::{parse_dpr, parse_security_args, ParseSecurity, SecretToken, SecurityConfig};
 
     /// The DPR pin only accepts positive integers: GDK_SCALE cannot
     /// express fractions, and 0/negative are nonsense. Everything
@@ -722,6 +799,8 @@ mod tests {
             ParseSecurity::Run(SecurityConfig {
                 eval_enabled: false,
                 ephemeral_profile: true,
+                tcp_listen: None,
+                tcp_token: None,
             })
         );
     }
@@ -737,5 +816,14 @@ mod tests {
     #[test]
     fn security_args_reject_unknown_flags() {
         assert!(parse_security_args(["--cookies-please"]).is_err());
+        assert!(parse_security_args(["--token", "visible-secret"])
+            .unwrap_err()
+            .contains("process arguments are public"));
+    }
+
+    #[test]
+    fn bearer_secrets_are_redacted_from_debug_output() {
+        let token = SecretToken("do-not-print-this-secret-value!!".into());
+        assert_eq!(format!("{token:?}"), "<redacted>");
     }
 }

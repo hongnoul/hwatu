@@ -210,6 +210,7 @@ fn smoke_test() -> Result<String, String> {
             id: Some(id),
             path: Some(shot.to_string_lossy().into_owned()),
             full: false,
+            data: false,
         }) {
             Ok(Response::Ok { .. }) => match fs::metadata(&shot) {
                 Ok(meta) if meta.len() > 0 => {
@@ -686,6 +687,7 @@ fn demo(args: &[String]) -> i32 {
         id: Some(id),
         path: None,
         full: false,
+        data: false,
     }) {
         Ok(Response::Ok { path: Some(p), .. }) => println!("demo: screenshot -> {p}"),
         other => {
@@ -715,16 +717,7 @@ fn demo(args: &[String]) -> i32 {
 // ===================================================================
 
 fn send(request: &Request) -> Result<Response, String> {
-    use std::io::{BufRead, BufReader, Write};
-    let mut stream = crate::connect_or_spawn().map_err(|e| e.to_string())?;
-    let mut payload = serde_json::to_vec(request).expect("serialize request");
-    payload.push(b'\n');
-    stream.write_all(&payload).map_err(|e| e.to_string())?;
-    let mut line = String::new();
-    BufReader::new(stream)
-        .read_line(&mut line)
-        .map_err(|e| e.to_string())?;
-    serde_json::from_str(line.trim()).map_err(|e| format!("bad response: {e}"))
+    crate::transact_request(request).map_err(|e| e.to_string())
 }
 
 fn home_dir() -> Option<PathBuf> {

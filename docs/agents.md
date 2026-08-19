@@ -108,6 +108,38 @@ hwatu focus 3                       # materialize for the human
 hwatu close 3
 ```
 
+### Remote client over SSH
+
+`hwatud` can additionally expose authenticated TCP on loopback for an SSH
+tunnel. It never binds a non-loopback address. Create a private bearer-token
+file on the daemon host and start the opt-in listener:
+
+```sh
+install -d -m 700 ~/.config/hwatu
+umask 077
+openssl rand -hex 32 > ~/.config/hwatu/tcp-token
+hwatud --listen 8741 --token-file ~/.config/hwatu/tcp-token
+```
+
+Forward that loopback port from the client host, place the same token in a
+mode-0600 file there, and point `hwatu` at the tunnel:
+
+```sh
+ssh -N -L 8741:127.0.0.1:8741 browser-host
+
+HWATU_ENDPOINT=tcp://127.0.0.1:8741 \
+HWATU_TOKEN_FILE=~/.config/hwatu/tcp-token \
+  hwatu check localhost:3000 --shot=check.png
+```
+
+The CLI transparently transfers upload and baseline inputs inline and writes
+returned screenshots or heatmaps on the client host. Each decoded inline
+artifact is capped at 16 MiB. A response may contain one inline screenshot or
+heatmap: request both separately, request multi-viewport screenshots one
+viewport at a time, and include at most one artifact-producing action in a
+batch. Unix-socket behavior and `HWATU_SOCKET` remain unchanged;
+`HWATU_ENDPOINT` takes precedence when set.
+
 ### Requests
 
 | cmd | fields | what it does |

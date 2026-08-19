@@ -2,9 +2,33 @@
 
 ## Threat model
 
-hwatu is a local browser daemon for trusted local operators and trusted local automation. The `hwatud` daemon owns WebKitGTK browser windows and listens on a Unix-domain socket resolved by the `hwatu-ipc` crate, normally under the current user's runtime directory. The socket protocol is not an Internet-facing API and is not designed to authenticate mutually-distrusting local processes running as the same user.
+hwatu is a local browser daemon for trusted local operators and trusted local automation. The `hwatud` daemon owns WebKitGTK browser windows and normally listens on a Unix-domain socket resolved by the `hwatu-ipc` crate under the current user's runtime directory. An optional bearer-authenticated TCP listener binds loopback only and is intended for an SSH tunnel. Neither transport is an Internet-facing API or an authorization boundary between mutually distrusting processes running as the same user.
 
 Treat any process that can connect to the hwatu socket as able to drive the browser session. By default that includes opening pages, clicking, typing, reading page state, taking screenshots, and running page JavaScript through eval-capable automation. The human can see the same live session the agent drives, including authenticated pages and cookies.
+
+## Loopback TCP transport
+
+TCP is disabled unless `hwatud` receives `--listen` and a token through
+`--token-file`, `HWATU_TOKEN_FILE`, or `HWATU_TOKEN`. Prefer a private token
+file over an environment variable so the secret does not enter shell history
+or process environments. Token files must be regular files inaccessible to
+group and other users, and tokens must contain at least 32 bytes. The daemon
+removes token environment variables before WebKit child processes start.
+
+The listener rejects non-loopback addresses. Keep it behind an SSH tunnel and
+do not use port forwarding that exposes the client-side port to another host.
+Bearer authentication grants the complete browser-control capability described
+above; use a dedicated random token, copy it only through a secure channel,
+and rotate it if disclosure is possible. Authentication has a short deadline,
+wire frames and connection counts are bounded, and token comparison is
+constant-time. These controls reduce accidental exposure and resource abuse;
+they do not make the browser safe for untrusted remote clients.
+
+Remote file inputs are transferred inline, staged in private daemon-owned
+files when WebKit needs a native file chooser, and deleted after their window
+no longer needs them. Returned artifacts are materialized on the client host.
+Inline payloads are bounded, and remote requests cannot select arbitrary paths
+on the daemon host.
 
 ## Eval and prompt-injection risk
 
