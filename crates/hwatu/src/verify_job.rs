@@ -831,9 +831,15 @@ fn terminate_process_group(child: &mut Child) {
     let group = child.id();
     signal_process_group(group, SIGTERM);
     for _ in 0..20 {
+        // Reap the group leader before probing the process group. An exited but
+        // unreaped leader is still visible to kill(2), which otherwise burns the
+        // entire 500 ms grace period even when there are no surviving children.
+        let leader_exited = child.try_wait().ok().flatten().is_some();
         let alive = signal_process_group(group, 0);
         if !alive {
-            let _ = child.wait();
+            if !leader_exited {
+                let _ = child.wait();
+            }
             return;
         }
         std::thread::sleep(Duration::from_millis(25));
@@ -1346,5 +1352,24 @@ mod tests {
         changed["viewports"] = json!(["390x844"]);
         let changed = VerifySpec::parse(changed, Path::new("/repo")).unwrap();
         assert_ne!(spec_fingerprint(&first), spec_fingerprint(&changed));
+    }
+
+    #[test]
+    fn clean_process_group_shutdown_does_not_wait_the_full_grace_period() {
+        let mut child = Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let started = Instant::now();
+
+        terminate_process_group(&mut child);
+
+        assert!(
+            started.elapsed() < Duration::from_millis(400),
+            "clean shutdown took {:?}",
+            started.elapsed()
+        );
+        assert!(!signal_process_group(child.id(), 0));
     }
 }
