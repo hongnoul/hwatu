@@ -61,6 +61,9 @@ pub fn run() -> i32 {
             other => jsonrpc_error(id, -32601, &format!("method not found: {other}")),
         };
         send(&stdout, &reply);
+        if crate::verify_job::cancellation_requested() {
+            return 143;
+        }
     }
     0
 }
@@ -121,6 +124,9 @@ fn handle_tool_call(params: &Value) -> Result<String, String> {
     let args = params.get("arguments").cloned().unwrap_or(json!({}));
     if name == "subscribe_events" {
         return subscribe_events(&args);
+    }
+    if name == "verify_ui" {
+        return crate::verify_job::run_mcp(&args);
     }
     let mut request = build_request(name, &args)?;
     crate::normalize_request_paths(&mut request);
@@ -608,6 +614,18 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
                 "timeout_ms": prop("integer", "Wait timeout in ms."),
             }),
             &["url"],
+        ),
+        tool(
+            "verify_ui",
+            "Run one harness-neutral verification job from a versioned JSON spec: optional preflight, optional dev-server lifecycle with readiness polling, one responsive Hwatu check, screenshots, deterministic assertions, source-staleness detection, cleanup, and an evidence report. The same spec works with `hwatu verify` from any CLI harness.",
+            json!({
+                "spec_path": prop("string", "Path to a versioned Hwatu verification job JSON file."),
+                "spec": {
+                    "type": "object",
+                    "description": "Inline browser-only verification job object. Process commands and cwd/output-path overrides are rejected; source paths and symlinks cannot escape the MCP working directory. Evidence uses a runtime-scoped Hwatu directory. Use a reviewed spec_path for process commands. Use this or spec_path, not both."
+                },
+            }),
+            &[],
         ),
         tool(
             "check",
@@ -1267,6 +1285,10 @@ mod tests {
         });
         for def in tool_definitions() {
             let name = def["name"].as_str().unwrap();
+            if name == "verify_ui" {
+                // Client-local orchestration, not a daemon Request.
+                continue;
+            }
             let args = minimal
                 .get(name)
                 .unwrap_or_else(|| panic!("no minimal args for advertised tool {name}"));

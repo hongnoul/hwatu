@@ -9,6 +9,7 @@ mod clone;
 mod mcp;
 mod onboarding;
 mod update;
+mod verify_job;
 
 use hwatu_ipc::{
     AdblockCmd, ClockAction, LoadStage, OpenMode, PressKey, Request, Response, Viewport,
@@ -74,6 +75,9 @@ fn main() {
     }
     if args.first().map(String::as_str) == Some("mcp") {
         std::process::exit(mcp::run());
+    }
+    if args.first().map(String::as_str) == Some("verify") {
+        std::process::exit(verify_job::run_cli(&args[1..]));
     }
     if args.first().map(String::as_str) == Some("watch") {
         std::process::exit(watch(&args[1..]));
@@ -1232,6 +1236,7 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--profile <name|auto>] [--bac
 | adblock [on|off|status|update] \
 | doctor | setup [--client claude|cursor|generic|jcode] [--scope project|user] [--dry-run] [--undo] \
 | demo [url] [--focus] \
+| verify <spec.json> | verify --stdin \
 | mcp | update | ping | quit";
 
 /// `hwatu watch`: subscribe and stream events as JSON lines until the
