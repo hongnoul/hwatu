@@ -156,15 +156,9 @@ fn subscribe_events(args: &Value) -> Result<String, String> {
     let mut stream =
         crate::connect_or_spawn().map_err(|e| format!("cannot reach hwatu daemon: {e}"))?;
     let request = Request::Subscribe { kinds, window };
-    let mut payload = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
-    payload.push(b'\n');
-    stream
-        .write_all(&payload)
-        .map_err(|e| format!("write failed: {e}"))?;
+    crate::write_request(&mut stream, &request).map_err(|e| format!("write failed: {e}"))?;
     std::thread::spawn(move || {
-        let reader = std::io::BufReader::new(stream);
-        for line in reader.lines() {
-            let Ok(line) = line else { break };
+        while let Ok(Some(line)) = crate::read_text_frame(&mut stream) {
             let Ok(event) = serde_json::from_str::<Value>(&line) else {
                 continue;
             };
@@ -184,16 +178,8 @@ fn subscribe_events(args: &Value) -> Result<String, String> {
 fn transact(request: &Request) -> Result<Response, String> {
     let mut stream =
         crate::connect_or_spawn().map_err(|e| format!("cannot reach hwatu daemon: {e}"))?;
-    let mut payload = serde_json::to_vec(request).map_err(|e| e.to_string())?;
-    payload.push(b'\n');
-    stream
-        .write_all(&payload)
-        .map_err(|e| format!("write failed: {e}"))?;
-    let mut line = String::new();
-    std::io::BufReader::new(stream)
-        .read_line(&mut line)
-        .map_err(|e| format!("read failed: {e}"))?;
-    serde_json::from_str(line.trim()).map_err(|e| format!("bad daemon response: {e} ({line:?})"))
+    crate::write_request(&mut stream, request).map_err(|e| format!("write failed: {e}"))?;
+    crate::read_response(&mut stream).map_err(|e| format!("read failed: {e}"))
 }
 
 // ---- argument extraction helpers ----------------------------------

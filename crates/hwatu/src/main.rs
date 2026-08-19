@@ -14,7 +14,9 @@ mod verify_job;
 use hwatu_ipc::{
     AdblockCmd, ClockAction, LoadStage, OpenMode, PressKey, Request, Response, Viewport,
 };
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Read, Write};
+use std::net::{TcpStream, ToSocketAddrs};
+#[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::process::Command;
 use std::time::{Duration, Instant};
@@ -115,29 +117,27 @@ fn main() {
         }
     };
 
-    let mut payload = serde_json::to_vec(&request).expect("serialize request");
-    payload.push(b'\n');
-    if let Err(e) = stream.write_all(&payload) {
+    if let Err(e) = write_request(&mut stream, &request) {
         eprintln!("hwatu: write failed: {e}");
         std::process::exit(1);
     }
 
-    let mut line = String::new();
-    let mut reader = BufReader::new(stream);
-    if let Err(e) = reader.read_line(&mut line) {
-        eprintln!("hwatu: read failed: {e}");
-        std::process::exit(1);
-    }
-
-    match serde_json::from_str::<Response>(line.trim()) {
-        Ok(Response::Ok {
+    let response = match read_response(&mut stream) {
+        Ok(response) => response,
+        Err(e) => {
+            eprintln!("hwatu: read failed: {e}");
+            std::process::exit(1);
+        }
+    };
+    match response {
+        Response::Ok {
             window,
             windows,
             adblock,
             value,
             path,
             ..
-        }) => {
+        } => {
             if let Some(w) = window {
                 if json {
                     println!("{}", serde_json::to_string(&w).expect("serialize window"));
@@ -199,7 +199,7 @@ fn main() {
                 println!("{p}");
             }
         }
-        Ok(Response::Err { message }) => {
+        Response::Err { message } => {
             eprintln!("hwatu: {message}");
             // "unknown variant" means the running daemon predates this
             // CLI's protocol: the classic stale-daemon failure after an
@@ -212,10 +212,6 @@ fn main() {
                     env!("HWATU_GIT_HASH")
                 );
             }
-            std::process::exit(1);
-        }
-        Err(e) => {
-            eprintln!("hwatu: bad response: {e} ({line:?})");
             std::process::exit(1);
         }
     }
@@ -1302,16 +1298,13 @@ fn watch(args: &[String]) -> i32 {
         }
     };
     let request = Request::Subscribe { kinds, window };
-    let mut payload = serde_json::to_vec(&request).expect("serialize request");
-    payload.push(b'\n');
-    if let Err(e) = stream.write_all(&payload) {
+    if let Err(e) = write_request(&mut stream, &request) {
         eprintln!("hwatu: write failed: {e}");
         return 1;
     }
-    let reader = BufReader::new(stream);
-    for line in reader.lines() {
-        match line {
-            Ok(l) if !l.trim().is_empty() => {
+    loop {
+        match read_text_frame(&mut stream) {
+            Ok(Some(l)) if !l.trim().is_empty() => {
                 // An old daemon answers with a one-shot error and EOF;
                 // surface it as an error, not as an "event".
                 if l.contains("\"status\":\"err\"") {
@@ -1326,8 +1319,8 @@ fn watch(args: &[String]) -> i32 {
                 }
                 println!("{l}");
             }
-            Ok(_) => {}
-            Err(_) => break, // daemon went away
+            Ok(Some(_)) => {}
+            Ok(None) | Err(_) => break, // daemon went away
         }
     }
     0
@@ -1352,24 +1345,27 @@ fn expect_watch(request: Request) -> i32 {
         kinds: Some(vec!["expect".to_string()]),
         window,
     };
-    let mut payload = serde_json::to_vec(&sub).expect("serialize request");
-    payload.push(b'\n');
-    if let Err(e) = stream.write_all(&payload) {
+    if let Err(e) = write_request(&mut stream, &sub) {
         eprintln!("hwatu: write failed: {e}");
         return 1;
     }
 
-    let mut reader = BufReader::new(stream);
-    let mut first = String::new();
-    if let Err(e) = reader.read_line(&mut first) {
-        eprintln!("hwatu: read failed: {e}");
-        return 1;
-    }
+    let first = match read_text_frame(&mut stream) {
+        Ok(Some(first)) => first,
+        Ok(None) => {
+            eprintln!("hwatu: daemon closed before subscription acknowledgement");
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("hwatu: read failed: {e}");
+            return 1;
+        }
+    };
     if first.contains("\"status\":\"err\"") {
         eprintln!("hwatu: {first}");
         return 1;
     }
-    print!("{first}");
+    println!("{first}");
     let _ = std::io::stdout().flush();
 
     let mut install = match connect_or_spawn() {
@@ -1379,33 +1375,32 @@ fn expect_watch(request: Request) -> i32 {
             return 1;
         }
     };
-    let mut payload = serde_json::to_vec(&request).expect("serialize request");
-    payload.push(b'\n');
-    if let Err(e) = install.write_all(&payload) {
+    if let Err(e) = write_request(&mut install, &request) {
         eprintln!("hwatu: write failed: {e}");
         return 1;
     }
-    let mut install_line = String::new();
-    let mut install_reader = BufReader::new(install);
-    if let Err(e) = install_reader.read_line(&mut install_line) {
-        eprintln!("hwatu: read failed: {e}");
-        return 1;
-    }
-    if install_line.contains("\"status\":\"err\"") {
-        eprintln!("hwatu: {install_line}");
-        return 1;
+    match read_response(&mut install) {
+        Ok(Response::Ok { .. }) => {}
+        Ok(Response::Err { message }) => {
+            eprintln!("hwatu: {message}");
+            return 1;
+        }
+        Err(e) => {
+            eprintln!("hwatu: read failed: {e}");
+            return 1;
+        }
     }
 
-    for line in reader.lines() {
-        match line {
-            Ok(l) if !l.trim().is_empty() => {
+    loop {
+        match read_text_frame(&mut stream) {
+            Ok(Some(l)) if !l.trim().is_empty() => {
                 println!("{l}");
                 if expect_event_is_terminal_navigation(&l) {
                     break;
                 }
             }
-            Ok(_) => {}
-            Err(_) => break,
+            Ok(Some(_)) => {}
+            Ok(None) | Err(_) => break,
         }
     }
     0
@@ -1423,17 +1418,91 @@ fn expect_event_is_terminal_navigation(line: &str) -> bool {
             == Some(true)
 }
 
-pub(crate) fn connect_or_spawn() -> std::io::Result<UnixStream> {
-    let path = hwatu_ipc::socket_path();
-    if let Ok(s) = UnixStream::connect(&path) {
-        return Ok(s);
+/// One IPC stream. Unix sockets preserve the zero-configuration local path;
+/// TCP is restricted to loopback so the bearer token never crosses a
+/// plaintext network. Reach a remote daemon through an SSH tunnel.
+pub(crate) enum Connection {
+    #[cfg(unix)]
+    Unix(UnixStream),
+    Tcp(TcpStream),
+}
+
+impl Read for Connection {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        match self {
+            #[cfg(unix)]
+            Self::Unix(stream) => stream.read(buffer),
+            Self::Tcp(stream) => stream.read(buffer),
+        }
+    }
+}
+
+impl Write for Connection {
+    fn write(&mut self, buffer: &[u8]) -> std::io::Result<usize> {
+        match self {
+            #[cfg(unix)]
+            Self::Unix(stream) => stream.write(buffer),
+            Self::Tcp(stream) => stream.write(buffer),
+        }
     }
 
-    // No daemon: spawn hwatud (sibling binary or PATH) and poll the socket.
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            #[cfg(unix)]
+            Self::Unix(stream) => stream.flush(),
+            Self::Tcp(stream) => stream.flush(),
+        }
+    }
+}
+
+pub(crate) fn write_request(
+    connection: &mut BufReader<Connection>,
+    request: &Request,
+) -> std::io::Result<()> {
+    let frame = hwatu_ipc::encode_frame(request, hwatu_ipc::MAX_FRAME_BYTES)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+    connection.get_mut().write_all(&frame)
+}
+
+pub(crate) fn read_response(connection: &mut BufReader<Connection>) -> std::io::Result<Response> {
+    let frame = hwatu_ipc::read_frame(connection, hwatu_ipc::MAX_FRAME_BYTES)?
+        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))?;
+    serde_json::from_slice(&frame)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+}
+
+pub(crate) fn read_text_frame(
+    connection: &mut BufReader<Connection>,
+) -> std::io::Result<Option<String>> {
+    hwatu_ipc::read_frame(connection, hwatu_ipc::MAX_FRAME_BYTES)?
+        .map(|frame| {
+            String::from_utf8(frame)
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+        })
+        .transpose()
+}
+
+pub(crate) fn connect_or_spawn() -> std::io::Result<BufReader<Connection>> {
+    match hwatu_ipc::endpoint()
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?
+    {
+        hwatu_ipc::Endpoint::Unix(path) => connect_or_spawn_unix(path),
+        hwatu_ipc::Endpoint::Tcp(authority) => connect_tcp(&authority),
+    }
+}
+
+#[cfg(unix)]
+fn connect_or_spawn_unix(path: std::path::PathBuf) -> std::io::Result<BufReader<Connection>> {
+    if let Ok(stream) = UnixStream::connect(&path) {
+        return Ok(BufReader::new(Connection::Unix(stream)));
+    }
+
+    // No local daemon: spawn hwatud (sibling binary or PATH) and poll. A TCP
+    // endpoint never takes this path because its daemon may be on another host.
     let daemon = std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|d| d.join("hwatud")))
-        .filter(|p| p.exists())
+        .and_then(|path| path.parent().map(|dir| dir.join("hwatud")))
+        .filter(|path| path.exists())
         .unwrap_or_else(|| "hwatud".into());
     Command::new(daemon)
         .stdout(std::process::Stdio::null())
@@ -1442,8 +1511,8 @@ pub(crate) fn connect_or_spawn() -> std::io::Result<UnixStream> {
 
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        if let Ok(s) = UnixStream::connect(&path) {
-            return Ok(s);
+        if let Ok(stream) = UnixStream::connect(&path) {
+            return Ok(BufReader::new(Connection::Unix(stream)));
         }
         if Instant::now() > deadline {
             return Err(std::io::Error::new(
@@ -1455,13 +1524,150 @@ pub(crate) fn connect_or_spawn() -> std::io::Result<UnixStream> {
     }
 }
 
+#[cfg(not(unix))]
+fn connect_or_spawn_unix(_path: std::path::PathBuf) -> std::io::Result<BufReader<Connection>> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "Unix socket endpoints are unavailable on this platform",
+    ))
+}
+
+fn connect_tcp(authority: &str) -> std::io::Result<BufReader<Connection>> {
+    let addresses: Vec<_> = authority
+        .to_socket_addrs()?
+        .filter(|address| address.ip().is_loopback())
+        .collect();
+    if addresses.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "TCP endpoints must resolve to loopback; use an SSH tunnel for a remote daemon",
+        ));
+    }
+
+    let mut last_error = None;
+    let mut stream = None;
+    for address in addresses {
+        match TcpStream::connect_timeout(&address, Duration::from_secs(5)) {
+            Ok(connected) => {
+                stream = Some(connected);
+                break;
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+    let stream = stream.ok_or_else(|| {
+        last_error.unwrap_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::ConnectionRefused,
+                "no TCP address connected",
+            )
+        })
+    })?;
+    stream.set_nodelay(true)?;
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(5)))?;
+
+    let token = client_token()?;
+    authenticate_tcp(stream, token)
+}
+
+fn authenticate_tcp(stream: TcpStream, token: String) -> std::io::Result<BufReader<Connection>> {
+    let request = hwatu_ipc::AuthRequest { token };
+    let frame = hwatu_ipc::encode_frame(&request, hwatu_ipc::MAX_AUTH_FRAME_BYTES)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+    let mut connection = BufReader::new(Connection::Tcp(stream));
+    connection.get_mut().write_all(&frame)?;
+
+    let reply = hwatu_ipc::read_frame(&mut connection, hwatu_ipc::MAX_AUTH_FRAME_BYTES)?
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "daemon closed the connection during authentication",
+            )
+        })?;
+    match serde_json::from_slice::<hwatu_ipc::AuthReply>(&reply)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?
+    {
+        hwatu_ipc::AuthReply::Ok => {}
+        hwatu_ipc::AuthReply::Err { message } => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("daemon authentication rejected: {message}"),
+            ));
+        }
+    }
+
+    if let Connection::Tcp(stream) = connection.get_mut() {
+        stream.set_read_timeout(None)?;
+        stream.set_write_timeout(None)?;
+    }
+    Ok(connection)
+}
+
+fn client_token() -> std::io::Result<String> {
+    let token = match std::env::var_os("HWATU_TOKEN_FILE").filter(|value| !value.is_empty()) {
+        Some(path) => hwatu_ipc::load_token_file(path)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?,
+        None => std::env::var("HWATU_TOKEN").map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "TCP requires HWATU_TOKEN or HWATU_TOKEN_FILE",
+            )
+        })?,
+    };
+    hwatu_ipc::validate_token(&token)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?;
+    Ok(token)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        is_current_gio_launch, is_onboarding_command, normalize_request_paths,
-        parse_with_default_mode, should_default_to_normal, OpenMode,
+        authenticate_tcp, is_current_gio_launch, is_onboarding_command, normalize_request_paths,
+        parse_with_default_mode, read_response, should_default_to_normal, OpenMode,
     };
-    use hwatu_ipc::{PressKey, Request};
+    use hwatu_ipc::{AuthReply, AuthRequest, PressKey, Request, Response};
+
+    #[test]
+    fn tcp_authentication_preserves_a_coalesced_following_frame() {
+        use std::io::Write as _;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let token = "0123456789abcdef0123456789abcdef".to_string();
+        let expected = token.clone();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let frame = hwatu_ipc::read_frame(&mut reader, hwatu_ipc::MAX_AUTH_FRAME_BYTES)
+                .unwrap()
+                .unwrap();
+            let request: AuthRequest = serde_json::from_slice(&frame).unwrap();
+            assert_eq!(request.token, expected);
+
+            let mut frames =
+                hwatu_ipc::encode_frame(&AuthReply::Ok, hwatu_ipc::MAX_AUTH_FRAME_BYTES).unwrap();
+            frames.extend(
+                hwatu_ipc::encode_frame(
+                    &Response::value(serde_json::json!({ "ready": true })),
+                    hwatu_ipc::MAX_FRAME_BYTES,
+                )
+                .unwrap(),
+            );
+            stream.write_all(&frames).unwrap();
+        });
+
+        let stream = std::net::TcpStream::connect(address).unwrap();
+        let mut connection = authenticate_tcp(stream, token).unwrap();
+        let Response::Ok {
+            value: Some(value), ..
+        } = read_response(&mut connection).unwrap()
+        else {
+            panic!("coalesced response did not survive authentication");
+        };
+        assert_eq!(value["ready"], true);
+        server.join().unwrap();
+    }
 
     #[test]
     fn onboarding_commands_are_handled_before_url_parsing() {

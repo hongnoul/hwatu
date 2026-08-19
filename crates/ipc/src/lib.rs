@@ -10,6 +10,7 @@
 //! stream and does not accept further request lines.
 
 use serde::{Deserialize, Serialize};
+use std::io::{self, BufRead};
 use std::path::PathBuf;
 
 /// Resolve the daemon socket path: `$XDG_RUNTIME_DIR/hwatu.sock`,
@@ -45,9 +46,121 @@ pub const MAX_FRAME_BYTES: usize = 32 * 1024 * 1024;
 /// normal protocol frames so unauthenticated peers cannot reserve large buffers.
 pub const MAX_AUTH_FRAME_BYTES: usize = 4 * 1024;
 
+/// Authentication token bounds. The minimum rejects guessable passwords; the
+/// maximum keeps the complete authentication frame comfortably bounded.
+pub const MIN_TOKEN_BYTES: usize = 32;
+pub const MAX_TOKEN_BYTES: usize = 1024;
+
 /// Maximum decoded inline payload. Base64 expansion keeps one payload below
 /// [`MAX_FRAME_BYTES`] with more than 10 MiB left for JSON and metadata.
 pub const INLINE_MAX_BYTES: usize = 16 * 1024 * 1024;
+
+pub fn validate_token(token: &str) -> Result<(), String> {
+    if token.len() < MIN_TOKEN_BYTES {
+        return Err(format!(
+            "authentication token must be at least {MIN_TOKEN_BYTES} bytes"
+        ));
+    }
+    if token.len() > MAX_TOKEN_BYTES {
+        return Err(format!(
+            "authentication token must not exceed {MAX_TOKEN_BYTES} bytes"
+        ));
+    }
+    Ok(())
+}
+
+/// Load a bearer token from a small private regular file. One conventional
+/// trailing CR/LF sequence is ignored. Unix group/other permissions are
+/// rejected so a copied token cannot silently become machine-readable.
+pub fn load_token_file(path: impl AsRef<std::path::Path>) -> Result<String, String> {
+    let path = path.as_ref();
+    let metadata = std::fs::metadata(path)
+        .map_err(|error| format!("cannot inspect token file {}: {error}", path.display()))?;
+    if !metadata.is_file() {
+        return Err(format!(
+            "token path {} is not a regular file",
+            path.display()
+        ));
+    }
+    if metadata.len() > (MAX_TOKEN_BYTES + 2) as u64 {
+        return Err(format!("token file {} is too large", path.display()));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o077 != 0 {
+            return Err(format!(
+                "token file {} must not be accessible by group or other users",
+                path.display()
+            ));
+        }
+    }
+    let token = std::fs::read_to_string(path)
+        .map_err(|error| format!("cannot read token file {}: {error}", path.display()))?
+        .trim_end_matches(['\r', '\n'])
+        .to_string();
+    validate_token(&token)?;
+    Ok(token)
+}
+
+/// Serialize one newline-delimited JSON frame while enforcing its wire limit.
+pub fn encode_frame<T: Serialize>(value: &T, max_bytes: usize) -> Result<Vec<u8>, String> {
+    let mut frame = serde_json::to_vec(value).map_err(|error| error.to_string())?;
+    if frame
+        .len()
+        .checked_add(1)
+        .is_none_or(|length| length > max_bytes)
+    {
+        return Err(format!(
+            "frame is {} bytes, exceeding the {max_bytes}-byte limit",
+            frame.len().saturating_add(1)
+        ));
+    }
+    frame.push(b'\n');
+    Ok(frame)
+}
+
+/// Read one newline-delimited frame without allowing `read_line` to allocate
+/// beyond the protocol limit. The returned bytes exclude the newline.
+pub fn read_frame<R: BufRead>(reader: &mut R, max_bytes: usize) -> io::Result<Option<Vec<u8>>> {
+    let mut frame = Vec::with_capacity(max_bytes.min(8 * 1024));
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return if frame.is_empty() {
+                Ok(None)
+            } else {
+                Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "connection closed in the middle of a frame",
+                ))
+            };
+        }
+
+        if let Some(newline) = available.iter().position(|byte| *byte == b'\n') {
+            let consumed = newline + 1;
+            if frame.len().saturating_add(consumed) > max_bytes {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("frame exceeds the {max_bytes}-byte limit"),
+                ));
+            }
+            frame.extend_from_slice(&available[..newline]);
+            reader.consume(consumed);
+            return Ok(Some(frame));
+        }
+
+        if frame.len().saturating_add(available.len()) >= max_bytes {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("frame exceeds the {max_bytes}-byte limit"),
+            ));
+        }
+        let consumed = available.len();
+        frame.extend_from_slice(available);
+        reader.consume(consumed);
+    }
+}
 
 /// Where a client reaches the daemon. TCP authorities remain unresolved until
 /// connect time so clients can try every address returned for a hostname.
@@ -1104,6 +1217,10 @@ pub enum AdblockCmd {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
+// This is a public, serde-facing wire enum. Boxing one success field only to
+// shrink the rare error value would make every client API less direct while
+// leaving the serialized protocol unchanged.
+#[allow(clippy::large_enum_variant)]
 pub enum Response {
     Ok {
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -1382,6 +1499,46 @@ mod tests {
     }
 
     #[test]
+    fn authentication_token_bounds_are_enforced() {
+        assert!(validate_token(&"x".repeat(MIN_TOKEN_BYTES - 1)).is_err());
+        assert!(validate_token(&"x".repeat(MIN_TOKEN_BYTES)).is_ok());
+        assert!(validate_token(&"x".repeat(MAX_TOKEN_BYTES)).is_ok());
+        assert!(validate_token(&"x".repeat(MAX_TOKEN_BYTES + 1)).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn token_file_must_be_small_private_and_regular() {
+        use std::io::Write;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+        let path = std::env::temp_dir().join(format!(
+            "hwatu-token-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let token = "0123456789abcdef0123456789abcdef";
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .unwrap();
+        writeln!(file, "{token}").unwrap();
+        drop(file);
+
+        assert_eq!(load_token_file(&path).unwrap(), token);
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        assert!(load_token_file(&path)
+            .unwrap_err()
+            .contains("group or other"));
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn inline_base64_is_canonical_and_strict() {
         for (plain, encoded) in [
             (b"".as_slice(), ""),
@@ -1404,9 +1561,47 @@ mod tests {
 
     #[test]
     fn maximum_inline_payload_fits_in_one_protocol_frame() {
-        let encoded_len = ((INLINE_MAX_BYTES + 2) / 3) * 4;
+        let encoded_len = INLINE_MAX_BYTES.div_ceil(3) * 4;
         const ENVELOPE_ALLOWANCE: usize = 1024 * 1024;
         assert!(encoded_len + ENVELOPE_ALLOWANCE < MAX_FRAME_BYTES);
+    }
+
+    #[test]
+    fn bounded_frame_helpers_preserve_following_frames() {
+        let first = AuthReply::Ok;
+        let second = Response::value(serde_json::json!({ "ready": true }));
+        let mut wire = encode_frame(&first, MAX_AUTH_FRAME_BYTES).unwrap();
+        wire.extend(encode_frame(&second, MAX_FRAME_BYTES).unwrap());
+
+        let mut reader = std::io::BufReader::with_capacity(3, wire.as_slice());
+        assert_eq!(
+            read_frame(&mut reader, MAX_AUTH_FRAME_BYTES).unwrap(),
+            Some(br#"{"status":"ok"}"#.to_vec())
+        );
+        let response = read_frame(&mut reader, MAX_FRAME_BYTES).unwrap().unwrap();
+        assert!(matches!(
+            serde_json::from_slice::<Response>(&response).unwrap(),
+            Response::Ok { value: Some(_), .. }
+        ));
+        assert_eq!(read_frame(&mut reader, MAX_FRAME_BYTES).unwrap(), None);
+    }
+
+    #[test]
+    fn bounded_frame_reader_rejects_oversize_and_truncated_frames() {
+        let mut exact = std::io::BufReader::new(&b"abc\n"[..]);
+        assert_eq!(read_frame(&mut exact, 4).unwrap(), Some(b"abc".to_vec()));
+
+        let mut oversize = std::io::BufReader::new(&b"abcd\n"[..]);
+        assert_eq!(
+            read_frame(&mut oversize, 4).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
+
+        let mut no_newline = std::io::BufReader::new(&b"abc"[..]);
+        assert_eq!(
+            read_frame(&mut no_newline, 4).unwrap_err().kind(),
+            io::ErrorKind::UnexpectedEof
+        );
     }
 
     #[test]

@@ -24,6 +24,8 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
 
+use crate::ipc_server::ServerConnection;
+
 /// Cap on bytes queued for one subscriber beyond what the kernel
 /// socket buffer absorbed. A reader this far behind is stuck, not
 /// slow; drop it rather than let the queue grow.
@@ -36,7 +38,9 @@ struct Subscriber {
     window: Option<u64>,
     /// Last sequence number sent (ack = 0).
     seq: Cell<u64>,
-    conn: gio::SocketConnection,
+    /// Owning this wrapper keeps the TCP connection permit until the
+    /// subscriber disconnects, including after request dispatch hands it off.
+    conn: Rc<ServerConnection>,
     queue: RefCell<VecDeque<Vec<u8>>>,
     queued_bytes: Cell<usize>,
     write_in_flight: Cell<bool>,
@@ -103,8 +107,7 @@ impl Broker {
 /// watches the read side so a client close unregisters immediately.
 pub fn subscribe(
     daemon: &Rc<crate::Daemon>,
-    conn: gio::SocketConnection,
-    input: gio::DataInputStream,
+    conn: Rc<ServerConnection>,
     kinds: Option<Vec<String>>,
     window: Option<u64>,
 ) {
@@ -127,7 +130,7 @@ pub fn subscribe(
     });
     daemon.events.subs.borrow_mut().push(sub.clone());
     enqueue(&sub, &ack);
-    watch_disconnect(daemon.clone(), sub, input);
+    watch_disconnect(daemon.clone(), sub);
 }
 
 /// Keep an async read pending on the subscriber's connection. A
@@ -142,10 +145,9 @@ pub fn subscribe(
 /// then asserts on the garbage length inside a C callback that
 /// cannot unwind, aborting the whole daemon. EOF is this watcher's
 /// *normal* completion, so that path is not usable here. The
-/// DataInputStream is still the read source so any bytes it already
-/// buffered are drained first.
-fn watch_disconnect(daemon: Rc<crate::Daemon>, sub: Rc<Subscriber>, input: gio::DataInputStream) {
-    input.clone().read_bytes_async(
+fn watch_disconnect(daemon: Rc<crate::Daemon>, sub: Rc<Subscriber>) {
+    let input = sub.conn.socket.input_stream();
+    input.read_bytes_async(
         256,
         glib::Priority::DEFAULT,
         gio::Cancellable::NONE,
@@ -153,7 +155,7 @@ fn watch_disconnect(daemon: Rc<crate::Daemon>, sub: Rc<Subscriber>, input: gio::
             match res {
                 // Stray input from a confused client: ignore it, keep
                 // watching for the close.
-                Ok(bytes) if !bytes.is_empty() => watch_disconnect(daemon, sub, input),
+                Ok(bytes) if !bytes.is_empty() => watch_disconnect(daemon, sub),
                 // EOF (empty read) or error: the client is gone.
                 _ => drop_subscriber(&daemon, &sub),
             }
@@ -163,7 +165,7 @@ fn watch_disconnect(daemon: Rc<crate::Daemon>, sub: Rc<Subscriber>, input: gio::
 
 fn drop_subscriber(daemon: &Rc<crate::Daemon>, sub: &Rc<Subscriber>) {
     sub.dead.set(true);
-    let _ = sub.conn.close(gio::Cancellable::NONE);
+    let _ = sub.conn.socket.close(gio::Cancellable::NONE);
     daemon
         .events
         .subs
@@ -178,14 +180,15 @@ fn enqueue(sub: &Rc<Subscriber>, event: &Event) {
     if sub.dead.get() {
         return;
     }
-    let Ok(mut line) = serde_json::to_vec(event) else {
+    let Ok(line) = hwatu_ipc::encode_frame(event, MAX_QUEUED_BYTES) else {
+        sub.dead.set(true);
+        let _ = sub.conn.socket.close(gio::Cancellable::NONE);
         return;
     };
-    line.push(b'\n');
     let queued = sub.queued_bytes.get() + line.len();
     if queued > MAX_QUEUED_BYTES {
         sub.dead.set(true);
-        let _ = sub.conn.close(gio::Cancellable::NONE);
+        let _ = sub.conn.socket.close(gio::Cancellable::NONE);
         return;
     }
     sub.queued_bytes.set(queued);
@@ -206,7 +209,7 @@ fn pump(sub: Rc<Subscriber>) {
     };
     sub.queued_bytes.set(sub.queued_bytes.get() - buf.len());
     sub.write_in_flight.set(true);
-    let out = sub.conn.output_stream();
+    let out = sub.conn.socket.output_stream();
     out.write_all_async(
         buf,
         glib::Priority::DEFAULT,

@@ -1,15 +1,109 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (c) 2026 Justin Hong
-//! Unix-socket IPC server, integrated with the GLib main loop so all
+//! Bounded Unix/TCP IPC server integrated with the GLib main loop so all
 //! window work happens on the GTK main thread.
 
 use crate::{adblock::Adblock, automation, window::BrowserWindow, Daemon};
 use gtk::gio;
 use gtk::gio::prelude::*;
 use gtk::glib;
-use hwatu_ipc::{AdblockCmd, BatchResult, BatchStepResult, BatchStepStatus, Request, Response};
+use hwatu_ipc::{
+    AdblockCmd, AuthReply, AuthRequest, BatchResult, BatchStepResult, BatchStepStatus, Request,
+    Response,
+};
 use std::cell::RefCell;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::Duration;
+use subtle::ConstantTimeEq;
+
+const MAX_TCP_CONNECTIONS: u32 = 64;
+const READ_CHUNK_BYTES: usize = 8 * 1024;
+const AUTH_TIMEOUT: Duration = Duration::from_secs(5);
+
+static TCP_CONNECTIONS: AtomicU32 = AtomicU32::new(0);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TransportKind {
+    Unix,
+    Tcp,
+}
+
+struct TcpPermit;
+
+impl TcpPermit {
+    fn acquire() -> Option<Self> {
+        TCP_CONNECTIONS
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                (current < MAX_TCP_CONNECTIONS).then_some(current + 1)
+            })
+            .ok()
+            .map(|_| Self)
+    }
+}
+
+impl Drop for TcpPermit {
+    fn drop(&mut self) {
+        TCP_CONNECTIONS.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+pub(crate) struct ServerConnection {
+    pub(crate) socket: gio::SocketConnection,
+    pub(crate) transport: TransportKind,
+    _permit: Option<TcpPermit>,
+}
+
+struct FrameBuffer(Vec<u8>);
+
+enum BufferedFrame {
+    Ready(Vec<u8>),
+    NeedMore,
+    TooLarge,
+}
+
+impl FrameBuffer {
+    fn take(&mut self, max_bytes: usize) -> BufferedFrame {
+        if let Some(newline) = self.0.iter().position(|byte| *byte == b'\n') {
+            if newline + 1 > max_bytes {
+                return BufferedFrame::TooLarge;
+            }
+            let remainder = self.0.split_off(newline + 1);
+            let mut frame = std::mem::replace(&mut self.0, remainder);
+            frame.pop();
+            return BufferedFrame::Ready(frame);
+        }
+        if self.0.len() >= max_bytes {
+            BufferedFrame::TooLarge
+        } else {
+            BufferedFrame::NeedMore
+        }
+    }
+}
+
+pub(crate) struct FrameReader {
+    connection: Rc<ServerConnection>,
+    buffer: RefCell<FrameBuffer>,
+}
+
+impl FrameReader {
+    fn new(connection: Rc<ServerConnection>) -> Rc<Self> {
+        Rc::new(Self {
+            connection,
+            buffer: RefCell::new(FrameBuffer(Vec::new())),
+        })
+    }
+}
+
+#[derive(Debug)]
+enum FrameReadError {
+    TooLarge,
+    Truncated,
+    Io,
+}
+
+type FrameCallback = Box<dyn FnOnce(Result<Option<Vec<u8>>, FrameReadError>)>;
 
 pub fn start(daemon: Rc<Daemon>) -> std::io::Result<()> {
     let path = hwatu_ipc::socket_path();
@@ -27,89 +121,263 @@ pub fn start(daemon: Rc<Daemon>) -> std::io::Result<()> {
         )
         .map_err(|e| std::io::Error::other(e.to_string()))?;
 
+    if let Some(configured) = daemon.security.tcp_listen.as_deref() {
+        let socket_address = parse_tcp_listen(configured)?;
+        let ip = gio::InetAddress::from_string(&socket_address.ip().to_string())
+            .ok_or_else(|| std::io::Error::other("could not construct TCP listen address"))?;
+        let address = gio::InetSocketAddress::new(&ip, socket_address.port());
+        listener
+            .add_address(
+                &address,
+                gio::SocketType::Stream,
+                gio::SocketProtocol::Tcp,
+                glib::Object::NONE,
+            )
+            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        println!("hwatud: authenticated TCP listening on {socket_address}");
+    }
+
     accept_next(listener, daemon);
     Ok(())
+}
+
+fn parse_tcp_listen(configured: &str) -> std::io::Result<SocketAddr> {
+    let address = if let Ok(port) = configured.parse::<u16>() {
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
+    } else {
+        configured.parse::<SocketAddr>().map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("invalid TCP listener {configured:?}; use port or numeric loopback:port"),
+            )
+        })?
+    };
+    if address.port() == 0 || !address.ip().is_loopback() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "TCP listener must use a nonzero port on a loopback address",
+        ));
+    }
+    Ok(address)
 }
 
 fn accept_next(listener: gio::SocketListener, daemon: Rc<Daemon>) {
     listener
         .clone()
         .accept_async(gio::Cancellable::NONE, move |res| {
-            if let Ok((conn, _)) = res {
-                handle_conn(conn, daemon.clone());
+            if let Ok((socket, _)) = res {
+                let transport = if matches!(
+                    socket.socket().family(),
+                    gio::SocketFamily::Ipv4 | gio::SocketFamily::Ipv6
+                ) {
+                    TransportKind::Tcp
+                } else {
+                    TransportKind::Unix
+                };
+                let permit = if transport == TransportKind::Tcp {
+                    let Some(permit) = TcpPermit::acquire() else {
+                        let _ = socket.close(gio::Cancellable::NONE);
+                        accept_next(listener, daemon);
+                        return;
+                    };
+                    let _ = socket.socket().set_option(6, 1, 1);
+                    Some(permit)
+                } else {
+                    None
+                };
+                let connection = Rc::new(ServerConnection {
+                    socket,
+                    transport,
+                    _permit: permit,
+                });
+                handle_conn(connection, daemon.clone());
             }
             accept_next(listener, daemon);
         });
 }
 
-fn handle_conn(conn: gio::SocketConnection, daemon: Rc<Daemon>) {
-    let input = gio::DataInputStream::new(&conn.input_stream());
-    read_next_request(conn, input, daemon);
+fn handle_conn(connection: Rc<ServerConnection>, daemon: Rc<Daemon>) {
+    let reader = FrameReader::new(connection);
+    if reader.connection.transport == TransportKind::Tcp {
+        authenticate(reader, daemon);
+    } else {
+        read_next_request(reader, daemon);
+    }
 }
 
-fn read_next_request(conn: gio::SocketConnection, input: gio::DataInputStream, daemon: Rc<Daemon>) {
-    // read_line_utf8_async, not read_line_async: the byte-slice
-    // variant's gio-rs trampoline reads an *uninitialized* length when
-    // the stream ends with no line (client connected and closed), and
-    // its slice assertion then aborts the daemon from a C callback
-    // that cannot unwind. The utf8 variant passes a null length
-    // pointer and models EOF as Ok(None). Requests are JSON, so utf8
-    // is not a restriction.
-    // Automation shares GTK's main context with the visible browser. Keep
-    // socket readiness below input, frame, and WebKit callbacks so a burst of
-    // agent commands cannot make keyboard or pointer events wait behind IPC.
-    input.clone().read_line_utf8_async(
+fn read_bounded_frame(
+    reader: Rc<FrameReader>,
+    max_bytes: usize,
+    cancellable: Option<gio::Cancellable>,
+    callback: FrameCallback,
+) {
+    match reader.buffer.borrow_mut().take(max_bytes) {
+        BufferedFrame::Ready(frame) => return callback(Ok(Some(frame))),
+        BufferedFrame::TooLarge => return callback(Err(FrameReadError::TooLarge)),
+        BufferedFrame::NeedMore => {}
+    }
+
+    let remaining = max_bytes - reader.buffer.borrow().0.len();
+    let input = reader.connection.socket.input_stream();
+    let cancellable_for_read = cancellable.clone();
+    input.read_bytes_async(
+        remaining.min(READ_CHUNK_BYTES),
         glib::Priority::DEFAULT_IDLE,
+        cancellable_for_read.as_ref(),
+        move |res| match res {
+            Ok(bytes) if bytes.is_empty() => {
+                let result = if reader.buffer.borrow().0.is_empty() {
+                    Ok(None)
+                } else {
+                    Err(FrameReadError::Truncated)
+                };
+                callback(result);
+            }
+            Ok(bytes) => {
+                reader.buffer.borrow_mut().0.extend_from_slice(&bytes);
+                read_bounded_frame(reader, max_bytes, cancellable, callback);
+            }
+            Err(_) => callback(Err(FrameReadError::Io)),
+        },
+    );
+}
+
+fn authenticate(reader: Rc<FrameReader>, daemon: Rc<Daemon>) {
+    let cancellable = gio::Cancellable::new();
+    let timer = Rc::new(RefCell::new(None));
+    let timer_for_timeout = timer.clone();
+    let cancellable_for_timeout = cancellable.clone();
+    let source = glib::timeout_add_local_once(AUTH_TIMEOUT, move || {
+        timer_for_timeout.borrow_mut().take();
+        cancellable_for_timeout.cancel();
+    });
+    *timer.borrow_mut() = Some(source);
+
+    read_bounded_frame(
+        reader.clone(),
+        hwatu_ipc::MAX_AUTH_FRAME_BYTES,
+        Some(cancellable),
+        Box::new(move |result| {
+            if let Some(source) = timer.borrow_mut().take() {
+                source.remove();
+            }
+            let authenticated = result
+                .ok()
+                .flatten()
+                .and_then(|frame| serde_json::from_slice::<AuthRequest>(&frame).ok())
+                .is_some_and(|request| {
+                    daemon.security.tcp_token.as_ref().is_some_and(|secret| {
+                        tokens_equal(request.token.as_bytes(), secret.as_bytes())
+                    })
+                });
+            if authenticated {
+                write_auth_reply(reader, daemon, AuthReply::Ok, true);
+            } else {
+                write_auth_reply(
+                    reader,
+                    daemon,
+                    AuthReply::Err {
+                        message: "authentication failed".to_string(),
+                    },
+                    false,
+                );
+            }
+        }),
+    );
+}
+
+fn tokens_equal(candidate: &[u8], expected: &[u8]) -> bool {
+    bool::from(candidate.ct_eq(expected))
+}
+
+fn write_auth_reply(reader: Rc<FrameReader>, daemon: Rc<Daemon>, reply: AuthReply, proceed: bool) {
+    let Ok(frame) = hwatu_ipc::encode_frame(&reply, hwatu_ipc::MAX_AUTH_FRAME_BYTES) else {
+        let _ = reader.connection.socket.close(gio::Cancellable::NONE);
+        return;
+    };
+    let output = reader.connection.socket.output_stream();
+    output.write_all_async(
+        frame,
+        glib::Priority::DEFAULT,
         gio::Cancellable::NONE,
-        move |res| {
-            let line = match res {
-                Ok(Some(l)) => l.to_string(),
-                // EOF before the next line (port scan, one-shot client
-                // disconnect, dead persistent client) or read error:
-                // nothing to answer.
-                Ok(None) | Err(_) => return,
+        move |result| {
+            if proceed && result.is_ok() {
+                read_next_request(reader, daemon);
+            } else {
+                let _ = reader.connection.socket.close(gio::Cancellable::NONE);
+            }
+        },
+    );
+}
+
+fn read_next_request(reader: Rc<FrameReader>, daemon: Rc<Daemon>) {
+    read_bounded_frame(
+        reader.clone(),
+        hwatu_ipc::MAX_FRAME_BYTES,
+        None,
+        Box::new(move |result| {
+            let frame = match result {
+                Ok(Some(frame)) => frame,
+                Ok(None) | Err(FrameReadError::Truncated | FrameReadError::Io) => return,
+                Err(FrameReadError::TooLarge) => {
+                    write_response(
+                        reader,
+                        daemon,
+                        Response::err("request frame exceeds protocol limit"),
+                        false,
+                    );
+                    return;
+                }
             };
-            let request = serde_json::from_str::<Request>(line.trim());
+            let request = serde_json::from_slice::<Request>(&frame);
             // Subscriptions keep the connection as an event stream: hand it
             // to the broker instead of the request/response loop. Everything
             // else (including parse errors) gets one response line, then the
             // loop waits for the next request or EOF.
             let request = match request {
                 Ok(Request::Subscribe { kinds, window }) => {
-                    return crate::events::subscribe(&daemon, conn, input, kinds, window);
+                    return crate::events::subscribe(
+                        &daemon,
+                        reader.connection.clone(),
+                        kinds,
+                        window,
+                    );
                 }
                 other => other,
             };
-            let conn_for_reply = conn.clone();
-            let input_for_reply = input.clone();
             let daemon_for_reply = daemon.clone();
             let reply: automation::Reply = Box::new(move |response: Response| {
-                let mut out = serde_json::to_vec(&response).unwrap_or_default();
-                out.push(b'\n');
-                let stream = conn_for_reply.output_stream();
-                let conn_for_next = conn_for_reply.clone();
-                let input_for_next = input_for_reply.clone();
-                let daemon_for_next = daemon_for_reply.clone();
-                stream.write_all_async(
-                    out,
-                    glib::Priority::DEFAULT,
-                    gio::Cancellable::NONE,
-                    move |res| {
-                        // Keep the connection strictly sequential: the next request
-                        // is not read until this response has finished writing. That
-                        // preserves correlation for clients that pipeline by order,
-                        // including deferred automation replies.
-                        if res.is_ok() {
-                            read_next_request(conn_for_next, input_for_next, daemon_for_next);
-                        } else {
-                            let _ = conn_for_next.close(gio::Cancellable::NONE);
-                        }
-                    },
-                );
+                write_response(reader, daemon_for_reply, response, true);
             });
             match request {
                 Ok(req) => dispatch(&daemon, req, reply),
                 Err(e) => reply(Response::err(format!("bad request: {e}"))),
+            }
+        }),
+    );
+}
+
+fn write_response(reader: Rc<FrameReader>, daemon: Rc<Daemon>, response: Response, proceed: bool) {
+    let frame = hwatu_ipc::encode_frame(&response, hwatu_ipc::MAX_FRAME_BYTES).or_else(|_| {
+        hwatu_ipc::encode_frame(
+            &Response::err("response frame exceeds protocol limit"),
+            hwatu_ipc::MAX_FRAME_BYTES,
+        )
+    });
+    let Ok(frame) = frame else {
+        let _ = reader.connection.socket.close(gio::Cancellable::NONE);
+        return;
+    };
+    let output = reader.connection.socket.output_stream();
+    output.write_all_async(
+        frame,
+        glib::Priority::DEFAULT,
+        gio::Cancellable::NONE,
+        move |result| {
+            if proceed && result.is_ok() {
+                read_next_request(reader, daemon);
+            } else {
+                let _ = reader.connection.socket.close(gio::Cancellable::NONE);
             }
         },
     );
@@ -1095,7 +1363,9 @@ fn is_loopback_host(input: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{finish_batch, normalize_url};
+    use super::{
+        finish_batch, normalize_url, parse_tcp_listen, tokens_equal, BufferedFrame, FrameBuffer,
+    };
     use hwatu_ipc::{BatchStepResult, BatchStepStatus, Request, Response};
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -1108,6 +1378,58 @@ mod tests {
             budget: None,
             timeout_ms: None,
         }
+    }
+
+    #[test]
+    fn bounded_frame_buffer_handles_fragmentation_and_pipelining() {
+        let mut buffer = FrameBuffer(br#"{"cmd":"pi"#.to_vec());
+        assert!(matches!(buffer.take(64), BufferedFrame::NeedMore));
+        buffer.0.extend_from_slice(b"ng\"}\nnext\n");
+        let BufferedFrame::Ready(first) = buffer.take(64) else {
+            panic!("first frame was not ready");
+        };
+        assert_eq!(first, br#"{"cmd":"ping"}"#);
+        let BufferedFrame::Ready(second) = buffer.take(64) else {
+            panic!("pipelined frame was not retained");
+        };
+        assert_eq!(second, b"next");
+    }
+
+    #[test]
+    fn bounded_frame_buffer_rejects_missing_or_late_delimiters() {
+        let mut exact_without_newline = FrameBuffer(vec![b'x'; 8]);
+        assert!(matches!(
+            exact_without_newline.take(8),
+            BufferedFrame::TooLarge
+        ));
+
+        let mut newline_too_late = FrameBuffer(b"12345678\n".to_vec());
+        assert!(matches!(newline_too_late.take(8), BufferedFrame::TooLarge));
+
+        let mut exact = FrameBuffer(b"1234567\n".to_vec());
+        assert!(matches!(exact.take(8), BufferedFrame::Ready(_)));
+    }
+
+    #[test]
+    fn tcp_listener_accepts_only_numeric_loopback() {
+        assert_eq!(
+            parse_tcp_listen("8741").unwrap(),
+            "127.0.0.1:8741".parse().unwrap()
+        );
+        assert!(parse_tcp_listen("127.0.0.1:8741").is_ok());
+        assert!(parse_tcp_listen("[::1]:8741").is_ok());
+        assert!(parse_tcp_listen("0").is_err());
+        assert!(parse_tcp_listen("0.0.0.0:8741").is_err());
+        assert!(parse_tcp_listen("192.0.2.1:8741").is_err());
+        assert!(parse_tcp_listen("localhost:8741").is_err());
+    }
+
+    #[test]
+    fn bearer_token_comparison_checks_full_bytes() {
+        let token = b"0123456789abcdef0123456789abcdef";
+        assert!(tokens_equal(token, token));
+        assert!(!tokens_equal(token, b"0123456789abcdef0123456789abcdeg"));
+        assert!(!tokens_equal(token, b"short"));
     }
 
     #[test]

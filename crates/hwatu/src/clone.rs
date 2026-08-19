@@ -30,7 +30,7 @@
 
 use hwatu_ipc::{LoadStage, OpenMode, Request, Response};
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::{BufRead, BufReader, Write};
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::Mutex;
@@ -151,16 +151,8 @@ impl Opts {
 /// one-shot per connection for everything except Subscribe).
 fn call(req: &Request) -> Result<Response, String> {
     let mut stream = crate::connect_or_spawn().map_err(|e| format!("cannot reach daemon: {e}"))?;
-    let mut payload = serde_json::to_vec(req).expect("serialize request");
-    payload.push(b'\n');
-    stream
-        .write_all(&payload)
-        .map_err(|e| format!("write: {e}"))?;
-    let mut line = String::new();
-    BufReader::new(stream)
-        .read_line(&mut line)
-        .map_err(|e| format!("read: {e}"))?;
-    serde_json::from_str::<Response>(line.trim()).map_err(|e| format!("bad response: {e}"))
+    crate::write_request(&mut stream, req).map_err(|e| format!("write: {e}"))?;
+    crate::read_response(&mut stream).map_err(|e| format!("read: {e}"))
 }
 
 /// Like [`call`], but unwraps `Response::Err` into this Err.
