@@ -743,6 +743,24 @@ fn wire_load_stage(
 /// pipeline (~80 ms to a settled load on a local fixture); navigating
 /// a warm window pays ~15 ms. Pooled windows are blanked, their
 /// console buffers drained, and closed after [`CHECK_POOL_TTL`] idle.
+fn validate_inline_check_outputs(
+    shot_data: bool,
+    heatmap_data: bool,
+    viewport_count: usize,
+) -> Result<(), &'static str> {
+    if shot_data && heatmap_data {
+        return Err(
+            "one check cannot return both inline screenshot and heatmap data; request them separately",
+        );
+    }
+    if shot_data && viewport_count > 1 {
+        return Err(
+            "inline screenshots support one viewport per check; request viewport screenshots separately",
+        );
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn check(
     daemon: &Rc<Daemon>,
@@ -752,10 +770,13 @@ pub fn check(
     eval_js: Option<String>,
     shot: bool,
     shot_path: Option<String>,
+    shot_data: bool,
     full: bool,
     baseline: Option<String>,
+    baseline_data: Option<String>,
     tolerance: Option<u8>,
     heatmap: Option<String>,
+    heatmap_data: bool,
     until: LoadStage,
     keep: bool,
     timeout_ms: Option<u64>,
@@ -783,6 +804,19 @@ pub fn check(
         return reply.send(Response::err(
             "pass `baseline_dir` (per-size baselines), not `baseline`, with `viewports`",
         ));
+    }
+    if baseline_data.is_some() && !viewports.is_empty() {
+        return reply.send(Response::err(
+            "inline baseline data is not supported with viewport sweeps",
+        ));
+    }
+    if baseline.is_some() && baseline_data.is_some() {
+        return reply.send(Response::err(
+            "baseline path and inline baseline data are mutually exclusive",
+        ));
+    }
+    if let Err(error) = validate_inline_check_outputs(shot_data, heatmap_data, viewports.len()) {
+        return reply.send(Response::err(error));
     }
     if let Some(html) = &render {
         if html.len() > hwatu_ipc::RENDER_MAX_BYTES {
@@ -876,12 +910,14 @@ pub fn check(
                 win_id,
                 viewports: viewports.clone(),
                 eval_js: eval_js.clone(),
-                shot: shot || shot_path.is_some(),
+                shot: shot || shot_path.is_some() || shot_data,
                 shot_path: shot_path.clone(),
+                shot_data,
                 full,
                 baseline_dir: baseline_dir.clone(),
                 tolerance,
                 heatmap: heatmap.clone(),
+                heatmap_data,
                 keep,
                 timeout_ms,
                 started,
@@ -970,7 +1006,7 @@ pub fn check(
                 }),
             );
         }
-        if shot || shot_path.is_some() {
+        if shot || shot_path.is_some() || shot_data {
             pending.set(pending.get() + 1);
             let finish = finish.clone();
             let result = result.clone();
@@ -979,10 +1015,16 @@ pub fn check(
                 Some(win_id),
                 shot_path,
                 full,
+                shot_data,
                 Box::new(move |resp| {
                     match resp {
                         Response::Ok { path: Some(p), .. } => {
                             result.borrow_mut()["shot"] = serde_json::json!(p);
+                        }
+                        Response::Ok {
+                            data: Some(data), ..
+                        } => {
+                            result.borrow_mut()["shot_data"] = serde_json::json!(data);
                         }
                         Response::Err { message } => {
                             result.borrow_mut()["shot"] = serde_json::json!({ "error": message });
@@ -1001,9 +1043,35 @@ pub fn check(
                 &daemon,
                 win_id,
                 png,
-                tolerance,
-                heatmap,
-                full,
+                crate::verify::DiffOptions {
+                    tolerance,
+                    heatmap: heatmap.clone(),
+                    heatmap_data,
+                    full,
+                },
+                Box::new(move |value| {
+                    result.borrow_mut()["diff"] = match value {
+                        Ok(v) => v,
+                        Err(e) => serde_json::json!({ "error": e }),
+                    };
+                    finish();
+                }),
+            );
+        }
+        if let Some(encoded) = baseline_data {
+            pending.set(pending.get() + 1);
+            let finish = finish.clone();
+            let result = result.clone();
+            crate::verify::diff_against_baseline_data(
+                &daemon,
+                win_id,
+                encoded,
+                crate::verify::DiffOptions {
+                    tolerance,
+                    heatmap,
+                    heatmap_data,
+                    full,
+                },
                 Box::new(move |value| {
                     result.borrow_mut()["diff"] = match value {
                         Ok(v) => v,
@@ -1061,10 +1129,12 @@ struct Sweep {
     eval_js: Option<String>,
     shot: bool,
     shot_path: Option<String>,
+    shot_data: bool,
     full: bool,
     baseline_dir: Option<String>,
     tolerance: Option<u8>,
     heatmap: Option<String>,
+    heatmap_data: bool,
     keep: bool,
     timeout_ms: Option<u64>,
     started: std::time::Instant,
@@ -1170,10 +1240,16 @@ fn sweep_pass(sweep: Rc<Sweep>, i: usize) {
                     Some(sweep.win_id),
                     path,
                     sweep.full,
+                    sweep.shot_data,
                     Box::new(move |resp| {
                         match resp {
                             Response::Ok { path: Some(p), .. } => {
                                 entry.borrow_mut()["shot"] = serde_json::json!(p);
+                            }
+                            Response::Ok {
+                                data: Some(data), ..
+                            } => {
+                                entry.borrow_mut()["shot_data"] = serde_json::json!(data);
                             }
                             Response::Err { message } => {
                                 entry.borrow_mut()["shot"] =
@@ -1198,9 +1274,12 @@ fn sweep_pass(sweep: Rc<Sweep>, i: usize) {
                     &sweep.daemon,
                     sweep.win_id,
                     baseline,
-                    sweep.tolerance,
-                    heatmap,
-                    sweep.full,
+                    crate::verify::DiffOptions {
+                        tolerance: sweep.tolerance,
+                        heatmap,
+                        heatmap_data: sweep.heatmap_data,
+                        full: sweep.full,
+                    },
                     Box::new(move |value| {
                         entry.borrow_mut()["diff"] = match value {
                             Ok(v) => v,
@@ -1552,6 +1631,7 @@ pub fn screenshot(
     id: Option<u64>,
     path: Option<String>,
     full: bool,
+    data: bool,
     reply: Reply,
 ) {
     let reply = OnceReply::new(reply);
@@ -1596,12 +1676,29 @@ pub fn screenshot(
                 let height = texture.height() as u32;
                 glib::spawn_future_local(async move {
                     let path = target.clone();
-                    let encoded = gio::spawn_blocking(move || {
-                        write_png(&path, &bytes, stride, width, height)
+                    let encoded = gio::spawn_blocking(move || -> Result<Vec<u8>, String> {
+                        let png = encode_png(&bytes, stride, width, height)?;
+                        if data {
+                            Ok(png)
+                        } else {
+                            std::fs::write(&path, png).map_err(|error| error.to_string())?;
+                            Ok(Vec::new())
+                        }
                     })
                     .await;
                     match encoded {
-                        Ok(Ok(())) => reply.send(Response::path(target.to_string_lossy())),
+                        Ok(Ok(png)) if data => {
+                            if png.len() > hwatu_ipc::INLINE_MAX_BYTES {
+                                reply.send(Response::err(format!(
+                                    "encoded screenshot is {} bytes; inline limit is {} bytes",
+                                    png.len(),
+                                    hwatu_ipc::INLINE_MAX_BYTES
+                                )));
+                            } else {
+                                reply.send(Response::data(hwatu_ipc::base64::encode(&png)));
+                            }
+                        }
+                        Ok(Ok(_)) => reply.send(Response::path(target.to_string_lossy())),
                         Ok(Err(e)) => reply.send(Response::err(format!(
                             "screenshot write to {} failed: {e}",
                             target.display()
@@ -1618,15 +1715,9 @@ pub fn screenshot(
 /// Encode RGBA rows (possibly padded to `stride`) as a PNG. Fast
 /// compression + Sub filtering: screenshots are verification
 /// artifacts, so encode speed beats squeezing out the last few KB.
-fn write_png(
-    path: &std::path::Path,
-    rgba: &[u8],
-    stride: usize,
-    width: u32,
-    height: u32,
-) -> Result<(), String> {
-    let file = std::fs::File::create(path).map_err(|e| e.to_string())?;
-    let mut encoder = png::Encoder::new(std::io::BufWriter::new(file), width, height);
+fn encode_png(rgba: &[u8], stride: usize, width: u32, height: u32) -> Result<Vec<u8>, String> {
+    let mut out = Vec::with_capacity(width as usize * height as usize * 2 + 64);
+    let mut encoder = png::Encoder::new(&mut out, width, height);
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
     encoder.set_compression(png::Compression::Fast);
@@ -1642,7 +1733,8 @@ fn write_png(
         }
         writer.write_image_data(&tight).map_err(|e| e.to_string())?;
     }
-    writer.finish().map_err(|e| e.to_string())
+    writer.finish().map_err(|e| e.to_string())?;
+    Ok(out)
 }
 
 /// Set a file input through WebKit's native file chooser request. A synthetic
@@ -1654,27 +1746,53 @@ pub fn upload(
     id: Option<u64>,
     selector: String,
     path: String,
+    data: Option<String>,
     timeout_ms: Option<u64>,
     reply: Reply,
 ) {
-    let file = match std::fs::File::open(&path) {
-        Ok(file) => file,
-        Err(e) => {
-            return OnceReply::new(reply).send(Response::err(format!("cannot read {path}: {e}")));
-        }
-    };
-    match file.metadata() {
-        Ok(metadata) if metadata.is_file() => {}
-        Ok(_) => {
+    let (chooser_path, staged) = if let Some(encoded) = data {
+        let max_encoded = hwatu_ipc::INLINE_MAX_BYTES.div_ceil(3) * 4;
+        if encoded.len() > max_encoded {
             return OnceReply::new(reply).send(Response::err(format!(
-                "cannot upload {path}: not a regular file"
+                "upload data exceeds the {}-byte decoded limit",
+                hwatu_ipc::INLINE_MAX_BYTES
             )));
         }
-        Err(e) => {
-            return OnceReply::new(reply)
-                .send(Response::err(format!("cannot inspect {path}: {e}")));
+        let bytes = match hwatu_ipc::base64::decode(&encoded) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                return OnceReply::new(reply).send(Response::err(format!(
+                    "upload data is not valid base64: {error}"
+                )));
+            }
+        };
+        let staged = match crate::private_files::stage_upload(&path, &bytes) {
+            Ok(staged) => staged,
+            Err(error) => return OnceReply::new(reply).send(Response::err(error)),
+        };
+        (staged.path().to_string_lossy().into_owned(), Some(staged))
+    } else {
+        let file = match std::fs::File::open(&path) {
+            Ok(file) => file,
+            Err(e) => {
+                return OnceReply::new(reply)
+                    .send(Response::err(format!("cannot read {path}: {e}")));
+            }
+        };
+        match file.metadata() {
+            Ok(metadata) if metadata.is_file() => {}
+            Ok(_) => {
+                return OnceReply::new(reply).send(Response::err(format!(
+                    "cannot upload {path}: not a regular file"
+                )));
+            }
+            Err(e) => {
+                return OnceReply::new(reply)
+                    .send(Response::err(format!("cannot inspect {path}: {e}")));
+            }
         }
-    }
+        (path, None)
+    };
 
     let win = match resolve(daemon, id) {
         Ok(win) => win,
@@ -1683,7 +1801,7 @@ pub fn upload(
     if let Err(response) = live_view(&win) {
         return OnceReply::new(reply).send(*response);
     }
-    if let Err(error) = win.arm_upload(path) {
+    if let Err(error) = win.arm_upload(chooser_path, staged) {
         return OnceReply::new(reply).send(Response::err(error));
     }
 
@@ -3212,7 +3330,8 @@ fn js_string(s: &str) -> String {
 mod tests {
     use super::{
         challenge_detect_js, challenge_wait_js, expect_watch_js, plan_eval_source, press_js,
-        trusted_input_mode_error, upload_js, ExpectSpec, VIEWPORT_PUMP_JS, VISIBILITY_INSPECTOR_JS,
+        trusted_input_mode_error, upload_js, validate_inline_check_outputs, ExpectSpec,
+        VIEWPORT_PUMP_JS, VISIBILITY_INSPECTOR_JS,
     };
     use hwatu_ipc::{OpenMode, PressKey};
 
@@ -3224,6 +3343,14 @@ mod tests {
         assert!(js.contains("const file = el.files && el.files[0]"));
         assert!(!js.contains("DataTransfer"));
         assert!(!js.contains("el.files ="));
+    }
+
+    #[test]
+    fn inline_check_outputs_never_aggregate_past_one_artifact() {
+        assert!(validate_inline_check_outputs(true, false, 1).is_ok());
+        assert!(validate_inline_check_outputs(false, true, 0).is_ok());
+        assert!(validate_inline_check_outputs(true, true, 0).is_err());
+        assert!(validate_inline_check_outputs(true, false, 2).is_err());
     }
 
     #[test]

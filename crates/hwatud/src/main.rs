@@ -32,6 +32,7 @@ mod observe;
 mod opfs;
 mod palette;
 mod passfill;
+mod private_files;
 mod prompts;
 mod reader;
 mod search;

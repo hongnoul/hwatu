@@ -1126,10 +1126,7 @@ fn fnv(value: &str) -> u64 {
 }
 
 fn transact(request: &Request) -> Result<Response, String> {
-    let mut stream =
-        crate::connect_or_spawn().map_err(|e| format!("cannot reach hwatu daemon: {e}"))?;
-    crate::write_request(&mut stream, request).map_err(|e| format!("write failed: {e}"))?;
-    crate::read_response(&mut stream).map_err(|e| format!("read failed: {e}"))
+    crate::transact_request(request).map_err(|e| format!("daemon request failed: {e}"))
 }
 
 #[cfg(test)]

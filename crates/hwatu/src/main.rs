@@ -8,6 +8,7 @@
 mod clone;
 mod mcp;
 mod onboarding;
+mod remote;
 mod update;
 mod verify_job;
 
@@ -109,23 +110,10 @@ fn main() {
     }
 
     let started = Instant::now();
-    let mut stream = match connect_or_spawn() {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("hwatu: cannot reach daemon: {e}");
-            std::process::exit(1);
-        }
-    };
-
-    if let Err(e) = write_request(&mut stream, &request) {
-        eprintln!("hwatu: write failed: {e}");
-        std::process::exit(1);
-    }
-
-    let response = match read_response(&mut stream) {
+    let response = match transact_request(&request) {
         Ok(response) => response,
         Err(e) => {
-            eprintln!("hwatu: read failed: {e}");
+            eprintln!("hwatu: request failed: {e}");
             std::process::exit(1);
         }
     };
@@ -1427,6 +1415,12 @@ pub(crate) enum Connection {
     Tcp(TcpStream),
 }
 
+impl Connection {
+    fn is_tcp(&self) -> bool {
+        matches!(self, Self::Tcp(_))
+    }
+}
+
 impl Read for Connection {
     fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
         match self {
@@ -1480,6 +1474,23 @@ pub(crate) fn read_text_frame(
                 .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
         })
         .transpose()
+}
+
+pub(crate) fn transact_request(request: &Request) -> std::io::Result<Response> {
+    let mut connection = connect_or_spawn()?;
+    let mut request = request.clone();
+    let artifacts = if connection.get_ref().is_tcp() {
+        remote::prepare(&mut request)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?
+    } else {
+        remote::Artifacts::default()
+    };
+    write_request(&mut connection, &request)?;
+    let mut response = read_response(&mut connection)?;
+    artifacts
+        .materialize(&mut response)
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+    Ok(response)
 }
 
 pub(crate) fn connect_or_spawn() -> std::io::Result<BufReader<Connection>> {

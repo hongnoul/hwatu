@@ -345,12 +345,13 @@ fn read_next_request(reader: Rc<FrameReader>, daemon: Rc<Daemon>) {
                 }
                 other => other,
             };
+            let transport = reader.connection.transport;
             let daemon_for_reply = daemon.clone();
             let reply: automation::Reply = Box::new(move |response: Response| {
                 write_response(reader, daemon_for_reply, response, true);
             });
             match request {
-                Ok(req) => dispatch(&daemon, req, reply),
+                Ok(req) => dispatch(&daemon, req, transport, reply),
                 Err(e) => reply(Response::err(format!("bad request: {e}"))),
             }
         }),
@@ -562,7 +563,7 @@ fn clear_site_data(daemon: &Rc<Daemon>, host: Option<String>, reply: automation:
 /// Route one request. Most commands answer synchronously; the
 /// automation commands (eval/navigate/screenshot/wait_load) complete
 /// later on the main loop and consume `reply` when they finish.
-fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
+fn dispatch(daemon: &Rc<Daemon>, req: Request, transport: TransportKind, reply: automation::Reply) {
     if !daemon.security.eval_enabled && req.uses_eval() {
         reply(Response::err(
             "eval disabled by daemon policy (--no-eval)".to_string(),
@@ -597,7 +598,9 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
     }
 
     let req = match req {
-        Request::Batch { actions } => return dispatch_batch(daemon.clone(), actions, reply),
+        Request::Batch { actions } => {
+            return dispatch_batch(daemon.clone(), actions, transport, reply);
+        }
         other => other,
     };
 
@@ -619,9 +622,14 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
             id,
             path,
             full,
-            data: _,
+            data,
         } => {
-            return automation::screenshot(daemon, id, path, full, reply);
+            if transport == TransportKind::Tcp && (!data || path.is_some()) {
+                return reply(Response::err(
+                    "TCP screenshots must request inline data and cannot name a daemon path",
+                ));
+            }
+            return automation::screenshot(daemon, id, path, full, data, reply);
         }
         Request::WaitLoad {
             id,
@@ -637,19 +645,34 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
             eval,
             shot,
             shot_path,
-            shot_data: _,
+            shot_data,
             full,
             baseline,
-            baseline_data: _,
+            baseline_data,
             tolerance,
             heatmap,
-            heatmap_data: _,
+            heatmap_data,
             until,
             keep,
             timeout_ms,
             viewports,
             baseline_dir,
         } => {
+            if transport == TransportKind::Tcp
+                && (shot_path.is_some()
+                    || baseline.is_some()
+                    || heatmap.is_some()
+                    || baseline_dir.is_some())
+            {
+                return reply(Response::err(
+                    "TCP checks cannot read or write daemon-host artifact paths",
+                ));
+            }
+            if transport == TransportKind::Tcp && shot && !shot_data {
+                return reply(Response::err(
+                    "TCP checks that capture a screenshot must request inline shot data",
+                ));
+            }
             return automation::check(
                 daemon,
                 url,
@@ -658,10 +681,13 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
                 eval,
                 shot,
                 shot_path,
+                shot_data,
                 full,
                 baseline,
+                baseline_data,
                 tolerance,
                 heatmap,
+                heatmap_data,
                 until,
                 keep,
                 timeout_ms,
@@ -687,10 +713,13 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
             id,
             selector,
             path,
-            data: _,
+            data,
             timeout_ms,
         } => {
-            return automation::upload(daemon, id, selector, path, timeout_ms, reply);
+            if transport == TransportKind::Tcp && data.is_none() {
+                return reply(Response::err("TCP uploads require inline file data"));
+            }
+            return automation::upload(daemon, id, selector, path, data, timeout_ms, reply);
         }
         Request::Scroll {
             id,
@@ -820,15 +849,29 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
             id,
             other,
             baseline,
-            baseline_data: _,
+            baseline_data,
             tolerance,
             heatmap,
-            heatmap_data: _,
+            heatmap_data,
             full,
             timeout_ms: _,
         } => {
+            if transport == TransportKind::Tcp && (baseline.is_some() || heatmap.is_some()) {
+                return reply(Response::err(
+                    "TCP diffs cannot read or write daemon-host artifact paths",
+                ));
+            }
             return crate::verify::diff(
-                daemon, id, other, baseline, tolerance, heatmap, full, reply,
+                daemon,
+                id,
+                other,
+                baseline,
+                baseline_data,
+                tolerance,
+                heatmap,
+                heatmap_data,
+                full,
+                reply,
             );
         }
         _ => {}
@@ -1217,15 +1260,41 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, reply: automation::Reply) {
     reply(response);
 }
 
-fn dispatch_batch(daemon: Rc<Daemon>, actions: Vec<Request>, reply: automation::Reply) {
+fn dispatch_batch(
+    daemon: Rc<Daemon>,
+    actions: Vec<Request>,
+    transport: TransportKind,
+    reply: automation::Reply,
+) {
     if let Err(e) = Request::validate_batch(&actions) {
         reply(Response::err(format!("bad batch: {e}")));
+        return;
+    }
+    let inline_outputs: usize = actions.iter().map(inline_output_count).sum();
+    if inline_outputs > 1 {
+        reply(Response::err(
+            "bad batch: at most one inline screenshot or heatmap output is allowed per batch",
+        ));
         return;
     }
     let actions = Rc::new(actions);
     let steps = Rc::new(RefCell::new(Vec::with_capacity(actions.len())));
     let final_reply = Rc::new(RefCell::new(Some(reply)));
-    dispatch_batch_step(daemon, actions, steps, final_reply, 0);
+    dispatch_batch_step(daemon, actions, steps, final_reply, transport, 0);
+}
+
+fn inline_output_count(request: &Request) -> usize {
+    match request {
+        Request::Screenshot { data, .. } => usize::from(*data),
+        Request::Check {
+            shot_data,
+            heatmap_data,
+            ..
+        } => usize::from(*shot_data) + usize::from(*heatmap_data),
+        Request::Diff { heatmap_data, .. } => usize::from(*heatmap_data),
+        Request::Batch { actions } => actions.iter().map(inline_output_count).sum(),
+        _ => 0,
+    }
 }
 
 fn dispatch_batch_step(
@@ -1233,6 +1302,7 @@ fn dispatch_batch_step(
     actions: Rc<Vec<Request>>,
     steps: Rc<RefCell<Vec<BatchStepResult>>>,
     final_reply: Rc<RefCell<Option<automation::Reply>>>,
+    transport: TransportKind,
     index: usize,
 ) {
     if index >= actions.len() {
@@ -1249,6 +1319,7 @@ fn dispatch_batch_step(
     dispatch(
         &daemon,
         action,
+        transport,
         Box::new(move |response| {
             let error = match &response {
                 Response::Err { message } => Some(message.clone()),
@@ -1275,6 +1346,7 @@ fn dispatch_batch_step(
                     actions_next,
                     steps_next,
                     final_reply_next,
+                    transport,
                     index + 1,
                 );
             }
@@ -1364,7 +1436,8 @@ fn is_loopback_host(input: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        finish_batch, normalize_url, parse_tcp_listen, tokens_equal, BufferedFrame, FrameBuffer,
+        finish_batch, inline_output_count, normalize_url, parse_tcp_listen, tokens_equal,
+        BufferedFrame, FrameBuffer,
     };
     use hwatu_ipc::{BatchStepResult, BatchStepStatus, Request, Response};
     use std::cell::RefCell;
@@ -1378,6 +1451,18 @@ mod tests {
             budget: None,
             timeout_ms: None,
         }
+    }
+
+    #[test]
+    fn batch_inline_output_count_prevents_aggregate_frame_overflow() {
+        let screenshot = || Request::Screenshot {
+            id: None,
+            path: None,
+            full: false,
+            data: true,
+        };
+        let actions = [screenshot(), screenshot()];
+        assert_eq!(actions.iter().map(inline_output_count).sum::<usize>(), 2);
     }
 
     #[test]

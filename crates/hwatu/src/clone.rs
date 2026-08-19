@@ -150,9 +150,7 @@ impl Opts {
 /// One request, one reply, one connection (the daemon protocol is
 /// one-shot per connection for everything except Subscribe).
 fn call(req: &Request) -> Result<Response, String> {
-    let mut stream = crate::connect_or_spawn().map_err(|e| format!("cannot reach daemon: {e}"))?;
-    crate::write_request(&mut stream, req).map_err(|e| format!("write: {e}"))?;
-    crate::read_response(&mut stream).map_err(|e| format!("read: {e}"))
+    crate::transact_request(req).map_err(|e| format!("daemon request: {e}"))
 }
 
 /// Like [`call`], but unwraps `Response::Err` into this Err.

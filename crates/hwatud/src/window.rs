@@ -330,6 +330,14 @@ pub fn sweep_discard_dir() {
     }
 }
 
+const MAX_RETAINED_UPLOADS: usize = 16;
+const MAX_RETAINED_UPLOAD_BYTES: usize = 64 * 1024 * 1024;
+
+struct PendingUpload {
+    path: String,
+    staged: Option<crate::private_files::StagedUpload>,
+}
+
 pub struct BrowserWindow {
     pub id: u64,
     pub window: gtk::Window,
@@ -378,7 +386,10 @@ pub struct BrowserWindow {
     /// Consuming it through `FileChooserRequest::select_files` gives WebKit a
     /// real path-backed file instead of a JS-created `File` whose bytes can be
     /// lost when WebKit serializes multipart form data.
-    pending_upload: RefCell<Option<String>>,
+    pending_upload: RefCell<Option<PendingUpload>>,
+    /// Remote files already handed to WebKit. Keep them alive until the next
+    /// document commits so later multipart submission can still open the path.
+    retained_uploads: RefCell<Vec<crate::private_files::StagedUpload>>,
     /// URI of a requested-but-not-yet-Started navigation. `is_loading`
     /// is false between `load_uri` and WebKit's LoadEvent::Started, so
     /// `wait_load` needs this to not answer early and let the caller's
@@ -930,6 +941,7 @@ impl BrowserWindow {
             demote_timer: RefCell::new(None),
             viewport: std::cell::Cell::new(None),
             pending_upload: RefCell::new(None),
+            retained_uploads: RefCell::new(Vec::new()),
             nav_pending: RefCell::new(None),
             nav_target: RefCell::new(None),
             last_url: RefCell::new(String::new()),
@@ -1162,6 +1174,10 @@ impl BrowserWindow {
                     });
                 }
                 webkit6::LoadEvent::Committed => {
+                    // A submitted form has consumed any path-backed upload by
+                    // commit time. Dropping staged files here avoids retaining
+                    // remote payloads for the rest of the window lifetime.
+                    this.retained_uploads.borrow_mut().clear();
                     this.note_load_engaged(wv);
                     this.load_committed.set(true);
                     // A new document invalidates the snapshot-diff
@@ -1224,8 +1240,11 @@ impl BrowserWindow {
                 // synchronously dispatch the page's change handler, whose IPC
                 // completion clears any still-pending automation state.
                 let upload = this.pending_upload.borrow_mut().take();
-                if let Some(path) = upload {
-                    request.select_files(&[path.as_str()]);
+                if let Some(upload) = upload {
+                    request.select_files(&[upload.path.as_str()]);
+                    if let Some(staged) = upload.staged {
+                        this.retained_uploads.borrow_mut().push(staged);
+                    }
                     return true;
                 }
                 let dialog = gtk::FileDialog::builder()
@@ -1989,12 +2008,25 @@ impl BrowserWindow {
 
     /// Queue an automation path for the next `run-file-chooser` signal.
     /// Refuse overlap so one upload can never satisfy another command's input.
-    pub(crate) fn arm_upload(&self, path: String) -> Result<(), &'static str> {
+    pub(crate) fn arm_upload(
+        &self,
+        path: String,
+        staged: Option<crate::private_files::StagedUpload>,
+    ) -> Result<(), &'static str> {
         let mut pending = self.pending_upload.borrow_mut();
         if pending.is_some() {
             return Err("another upload is already waiting for a file chooser");
         }
-        pending.replace(path);
+        if let Some(staged) = staged.as_ref() {
+            let retained = self.retained_uploads.borrow();
+            let retained_bytes: usize = retained.iter().map(|upload| upload.size()).sum();
+            if retained.len() >= MAX_RETAINED_UPLOADS
+                || retained_bytes.saturating_add(staged.size()) > MAX_RETAINED_UPLOAD_BYTES
+            {
+                return Err("too many staged uploads are still retained by this window");
+            }
+        }
+        pending.replace(PendingUpload { path, staged });
         Ok(())
     }
 

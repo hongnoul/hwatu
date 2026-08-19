@@ -717,9 +717,7 @@ fn demo(args: &[String]) -> i32 {
 // ===================================================================
 
 fn send(request: &Request) -> Result<Response, String> {
-    let mut stream = crate::connect_or_spawn().map_err(|e| e.to_string())?;
-    crate::write_request(&mut stream, request).map_err(|e| e.to_string())?;
-    crate::read_response(&mut stream).map_err(|e| e.to_string())
+    crate::transact_request(request).map_err(|e| e.to_string())
 }
 
 fn home_dir() -> Option<PathBuf> {
