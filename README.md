@@ -288,6 +288,19 @@ summary of easing/velocity/keyframes.
 > head-to-head data and methodology:
 > [docs/benchmarks.md](docs/benchmarks.md).
 
+**What about Claude in Chrome?** Different category. Claude in
+Chrome is Claude driving *your* Chrome through a browser extension:
+one agent product, one browser, sharing your profile, tabs, and
+focus. hwatu is a client-agnostic daemon any agent (Claude Code,
+Cursor, or a shell script) calls over CLI/MCP, with its own warm
+WebKit engine, headless by default, and verification primitives
+(`check`, pixel diff, motion capture) built in. Speed is not really
+comparable: claude-in-chrome's loop is extension messaging inside a
+full human browser and is not callable by other tools, while hwatu
+is a purpose-built verification service (~35 ms per check). Use
+Claude in Chrome to let Claude browse alongside you; use hwatu when
+agents need cheap, repeated, measurable page checks.
+
 ## Feedback
 
 Tried hwatu? A successful check, a failed install, a missing keybind,
