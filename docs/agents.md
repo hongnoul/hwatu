@@ -472,6 +472,7 @@ staleness check, and evidence report:
   "server": { "argv": ["npm", "run", "dev", "--", "--host", "127.0.0.1"] },
   "viewports": ["390x844", "768x1024", "1440x1000"],
   "assertion_js": "return { ok: !!document.querySelector('main') };",
+  "baseline_dir": "golden/about",
   "source_files": ["src/pages/about.astro"]
 }
 ```
@@ -486,7 +487,11 @@ then cleans up the owned process group, including on SIGINT or SIGTERM. It
 fingerprints the parsed job contract, sources before and after browser work,
 and screenshot artifacts, then atomically writes the stable JSON report under
 `.hwatu/verify/<name>/report.json` by default. The `interactive` tier requires
-an explicit `assertion_js`.
+an explicit `assertion_js`. With `baseline_dir` (per-size golden PNGs,
+`<dir>/<WxH>.png`), each viewport is also pixel-diffed and a viewport whose
+diff clusters into significant regions fails the job, worst region named in
+the finding; the global match percent is reported as evidence but never
+gates, and `min_region_px` tunes the significance floor.
 
 MCP clients call `verify_ui` with the same `spec_path`, so Jcode, Claude Code,
 and other MCP harnesses execute the same implementation rather than recreating

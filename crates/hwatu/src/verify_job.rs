@@ -94,6 +94,16 @@ struct VerifySpec {
     assertion_js: String,
     full: bool,
     fail_on_console: bool,
+    /// Directory of per-size baseline PNGs (`<dir>/<WxH>.png`). When
+    /// set, every viewport pass pixel-diffs against its baseline and
+    /// a viewport with `significant_regions > 0` is a finding. The
+    /// gate is the region count, not the mean: `match_percent` is
+    /// diluted by unchanged background (a moved button still reads
+    /// 99%+), so it is reported as evidence but never gates.
+    baseline_dir: Option<PathBuf>,
+    /// Region significance floor forwarded to the diff (default:
+    /// daemon default, 1024 mismatched pixels).
+    min_region_px: Option<u32>,
     source_files: Vec<PathBuf>,
     source_root: Option<PathBuf>,
     artifacts_dir: PathBuf,
@@ -121,6 +131,8 @@ impl VerifySpec {
                     | "assertion_js"
                     | "full"
                     | "fail_on_console"
+                    | "baseline_dir"
+                    | "min_region_px"
                     | "source_files"
                     | "artifacts_dir"
                     | "report_path"
@@ -170,6 +182,20 @@ impl VerifySpec {
             .get("fail_on_console")
             .and_then(Value::as_bool)
             .unwrap_or(true);
+        let baseline_dir = object
+            .get("baseline_dir")
+            .and_then(Value::as_str)
+            .map(PathBuf::from);
+        let min_region_px = match object.get("min_region_px") {
+            None | Some(Value::Null) => None,
+            Some(value) => Some(
+                value
+                    .as_u64()
+                    .filter(|v| *v <= u64::from(u32::MAX))
+                    .ok_or("`min_region_px` must be a non-negative integer")?
+                    as u32,
+            ),
+        };
         let source_files = parse_string_array(object.get("source_files"), "source_files")?
             .into_iter()
             .map(PathBuf::from)
@@ -190,6 +216,7 @@ impl VerifySpec {
             .map(PathBuf::from)
             .unwrap_or_else(|| artifacts_dir.join("report.json"));
         let report_path = absolutize(&cwd, &report_path);
+        let baseline_dir = baseline_dir.map(|dir| absolutize(&cwd, &dir));
         let timeout_ms = object.get("timeout_ms").and_then(Value::as_u64);
 
         Ok(Self {
@@ -204,6 +231,8 @@ impl VerifySpec {
             assertion_js,
             full,
             fail_on_console,
+            baseline_dir,
+            min_region_px,
             source_files,
             source_root: None,
             artifacts_dir,
@@ -373,7 +402,16 @@ fn validate_inline_spec(value: &Value, cwd: &Path) -> Result<(PathBuf, Vec<PathB
     let object = value
         .as_object()
         .ok_or("inline verify spec must be a JSON object")?;
-    for field in ["preflight", "server", "cwd", "artifacts_dir", "report_path"] {
+    for field in [
+        "preflight",
+        "server",
+        "cwd",
+        "artifacts_dir",
+        "report_path",
+        // A filesystem *input*, but still a caller-chosen daemon-host
+        // path; inline callers get no path selection at all.
+        "baseline_dir",
+    ] {
         if object.contains_key(field) {
             return Err(format!(
                 "inline MCP verify specs cannot set `{field}`; use a reviewed spec_path"
@@ -600,14 +638,17 @@ fn dispatch_check(spec: &VerifySpec) -> Result<Value, String> {
         baseline: None,
         baseline_data: None,
         tolerance: None,
-        min_region_px: None,
+        min_region_px: spec.min_region_px,
         heatmap: None,
         heatmap_data: false,
         until: LoadStage::Settled,
         keep: false,
         timeout_ms: spec.timeout_ms,
         viewports: spec.viewports.clone(),
-        baseline_dir: None,
+        baseline_dir: spec
+            .baseline_dir
+            .as_ref()
+            .map(|dir| dir.to_string_lossy().into_owned()),
     };
     crate::normalize_request_paths(&mut request);
     match transact(&request)? {
@@ -650,6 +691,9 @@ fn inspect_check(check: &Value, spec: &VerifySpec, findings: &mut Vec<String>) {
             None => findings.push(format!("viewport {size} returned no screenshot")),
         }
         inspect_assertion(entry.get("eval"), &format!("viewport {size}"), findings);
+        if spec.baseline_dir.is_some() {
+            inspect_diff(entry.get("diff"), &format!("viewport {size}"), findings);
+        }
     }
     if spec.fail_on_console {
         if let Some(entries) = check.get("console").and_then(Value::as_array) {
@@ -687,6 +731,51 @@ fn inspect_assertion(value: Option<&Value>, label: &str, findings: &mut Vec<Stri
             .and_then(Value::as_u64)
             .unwrap_or(0);
         findings.push(format!("{label} has {pixels}px horizontal overflow"));
+    }
+}
+
+/// Gate a per-viewport pixel diff on region significance. The mean
+/// (`match_percent`) is deliberately not a gate: it is diluted by
+/// unchanged background, so a moved button passes it at 99%+. A
+/// cluster of at least `min_region_px` mismatched pixels is the
+/// honest signal, and `worst_region` names where to look.
+fn inspect_diff(value: Option<&Value>, label: &str, findings: &mut Vec<String>) {
+    let Some(value) = value else {
+        findings.push(format!("{label} returned no baseline diff"));
+        return;
+    };
+    if let Some(error) = value.get("error") {
+        findings.push(format!("{label} baseline diff errored: {error}"));
+        return;
+    }
+    let significant = value
+        .get("significant_regions")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if significant > 0 {
+        let pct = value
+            .get("match_percent")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        let worst = value
+            .get("worst_region")
+            .map(|w| {
+                format!(
+                    "; worst {}x{} at ({}, {}), {} px",
+                    w.get("w").and_then(Value::as_u64).unwrap_or(0),
+                    w.get("h").and_then(Value::as_u64).unwrap_or(0),
+                    w.get("x").and_then(Value::as_u64).unwrap_or(0),
+                    w.get("y").and_then(Value::as_u64).unwrap_or(0),
+                    w.get("mismatched_pixels")
+                        .and_then(Value::as_u64)
+                        .unwrap_or(0),
+                )
+            })
+            .unwrap_or_default();
+        findings.push(format!(
+            "{label} baseline diff has {significant} significant region(s) \
+             at {pct:.1}% global match{worst}"
+        ));
     }
 }
 
@@ -1027,6 +1116,8 @@ fn spec_fingerprint(spec: &VerifySpec) -> String {
         "assertion_js": spec.assertion_js,
         "full": spec.full,
         "fail_on_console": spec.fail_on_console,
+        "baseline_dir": spec.baseline_dir,
+        "min_region_px": spec.min_region_px,
         "source_files": spec.source_files,
         "artifacts_dir": spec.artifacts_dir,
         "report_path": spec.report_path,
@@ -1230,6 +1321,124 @@ mod tests {
         assert!(findings
             .iter()
             .any(|finding| finding.contains("expected 390x844")));
+    }
+
+    /// The dev.to gating policy, applied to verify jobs: with a
+    /// baseline_dir, a viewport whose diff clusters into significant
+    /// regions is a finding even at a 99%+ global match (the mean is
+    /// diluted by unchanged background and must never gate), while a
+    /// clean diff at a *lower* global score passes.
+    #[test]
+    fn baseline_diffs_gate_on_significant_regions_not_the_mean() {
+        let mut findings = Vec::new();
+        inspect_diff(
+            Some(&json!({
+                "match_percent": 99.4,
+                "significant_regions": 1,
+                "worst_region": { "x": 96, "y": 96, "w": 64, "h": 64, "mismatched_pixels": 4096 },
+            })),
+            "viewport 390x844",
+            &mut findings,
+        );
+        assert_eq!(findings.len(), 1, "{findings:?}");
+        assert!(findings[0].contains("1 significant region(s)"));
+        assert!(findings[0].contains("99.4% global match"));
+        assert!(findings[0].contains("worst 64x64 at (96, 96), 4096 px"));
+
+        // Thin spread noise: worse mean, zero significant regions,
+        // no finding.
+        let mut clean = Vec::new();
+        inspect_diff(
+            Some(&json!({ "match_percent": 97.0, "significant_regions": 0 })),
+            "viewport 390x844",
+            &mut clean,
+        );
+        assert!(clean.is_empty(), "{clean:?}");
+
+        // A baseline was requested but the diff never came back:
+        // missing evidence is a finding, not a silent pass.
+        let mut missing = Vec::new();
+        inspect_diff(None, "viewport 390x844", &mut missing);
+        assert_eq!(missing.len(), 1);
+        assert!(missing[0].contains("no baseline diff"));
+
+        let mut errored = Vec::new();
+        inspect_diff(
+            Some(&json!({ "error": "cannot read baseline" })),
+            "viewport 390x844",
+            &mut errored,
+        );
+        assert_eq!(errored.len(), 1);
+        assert!(errored[0].contains("diff errored"));
+    }
+
+    /// baseline_dir/min_region_px parse, absolutize against cwd, and
+    /// reach the Check request; diffs are only inspected when a
+    /// baseline_dir was configured.
+    #[test]
+    fn baseline_dir_parses_and_gates_only_when_configured() {
+        let mut value = base_spec();
+        value["viewports"] = json!(["390x844"]);
+        value["baseline_dir"] = json!("golden");
+        value["min_region_px"] = json!(500);
+        let spec = VerifySpec::parse(value, Path::new("/repo")).unwrap();
+        assert_eq!(
+            spec.baseline_dir.as_deref(),
+            Some(Path::new("/repo/golden"))
+        );
+        assert_eq!(spec.min_region_px, Some(500));
+        let mut findings = Vec::new();
+        inspect_check(
+            &json!({ "viewports": [{
+                "size": "390x844",
+                "shot": "/nonexistent.png",
+                "eval": { "ok": true },
+                "diff": { "match_percent": 99.9, "significant_regions": 2 },
+            }] }),
+            &spec,
+            &mut findings,
+        );
+        assert!(
+            findings
+                .iter()
+                .any(|finding| finding.contains("2 significant region(s)")),
+            "{findings:?}"
+        );
+
+        // No baseline_dir: the same entry produces no diff finding.
+        let mut value = base_spec();
+        value["viewports"] = json!(["390x844"]);
+        let plain = VerifySpec::parse(value, Path::new("/repo")).unwrap();
+        assert_eq!(plain.baseline_dir, None);
+        let mut findings = Vec::new();
+        inspect_check(
+            &json!({ "viewports": [{
+                "size": "390x844",
+                "shot": "/nonexistent.png",
+                "eval": { "ok": true },
+                "diff": { "match_percent": 50.0, "significant_regions": 9 },
+            }] }),
+            &plain,
+            &mut findings,
+        );
+        assert!(
+            !findings
+                .iter()
+                .any(|finding| finding.contains("significant")),
+            "{findings:?}"
+        );
+
+        let mut bad = base_spec();
+        bad["min_region_px"] = json!(-3);
+        assert!(VerifySpec::parse(bad, Path::new("/repo")).is_err());
+    }
+
+    #[test]
+    fn inline_mcp_specs_cannot_select_baseline_paths() {
+        let mut value = base_spec();
+        value["baseline_dir"] = json!("golden");
+        let error = validate_inline_spec(&value, Path::new("/repo")).unwrap_err();
+        assert!(error.contains("cannot set `baseline_dir`"));
     }
 
     #[test]
