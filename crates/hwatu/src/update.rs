@@ -214,9 +214,45 @@ fn dir_is_user_writable(dir: &Path) -> bool {
 }
 
 fn mktemp_dir() -> Result<PathBuf, String> {
-    let dir = std::env::temp_dir().join(format!("hwatu-update-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).map_err(|e| format!("mktemp: {e}"))?;
-    Ok(dir)
+    // `mkdtemp`-style: O_EXCL semantics via create_dir, which fails if the
+    // path already exists. A predictable name plus create_dir_all would let
+    // another local user pre-create (or symlink) the staging directory.
+    let base = std::env::temp_dir();
+    for _ in 0..64 {
+        let nonce: u64 = unique_nonce();
+        let dir = base.join(format!("hwatu-update-{nonce:016x}"));
+        match std::fs::create_dir(&dir) {
+            Ok(()) => {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700))
+                        .map_err(|e| format!("mktemp chmod: {e}"))?;
+                }
+                return Ok(dir);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(format!("mktemp: {e}")),
+        }
+    }
+    Err("mktemp: could not create a private staging directory".into())
+}
+
+/// Process-local entropy for staging-directory names. Not a CSPRNG: it only
+/// needs to be unpredictable enough that another local user cannot pre-create
+/// the path, which `create_dir`'s exclusivity already backstops.
+fn unique_nonce() -> u64 {
+    use std::collections::hash_map::RandomState;
+    use std::hash::{BuildHasher, Hasher};
+    let mut h = RandomState::new().build_hasher();
+    h.write_u32(std::process::id());
+    h.write_u64(
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0),
+    );
+    h.finish()
 }
 
 /// RAII temp-dir removal, also on error paths.
@@ -268,5 +304,20 @@ mod tests {
             std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn staging_dirs_are_private_and_unique() {
+        let a = mktemp_dir().unwrap();
+        let b = mktemp_dir().unwrap();
+        assert_ne!(a, b, "staging dirs must not collide across calls");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&a).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o700, "staging dir must be owner-only");
+        }
+        let _ = std::fs::remove_dir_all(&a);
+        let _ = std::fs::remove_dir_all(&b);
     }
 }
