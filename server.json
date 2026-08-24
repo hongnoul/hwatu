@@ -6,13 +6,13 @@
     "url": "https://github.com/hongnoul/hwatu",
     "source": "github"
   },
-  "version": "0.7.0",
+  "version": "0.7.1",
   "websiteUrl": "https://github.com/hongnoul/hwatu",
   "packages": [
     {
       "registryType": "mcpb",
-      "identifier": "https://github.com/hongnoul/hwatu/releases/download/v0.7.0/hwatu-mcp-linux-x86_64.tar.gz",
-      "version": "0.7.0",
+      "identifier": "https://github.com/hongnoul/hwatu/releases/download/v0.7.1/hwatu-mcp-linux-x86_64.tar.gz",
+      "version": "0.7.1",
       "fileSha256": "935f49f79aabbe0ab619594f90232c7724329e98fdec06c667d00f23f4ab886a",
       "transport": {
         "type": "stdio"
