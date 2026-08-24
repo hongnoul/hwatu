@@ -301,6 +301,8 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
                 baseline: opt_str(args, "baseline"),
                 baseline_data: None,
                 tolerance: opt_u64(args, "tolerance").map(|v| v.min(255) as u8),
+                min_region_px: opt_u64(args, "min_region_px")
+                    .map(|v| v.min(u32::MAX as u64) as u32),
                 heatmap: opt_str(args, "heatmap"),
                 heatmap_data: false,
                 until: parse_until(args)?,
@@ -336,6 +338,8 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
                 baseline: opt_str(args, "baseline"),
                 baseline_data: None,
                 tolerance: opt_u64(args, "tolerance").map(|v| v.min(255) as u8),
+                min_region_px: opt_u64(args, "min_region_px")
+                    .map(|v| v.min(u32::MAX as u64) as u32),
                 heatmap: opt_str(args, "heatmap"),
                 heatmap_data: false,
                 until: parse_until(args)?,
@@ -510,6 +514,8 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
                 baseline,
                 baseline_data: None,
                 tolerance: opt_u64(args, "tolerance").map(|v| v.min(255) as u8),
+                min_region_px: opt_u64(args, "min_region_px")
+                    .map(|v| v.min(u32::MAX as u64) as u32),
                 heatmap: opt_str(args, "heatmap"),
                 heatmap_data: false,
                 full: opt_bool(args, "full").unwrap_or(false),
@@ -636,6 +642,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
                 "full": prop("boolean", "Screenshot/diff the full document, not just the viewport."),
                 "baseline": prop("string", "Baseline PNG path: pixel-diff the loaded page against it and include match_percent + mismatch regions in the reply."),
                 "tolerance": prop("integer", "Per-channel diff tolerance 0-255 (default 8; only with baseline)."),
+                "min_region_px": prop("integer", "Region significance floor in mismatched pixels (default 1024; only with baseline). Gate on the reply's significant_regions == 0 rather than match_percent: the mean is diluted by unchanged background."),
                 "heatmap": prop("string", "Write a mismatch heatmap PNG here (only with baseline)."),
                 "viewports": prop("string", "Multi-viewport sweep: comma-separated sizes (e.g. \"360x640,768x1024,1920x1080\"). Runs the same pass at each size on one window and returns per-viewport results under `viewports` (size, load_ms, eval, shot, diff). Screenshot paths get a -WxH suffix per size."),
                 "baseline_dir": prop("string", "Directory of per-size baseline PNGs (<dir>/360x640.png) for the viewport sweep; each size diffs against its own file. Only with viewports."),
@@ -663,6 +670,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
                 "full": prop("boolean", "Screenshot/diff the full document, not just the viewport."),
                 "baseline": prop("string", "Baseline PNG path: pixel-diff the rendered page against it."),
                 "tolerance": prop("integer", "Per-channel diff tolerance 0-255 (default 8; only with baseline)."),
+                "min_region_px": prop("integer", "Region significance floor in mismatched pixels (default 1024; only with baseline). Gate on the reply's significant_regions == 0 rather than match_percent: the mean is diluted by unchanged background."),
                 "heatmap": prop("string", "Write a mismatch heatmap PNG here (only with baseline)."),
                 "viewports": prop("string", "Multi-viewport sweep: comma-separated sizes (e.g. \"360x640,1920x1080\"); per-viewport results under `viewports`."),
                 "baseline_dir": prop("string", "Directory of per-size baseline PNGs for the sweep (only with viewports)."),
@@ -950,14 +958,18 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         tool(
             "diff",
             "Perceptual pixel diff of a window against another window or a \
-             baseline PNG. Returns match percent and bounding boxes of the \
-             largest mismatched regions; optionally writes a heatmap PNG. The \
-             numeric score is a convergence signal for pixel-perfect work.",
+             baseline PNG. Returns match percent, worst_region, a count of \
+             significant_regions, and bounding boxes of the largest mismatched \
+             regions; optionally writes a heatmap PNG. Gate on \
+             significant_regions == 0 (match_percent is diluted by unchanged \
+             background; a moved button still reads 99%+). match_percent is \
+             the convergence/trend signal for pixel-perfect work.",
             json!({
                 "id": prop("integer", "First window id."),
                 "other": prop("integer", "Second window id to compare against."),
                 "baseline": prop("string", "Baseline PNG path (instead of `other`)."),
                 "tolerance": prop("integer", "Per-channel tolerance 0-255 before a pixel counts as different (default 8)."),
+                "min_region_px": prop("integer", "Region significance floor in mismatched pixels (default 1024). Regions holding at least this many mismatched pixels count toward significant_regions."),
                 "heatmap": prop("string", "Write a mismatch heatmap PNG to this path."),
                 "full": prop("boolean", "Diff the full document instead of the viewport."),
             }),

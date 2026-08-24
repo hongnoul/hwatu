@@ -347,6 +347,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
     let mut base: Option<String> = None;
     let mut use_stdin = false;
     let mut tolerance: Option<u8> = None;
+    let mut min_region_px: Option<u32> = None;
     let mut heatmap: Option<String> = None;
     let mut viewports: Vec<Viewport> = Vec::new();
     let mut baseline_dir: Option<String> = None;
@@ -527,6 +528,12 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 it.next()
                     .and_then(|v| v.parse().ok())
                     .ok_or("usage: --tolerance <0-255>")?,
+            );
+        } else if arg == "--min-region" {
+            min_region_px = Some(
+                it.next()
+                    .and_then(|v| v.parse().ok())
+                    .ok_or("usage: --min-region <mismatched-pixels>")?,
             );
         } else if arg == "--heatmap" {
             heatmap = Some(
@@ -735,7 +742,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 .get(1)
                 .ok_or(
                     "usage: hwatu check <url> [--eval <js>] [--shot | --shot=<png>] [--full] \
-                     [--baseline <png> [--tolerance <0-255>] [--heatmap <png>]] \
+                     [--baseline <png> [--tolerance <0-255>] [--min-region <px>] [--heatmap <png>]] \
                      [--viewports <WxH>[,<WxH>...] [--baseline-dir <dir>]] \
                      [--until (committed|dom|settled)] [--keep] [--timeout-ms <ms>]",
                 )?
@@ -762,6 +769,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 baseline,
                 baseline_data: None,
                 tolerance,
+                min_region_px,
                 heatmap,
                 heatmap_data: false,
                 until: until.unwrap_or_default(),
@@ -774,7 +782,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
         Some("render") => {
             const USAGE_RENDER: &str = "usage: hwatu render (--stdin | <file.html>) \
                  [--base <url>] [--eval <js>] [--shot | --shot=<png>] [--full] \
-                 [--baseline <png> [--tolerance <0-255>] [--heatmap <png>]] \
+                 [--baseline <png> [--tolerance <0-255>] [--min-region <px>] [--heatmap <png>]] \
                  [--viewports <WxH>[,<WxH>...] [--baseline-dir <dir>]] \
                  [--until (committed|dom|settled)] [--keep] [--timeout-ms <ms>]";
             if baseline_dir.is_some() && viewports.is_empty() {
@@ -824,6 +832,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 baseline,
                 baseline_data: None,
                 tolerance,
+                min_region_px,
                 heatmap,
                 heatmap_data: false,
                 until: until.unwrap_or_default(),
@@ -959,11 +968,12 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             })
         }
         Some("diff") => Ok(Request::Diff {
-            id: id.ok_or("usage: hwatu diff --id <id> (--other <id> | --baseline <png>) [--tolerance <n>] [--heatmap <png>] [--full]")?,
+            id: id.ok_or("usage: hwatu diff --id <id> (--other <id> | --baseline <png>) [--tolerance <n>] [--min-region <px>] [--heatmap <png>] [--full]")?,
             other,
             baseline,
             baseline_data: None,
             tolerance,
+            min_region_px,
             heatmap,
             heatmap_data: false,
             full,
@@ -1203,7 +1213,7 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--profile <name|auto>] [--bac
 	| eval [--id <id>] [--timeout-ms <ms>] <js> | goto [--id <id>] [--no-wait] [--until <stage>] <url> \
 	| batch (--stdin | '<json-action-array>' | '{\"cmd\":\"batch\",...}') \
 	    | shot [--id <id>] [--full] [path] | wait-load [--id <id>] [--until (committed|dom|settled)] \
-    | check <url> [--eval <js>] [--shot | --shot=<png>] [--full] [--baseline <png> [--tolerance <0-255>] [--heatmap <png>]] [--viewports <WxH>[,<WxH>...] [--baseline-dir <dir>]] [--until <stage>] [--keep] \
+    | check <url> [--eval <js>] [--shot | --shot=<png>] [--full] [--baseline <png> [--tolerance <0-255>] [--min-region <px>] [--heatmap <png>]] [--viewports <WxH>[,<WxH>...] [--baseline-dir <dir>]] [--until <stage>] [--keep] \
     | render (--stdin | <file.html>) [--base <url>] [--eval <js>] [--shot | --shot=<png>] [--full] [--baseline <png> ...] [--until <stage>] [--keep] \
     | prefetch <url> \
     | watch [--id <id>] [--kinds load,console,download,window,expect] \
@@ -1226,7 +1236,7 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--profile <name|auto>] [--bac
 | resize [--id <id>] <width>x<height> \
 | seek [--id <id>] (--time-ms <ms> | --progress <0..1> | --resume) \
 | clock [--id <id>] (pause | resume | step <ms> | set <ms> | seed <u64> | status) \
-| diff --id <id> (--other <id> | --baseline <png>) [--tolerance <0-255>] [--heatmap <png>] [--full] \
+| diff --id <id> (--other <id> | --baseline <png>) [--tolerance <0-255>] [--min-region <px>] [--heatmap <png>] [--full] \
 | clone <url> [--out <dir>] [--viewport <WxH>] [--tolerance <0-255>] [--no-verify] [--keep] \
 | adblock [on|off|status|update] \
 | doctor | setup [--client claude|cursor|generic|jcode] [--scope project|user] [--dry-run] [--undo] \
@@ -1831,6 +1841,7 @@ mod tests {
         let Ok(Request::Check {
             baseline,
             tolerance,
+            min_region_px,
             heatmap,
             ..
         }) = parse(&args(&[
@@ -1840,6 +1851,8 @@ mod tests {
             "/tmp/base.png",
             "--tolerance",
             "12",
+            "--min-region",
+            "500",
             "--heatmap",
             "/tmp/heat.png",
         ]))
@@ -1848,7 +1861,19 @@ mod tests {
         };
         assert_eq!(baseline.as_deref(), Some("/tmp/base.png"));
         assert_eq!(tolerance, Some(12));
+        assert_eq!(min_region_px, Some(500));
         assert_eq!(heatmap.as_deref(), Some("/tmp/heat.png"));
+
+        // Without the flag the field stays None (daemon default).
+        let Ok(Request::Check { min_region_px, .. }) = parse(&args(&[
+            "check",
+            "localhost:3000",
+            "--baseline",
+            "/tmp/b.png",
+        ])) else {
+            panic!("expected Check");
+        };
+        assert_eq!(min_region_px, None);
     }
 
     /// `hwatu render <file>` reads the file into a render-check; the

@@ -600,6 +600,7 @@ fn dispatch_check(spec: &VerifySpec) -> Result<Value, String> {
         baseline: None,
         baseline_data: None,
         tolerance: None,
+        min_region_px: None,
         heatmap: None,
         heatmap_data: false,
         until: LoadStage::Settled,

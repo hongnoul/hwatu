@@ -51,7 +51,7 @@ machine the human is working on.
 | primitive | what it answers |
 |---|---|
 | `snapshot` | what's on this page, what can I click (JSON, ~tokens not pixels) |
-| `diff --other/--baseline` | how close are these two renders, where do they differ, as a score + regions + heatmap |
+| `diff --other/--baseline` | how close are these two renders, where do they differ, as a score + worst-first regions (`worst_region`, `significant_regions`) + heatmap |
 | `clone` | a self-contained local copy of a live page (rendered DOM + assets), verified against the original with a measured pixel-match report |
 | `motion` | every animation as numbers: duration, delay, easing, keyframes |
 | `seek` | pin all animations at time t; two shots at the same t are byte-identical |
@@ -152,7 +152,7 @@ batch. Unix-socket behavior and `HWATU_SOCKET` remain unchanged;
 | `navigate` | `id?`, `url`, `wait?`, `timeout_ms?` | navigate, optionally wait for the load |
 | `screenshot` | `id?`, `path?`, `full?` | PNG of the viewport (`full: true` = whole document), returns the file path |
 | `wait_load` | `id?`, `timeout_ms?` | block until loading settles |
-| `check` | `url` or `render` (+`base?`), `eval?`, `shot?`, `shot_path?`, `full?`, `baseline?`, `tolerance?`, `heatmap?`, `viewports?`, `baseline_dir?`, `until?`, `keep?`, `timeout_ms?` | one-roundtrip verify pass: open headless, load the url (or render inline HTML directly, CLI: `hwatu render`), eval/shot/diff-vs-baseline, close; replies with everything at once. `viewports` (CLI: `--viewports 360x640,1920x1080`) sweeps the same pass at N sizes on the one window, replying with per-size results under `viewports: [{size, eval, shot, diff, pass_ms}]`; screenshots get a `-<WxH>` suffix and `baseline_dir` supplies per-size baselines `<dir>/<WxH>.png` |
+| `check` | `url` or `render` (+`base?`), `eval?`, `shot?`, `shot_path?`, `full?`, `baseline?`, `tolerance?`, `min_region_px?`, `heatmap?`, `viewports?`, `baseline_dir?`, `until?`, `keep?`, `timeout_ms?` | one-roundtrip verify pass: open headless, load the url (or render inline HTML directly, CLI: `hwatu render`), eval/shot/diff-vs-baseline, close; replies with everything at once. `viewports` (CLI: `--viewports 360x640,1920x1080`) sweeps the same pass at N sizes on the one window, replying with per-size results under `viewports: [{size, eval, shot, diff, pass_ms}]`; screenshots get a `-<WxH>` suffix and `baseline_dir` supplies per-size baselines `<dir>/<WxH>.png` |
 | `prefetch` | `url` | start loading in a headless window and return immediately; the next `check` of the same url adopts the warm window (30 s TTL, max 3) |
 | `challenge` | `id?`, `wait?`, `timeout_ms?` | detect CAPTCHA/anti-bot UI; optionally wait for manual/user resolution |
 | `scroll` | `id?`, `selector?`, `nth?`, `contains?`, `to_y?`, `by_pages?` | scroll and report where it landed |
@@ -438,9 +438,22 @@ hwatu check localhost:5173 --baseline /tmp/before.png --heatmap /tmp/heat.png
 ```
 
 With `--baseline`, the reply gains a `diff` field: `match_percent`,
-mismatch regions, and the envelope (engine/viewport/caveats), same
-output as `hwatu diff`. One command answers both "is the DOM right"
-(`--eval`) and "does it look right" (`--baseline`).
+mismatch regions, `worst_region`, `significant_regions`, and the
+envelope (engine/viewport/caveats), same output as `hwatu diff`. One
+command answers both "is the DOM right" (`--eval`) and "does it look
+right" (`--baseline`).
+
+Gate on `significant_regions == 0`, not on `match_percent`. The mean
+is diluted by unchanged background: a moved button on a mostly-empty
+page still scores 99%+, while spread antialiasing noise can cost the
+same pixel count without mattering. A *region* only becomes
+significant once a connected cluster holds at least `--min-region`
+mismatched pixels (default 1024, one 32x32 cell), and `worst_region`
+names the largest one with its bounding box and density. Keep
+`match_percent` as the trend/convergence number, per-pixel
+`--tolerance` for AA noise, and `--min-region` for what counts as a
+real difference; the three knobs are deliberately separate so a
+threshold stays explainable in review.
 
 ### Verification jobs: one contract for every harness
 

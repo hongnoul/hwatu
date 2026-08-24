@@ -1743,6 +1743,7 @@ fn verify_with(opts: &Opts, live: u64, clone_win: u64) -> Result<serde_json::Val
             baseline: None,
             baseline_data: None,
             tolerance: opts.tolerance,
+            min_region_px: None,
             heatmap: None,
             heatmap_data: false,
             full: false,
