@@ -12,10 +12,20 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsE
 
 static NEXT_ARTIFACT: AtomicU64 = AtomicU64::new(1);
 
-#[cfg(unix)]
+// Open(2) flag values are per-kernel ABI, not POSIX: Linux uses
+// 0o4000/0o400000, while the BSD family (macOS included) uses
+// 0x4/0x100. Hardcoding the Linux values everywhere silently turned
+// O_NOFOLLOW into O_NOCTTY on macOS, so the symlink-refusal path
+// never engaged there (caught by
+// `materialization_refuses_symlink_destinations` failing on Darwin).
+#[cfg(target_os = "linux")]
 const O_NONBLOCK: i32 = 0o4000;
-#[cfg(unix)]
+#[cfg(target_os = "linux")]
 const O_NOFOLLOW: i32 = 0o400000;
+#[cfg(all(unix, not(target_os = "linux")))]
+const O_NONBLOCK: i32 = 0x0004;
+#[cfg(all(unix, not(target_os = "linux")))]
+const O_NOFOLLOW: i32 = 0x0100;
 
 #[derive(Default)]
 pub(crate) struct Artifacts {
