@@ -142,11 +142,22 @@ fn latest_tag() -> Result<String, String> {
         return Err("cannot resolve latest release".into());
     }
     let loc = String::from_utf8_lossy(&out.stdout);
-    loc.trim()
+    let tag = loc
+        .trim()
         .rsplit_once("/tag/")
         .map(|(_, tag)| tag.to_string())
         .filter(|t| !t.is_empty())
-        .ok_or_else(|| format!("unexpected release redirect: {loc}"))
+        .ok_or_else(|| format!("unexpected release redirect: {loc}"))?;
+    // The tag is redirect-derived input spliced into a download URL. It
+    // reaches curl as an argv entry (no shell), so this is defense in depth:
+    // keep it to the shape a release tag actually has.
+    if !tag
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+'))
+    {
+        return Err(format!("refusing suspicious release tag: {tag:?}"));
+    }
+    Ok(tag)
 }
 
 fn curl_download(url: &str, dest: &Path) -> Result<(), String> {
