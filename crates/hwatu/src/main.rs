@@ -73,6 +73,14 @@ pub(crate) fn normalize_request_paths(request: &mut Request) {
 
 fn main() {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
+    if is_version_flag(args.first().map(String::as_str)) {
+        println!(
+            "hwatu {} ({})",
+            env!("CARGO_PKG_VERSION"),
+            env!("HWATU_GIT_HASH")
+        );
+        return;
+    }
     if args.first().map(String::as_str) == Some("update") {
         std::process::exit(update::run());
     }
@@ -209,6 +217,14 @@ fn main() {
 /// interpreted as a URL by the browser client.
 fn is_onboarding_command(command: Option<&str>) -> bool {
     matches!(command, Some("doctor") | Some("setup") | Some("demo"))
+}
+
+/// `hwatu --version` must print the version, not "unknown flag" (and
+/// certainly not open a web search: see the unknown-flag guard in
+/// `parse`). Only the first argument counts; later `--version` tokens
+/// may be eval JS or typed text.
+fn is_version_flag(command: Option<&str>) -> bool {
+    matches!(command, Some("--version") | Some("-V") | Some("version"))
 }
 
 fn parse(args: &[String]) -> Result<Request, String> {
@@ -1242,7 +1258,7 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--profile <name|auto>] [--bac
 | doctor | setup [--client claude|cursor|generic|jcode] [--scope project|user] [--dry-run] [--undo] \
 | demo [url] [--focus] \
 | verify <spec.json> | verify --stdin \
-| mcp | update | ping | quit";
+| mcp | update | ping | quit | --version";
 
 /// `hwatu watch`: subscribe and stream events as JSON lines until the
 /// daemon goes away or we are killed. The shell-agent face of push
@@ -1644,8 +1660,9 @@ fn client_token() -> std::io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        authenticate_tcp, is_current_gio_launch, is_onboarding_command, normalize_request_paths,
-        parse_with_default_mode, read_response, should_default_to_normal, OpenMode,
+        authenticate_tcp, is_current_gio_launch, is_onboarding_command, is_version_flag,
+        normalize_request_paths, parse_with_default_mode, read_response, should_default_to_normal,
+        OpenMode,
     };
     use hwatu_ipc::{AuthReply, AuthRequest, PressKey, Request, Response};
 
@@ -1697,6 +1714,19 @@ mod tests {
         assert!(is_onboarding_command(Some("demo")));
         assert!(!is_onboarding_command(Some("https://example.com")));
         assert!(!is_onboarding_command(None));
+    }
+
+    /// `hwatu --version` prints the version locally; it must be caught
+    /// before the parser (which rejects unknown flags) and only as the
+    /// first argument, so eval/type free text keeps its tokens.
+    #[test]
+    fn version_flag_is_handled_before_url_parsing() {
+        assert!(is_version_flag(Some("--version")));
+        assert!(is_version_flag(Some("-V")));
+        assert!(is_version_flag(Some("version")));
+        assert!(!is_version_flag(Some("-v")));
+        assert!(!is_version_flag(Some("https://example.com")));
+        assert!(!is_version_flag(None));
     }
 
     #[test]

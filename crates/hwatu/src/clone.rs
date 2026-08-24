@@ -382,7 +382,13 @@ fn clone_with_window(opts: &Opts, live: u64) -> Result<String, String> {
         eprintln!("clone: verifying against the live page...");
         let verified = verify(opts, live)?;
         if let (Some(map), Some(vmap)) = (report.as_object_mut(), verified.as_object()) {
-            for k in ["tolerance", "positions", "average_match_percent"] {
+            for k in [
+                "tolerance",
+                "positions",
+                "average_match_percent",
+                "significant_regions",
+                "worst_region",
+            ] {
                 if let Some(v) = vmap.get(k) {
                     map.insert(k.to_string(), v.clone());
                 }
@@ -392,8 +398,12 @@ fn clone_with_window(opts: &Opts, live: u64) -> Result<String, String> {
             .get("average_match_percent")
             .and_then(|v| v.as_f64())
             .unwrap_or(0.0);
+        let significant = report
+            .get("significant_regions")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
         summary.push_str(&format!(
-            "\nverify: {avg:.1}% average pixel match ({} positions)",
+            "\nverify: {significant} significant region(s) across {} positions; {avg:.1}% average pixel match",
             report
                 .get("positions")
                 .and_then(|v| v.as_array())
@@ -1720,6 +1730,8 @@ fn verify_with(opts: &Opts, live: u64, clone_win: u64) -> Result<serde_json::Val
     let mut positions = Vec::new();
     let mut sum = 0.0;
     let mut n = 0usize;
+    let mut total_significant = 0u64;
+    let mut worst_region: Option<serde_json::Value> = None;
     for frac in fractions {
         let y = (max_scroll * frac).round();
         for id in [live, clone_win] {
@@ -1759,22 +1771,53 @@ fn verify_with(opts: &Opts, live: u64, clone_win: u64) -> Result<serde_json::Val
             .unwrap_or(0.0);
         sum += pct;
         n += 1;
-        eprintln!("clone: verify y={y}: {pct:.1}% match");
+        let significant = value
+            .get("significant_regions")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        total_significant += significant;
+        if let Some(worst) = value.get("worst_region") {
+            let worst_px = worst
+                .get("mismatched_pixels")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0);
+            if worst_px
+                > worst_region
+                    .as_ref()
+                    .and_then(|w: &serde_json::Value| w.get("mismatched_pixels"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0)
+            {
+                let mut worst = worst.clone();
+                worst["scroll_y"] = serde_json::json!(y);
+                worst_region = Some(worst);
+            }
+        }
+        eprintln!("clone: verify y={y}: {pct:.1}% match, {significant} significant region(s)");
         positions.push(serde_json::json!({
             "scroll_y": y,
             "match_percent": pct,
+            "significant_regions": significant,
             "regions": value.get("regions").cloned().unwrap_or(serde_json::Value::Null),
         }));
     }
     let avg = if n == 0 { 0.0 } else { sum / n as f64 };
-    Ok(serde_json::json!({
+    let mut out = serde_json::json!({
         "url": opts.url,
         "viewport": { "w": opts.viewport.0, "h": opts.viewport.1 },
         "tolerance": opts.tolerance.unwrap_or(8),
         "positions": positions,
         "average_match_percent": (avg * 100.0).round() / 100.0,
+        // The gate, not the trend: the mean is diluted by unchanged
+        // background, a cluster count is not. A faithful clone is
+        // significant_regions == 0 at every offset.
+        "significant_regions": total_significant,
         "envelope": "still clone; scores cover exactly this viewport and these scroll offsets",
-    }))
+    });
+    if let Some(worst) = worst_region {
+        out["worst_region"] = worst;
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
