@@ -64,27 +64,33 @@ fn update() -> Result<(), String> {
     println!("downloading {artifact} {tag}...");
     curl_download(&base, &pkg)?;
 
-    // Checksum (best effort like the installer: skip if absent).
+    // Checksum is mandatory. A skippable check is not a control: an attacker
+    // able to substitute the tarball can also fail the .sha256 fetch and take
+    // the "skip" branch. Note this shares a trust root with the tarball, so it
+    // detects corruption and truncation, not a GitHub/TLS compromise.
     let sums = tmp.join("pkg.sha256");
-    if curl_download(&format!("{base}.sha256"), &sums).is_ok() {
-        let expected = std::fs::read_to_string(&sums)
-            .map_err(|e| format!("read checksum: {e}"))?
-            .split_whitespace()
-            .next()
-            .unwrap_or_default()
-            .to_string();
-        let out = Command::new("sha256sum")
-            .arg(&pkg)
-            .output()
-            .map_err(|e| format!("sha256sum: {e}"))?;
-        let actual = String::from_utf8_lossy(&out.stdout)
-            .split_whitespace()
-            .next()
-            .unwrap_or_default()
-            .to_string();
-        if expected != actual {
-            return Err("checksum verification failed".into());
-        }
+    curl_download(&format!("{base}.sha256"), &sums)
+        .map_err(|e| format!("{e}\ncannot verify the download; refusing to install"))?;
+    let expected = std::fs::read_to_string(&sums)
+        .map_err(|e| format!("read checksum: {e}"))?
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    if expected.len() != 64 || !expected.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Err("malformed checksum file; refusing to install".into());
+    }
+    let out = Command::new("sha256sum")
+        .arg(&pkg)
+        .output()
+        .map_err(|e| format!("sha256sum: {e}"))?;
+    let actual = String::from_utf8_lossy(&out.stdout)
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_string();
+    if !expected.eq_ignore_ascii_case(&actual) {
+        return Err("checksum verification failed".into());
     }
 
     run_ok(
