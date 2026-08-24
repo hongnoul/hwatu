@@ -1873,6 +1873,63 @@ mod tests {
         assert_eq!(baseline_dir, None);
     }
 
+    /// `min_region_px` is additive on the wire: absent when unset (so
+    /// an old daemon still parses a new client's plain diff/check),
+    /// defaulting to None when an old client omits it, and
+    /// roundtripping when set.
+    #[test]
+    fn min_region_px_is_additive_on_the_wire() {
+        let old_diff = r#"{"cmd":"diff","id":1,"other":2}"#;
+        let Ok(Request::Diff { min_region_px, .. }) = serde_json::from_str::<Request>(old_diff)
+        else {
+            panic!("old diff request failed to parse");
+        };
+        assert_eq!(min_region_px, None);
+
+        let old_check = r#"{"cmd":"check","url":"x.test","baseline":"/tmp/b.png"}"#;
+        let Ok(Request::Check { min_region_px, .. }) = serde_json::from_str::<Request>(old_check)
+        else {
+            panic!("old check request failed to parse");
+        };
+        assert_eq!(min_region_px, None);
+
+        let req = Request::Diff {
+            id: 1,
+            other: Some(2),
+            baseline: None,
+            baseline_data: None,
+            tolerance: None,
+            min_region_px: None,
+            heatmap: None,
+            heatmap_data: false,
+            full: false,
+            timeout_ms: None,
+        };
+        let wire = serde_json::to_string(&req).unwrap();
+        assert!(
+            !wire.contains("min_region_px"),
+            "unset floor must be omitted: {wire}"
+        );
+
+        let req = Request::Diff {
+            id: 1,
+            other: Some(2),
+            baseline: None,
+            baseline_data: None,
+            tolerance: None,
+            min_region_px: Some(500),
+            heatmap: None,
+            heatmap_data: false,
+            full: false,
+            timeout_ms: None,
+        };
+        let wire = serde_json::to_string(&req).unwrap();
+        let Ok(Request::Diff { min_region_px, .. }) = serde_json::from_str::<Request>(&wire) else {
+            panic!("diff with floor failed to roundtrip");
+        };
+        assert_eq!(min_region_px, Some(500));
+    }
+
     /// Viewport size parsing: valid forms, bounds, and list errors.
     #[test]
     fn viewport_parsing() {

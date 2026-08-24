@@ -1841,6 +1841,7 @@ mod tests {
         let Ok(Request::Check {
             baseline,
             tolerance,
+            min_region_px,
             heatmap,
             ..
         }) = parse(&args(&[
@@ -1850,6 +1851,8 @@ mod tests {
             "/tmp/base.png",
             "--tolerance",
             "12",
+            "--min-region",
+            "500",
             "--heatmap",
             "/tmp/heat.png",
         ]))
@@ -1858,7 +1861,19 @@ mod tests {
         };
         assert_eq!(baseline.as_deref(), Some("/tmp/base.png"));
         assert_eq!(tolerance, Some(12));
+        assert_eq!(min_region_px, Some(500));
         assert_eq!(heatmap.as_deref(), Some("/tmp/heat.png"));
+
+        // Without the flag the field stays None (daemon default).
+        let Ok(Request::Check { min_region_px, .. }) = parse(&args(&[
+            "check",
+            "localhost:3000",
+            "--baseline",
+            "/tmp/b.png",
+        ])) else {
+            panic!("expected Check");
+        };
+        assert_eq!(min_region_px, None);
     }
 
     /// `hwatu render <file>` reads the file into a render-check; the
