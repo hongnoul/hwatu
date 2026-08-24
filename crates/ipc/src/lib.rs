@@ -390,6 +390,15 @@ pub enum Request {
         /// Per-channel diff tolerance 0-255 (default 8); only with `baseline`.
         #[serde(default)]
         tolerance: Option<u8>,
+        /// Region significance floor in mismatched pixels (default
+        /// 1024, one 32x32 cell); only with `baseline`. Regions with
+        /// at least this many mismatched pixels count toward the
+        /// reply's `significant_regions`. Gate on
+        /// `significant_regions == 0` (and `worst_region`) instead of
+        /// `match_percent`: the mean is diluted by unchanged
+        /// background, a region count is not.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        min_region_px: Option<u32>,
         /// Write a mismatch heatmap PNG here; only with `baseline`.
         #[serde(default)]
         heatmap: Option<String>,
@@ -702,6 +711,15 @@ pub enum Request {
         /// different (default 8, forgiving of AA/compression noise).
         #[serde(default)]
         tolerance: Option<u8>,
+        /// Region significance floor in mismatched pixels (default
+        /// 1024, one 32x32 cell). Regions with at least this many
+        /// mismatched pixels count toward `significant_regions` in
+        /// the reply. Tolerance decides whether a pixel differs;
+        /// this decides whether a cluster of differing pixels is big
+        /// enough to gate on. Gate on `significant_regions == 0` and
+        /// `worst_region`, keep `match_percent` for trend lines.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        min_region_px: Option<u32>,
         /// Write a heatmap PNG (mismatches in red over a dimmed base)
         /// to this path.
         #[serde(default)]
@@ -1715,6 +1733,7 @@ mod tests {
             baseline: None,
             baseline_data: None,
             tolerance: None,
+            min_region_px: None,
             heatmap: None,
             heatmap_data: false,
             until: LoadStage::Dom,
@@ -1787,6 +1806,7 @@ mod tests {
             baseline: None,
             baseline_data: None,
             tolerance: None,
+            min_region_px: None,
             heatmap: None,
             heatmap_data: false,
             until: LoadStage::default(),
@@ -1826,6 +1846,7 @@ mod tests {
             baseline: None,
             baseline_data: None,
             tolerance: None,
+            min_region_px: None,
             heatmap: None,
             heatmap_data: false,
             until: LoadStage::default(),
@@ -2038,6 +2059,7 @@ mod tests {
             baseline: None,
             baseline_data: None,
             tolerance: None,
+            min_region_px: None,
             heatmap: None,
             heatmap_data: false,
             until: LoadStage::default(),

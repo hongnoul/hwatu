@@ -775,6 +775,7 @@ pub fn check(
     baseline: Option<String>,
     baseline_data: Option<String>,
     tolerance: Option<u8>,
+    min_region_px: Option<u32>,
     heatmap: Option<String>,
     heatmap_data: bool,
     until: LoadStage,
@@ -916,6 +917,7 @@ pub fn check(
                 full,
                 baseline_dir: baseline_dir.clone(),
                 tolerance,
+                min_region_px,
                 heatmap: heatmap.clone(),
                 heatmap_data,
                 keep,
@@ -1045,6 +1047,7 @@ pub fn check(
                 png,
                 crate::verify::DiffOptions {
                     tolerance,
+                    min_region_px,
                     heatmap: heatmap.clone(),
                     heatmap_data,
                     full,
@@ -1068,6 +1071,7 @@ pub fn check(
                 encoded,
                 crate::verify::DiffOptions {
                     tolerance,
+                    min_region_px,
                     heatmap,
                     heatmap_data,
                     full,
@@ -1133,6 +1137,7 @@ struct Sweep {
     full: bool,
     baseline_dir: Option<String>,
     tolerance: Option<u8>,
+    min_region_px: Option<u32>,
     heatmap: Option<String>,
     heatmap_data: bool,
     keep: bool,
@@ -1276,6 +1281,7 @@ fn sweep_pass(sweep: Rc<Sweep>, i: usize) {
                     baseline,
                     crate::verify::DiffOptions {
                         tolerance: sweep.tolerance,
+                        min_region_px: sweep.min_region_px,
                         heatmap,
                         heatmap_data: sweep.heatmap_data,
                         full: sweep.full,

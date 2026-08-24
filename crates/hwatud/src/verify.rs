@@ -547,14 +547,27 @@ fn diff_frames(a: &Frame, b: &Frame, tolerance: u8) -> Result<DiffResult, String
     })
 }
 
+/// Grid cell edge for region clustering (pixels).
+const CELL: usize = 32;
+/// Most regions reported in a diff reply.
+const MAX_REGIONS: usize = 10;
+/// Default significance floor: a region "counts" once it holds at
+/// least this many mismatched pixels. One fully mismatched grid cell
+/// (32x32). Separate from `tolerance` on purpose: tolerance decides
+/// whether a *pixel* differs (AA noise), this decides whether a
+/// *cluster* of differing pixels is big enough to gate on. Keeping
+/// the two knobs apart is what makes a region threshold explainable
+/// in review.
+pub const DEFAULT_MIN_REGION_PX: u32 = 1024;
+
 /// Coarse mismatch regions: the union canvas is cut into a grid of
 /// cells; cells over a mismatch threshold are merged (greedy flood
 /// fill over the cell grid) into bounding boxes, worst-first. Grid
 /// granularity keeps this O(pixels) and the output small enough for
-/// an agent to act on ("fix the header first").
-fn mismatch_regions(diff: &DiffResult) -> Vec<serde_json::Value> {
-    const CELL: usize = 32;
-    const MAX_REGIONS: usize = 10;
+/// an agent to act on ("fix the header first"). Returns *all*
+/// regions (cell coords + mismatch count) so the significance
+/// summary is computed over the full set; the reply truncates.
+fn mismatch_regions(diff: &DiffResult) -> Vec<(usize, usize, usize, usize, usize)> {
     if diff.union_w == 0 || diff.union_h == 0 {
         return vec![];
     }
@@ -611,18 +624,28 @@ fn mismatch_regions(diff: &DiffResult) -> Vec<serde_json::Value> {
     }
     regions.sort_by_key(|r| std::cmp::Reverse(r.4));
     regions
-        .into_iter()
-        .take(MAX_REGIONS)
-        .map(|(x0, y0, x1, y1, count)| {
-            serde_json::json!({
-                "x": x0 * CELL,
-                "y": y0 * CELL,
-                "w": ((x1 + 1) * CELL).min(diff.union_w) - x0 * CELL,
-                "h": ((y1 + 1) * CELL).min(diff.union_h) - y0 * CELL,
-                "mismatched_pixels": count,
-            })
-        })
-        .collect()
+}
+
+/// One region in pixel coordinates, with its share of mismatched
+/// pixels. `density` (mismatched / bounding-box area) is what
+/// separates "a moved button" (dense) from "spread AA noise" (thin)
+/// when the global percentage looks equally good for both.
+fn region_value(
+    diff: &DiffResult,
+    region: (usize, usize, usize, usize, usize),
+) -> serde_json::Value {
+    let (x0, y0, x1, y1, count) = region;
+    let w = ((x1 + 1) * CELL).min(diff.union_w) - x0 * CELL;
+    let h = ((y1 + 1) * CELL).min(diff.union_h) - y0 * CELL;
+    let area = (w * h).max(1);
+    serde_json::json!({
+        "x": x0 * CELL,
+        "y": y0 * CELL,
+        "w": w,
+        "h": h,
+        "mismatched_pixels": count,
+        "density": (count as f64 / area as f64 * 10000.0).round() / 10000.0,
+    })
 }
 
 /// Write a heatmap PNG: frame `a` dimmed to 1/3 brightness, mismatched
@@ -698,6 +721,7 @@ fn diff_value(
     a: &Frame,
     b: &Frame,
     tolerance: u8,
+    min_region_px: Option<u32>,
     heatmap: Option<String>,
     heatmap_data: bool,
     full: bool,
@@ -708,7 +732,22 @@ fn diff_value(
     } else {
         100.0 * (result.total - result.mismatched) as f64 / result.total as f64
     };
-    let regions = mismatch_regions(&result);
+    let all_regions = mismatch_regions(&result);
+    // Significance summary: the mean percentage is trivially gamed by
+    // large unchanged backgrounds (a moved button still reads 99%+),
+    // so gate on the *worst cluster* instead. `worst_region` is the
+    // densest concentration of mismatch; `significant_regions` counts
+    // clusters at or above the area floor. `match_percent` stays for
+    // trend reporting; a gate of `significant_regions == 0` cannot be
+    // bought with empty background.
+    let min_region_px = min_region_px.unwrap_or(DEFAULT_MIN_REGION_PX) as usize;
+    let significant = all_regions.iter().filter(|r| r.4 >= min_region_px).count();
+    let worst_region = all_regions.first().map(|&r| region_value(&result, r));
+    let regions: Vec<serde_json::Value> = all_regions
+        .iter()
+        .take(MAX_REGIONS)
+        .map(|&r| region_value(&result, r))
+        .collect();
     let heatmap_png = (heatmap.is_some() || heatmap_data)
         .then(|| heatmap_png(a, &result))
         .transpose()?;
@@ -735,9 +774,14 @@ fn diff_value(
         "a": { "width": a.width, "height": a.height },
         "b": { "width": b.width, "height": b.height },
         "tolerance": tolerance,
+        "min_region_px": min_region_px,
+        "significant_regions": significant,
         "regions": regions,
         "envelope": envelope,
     });
+    if let Some(worst) = worst_region {
+        value["worst_region"] = worst;
+    }
     if let (Some(path), Some(png)) = (heatmap, heatmap_png.as_ref()) {
         std::fs::write(&path, png)
             .map_err(|error| format!("heatmap write to {path} failed: {error}"))?;
@@ -762,6 +806,9 @@ fn diff_value(
 /// lets `check` embed the diff as one field of its combined reply.
 pub struct DiffOptions {
     pub tolerance: Option<u8>,
+    /// Region significance floor in mismatched pixels (default
+    /// [`DEFAULT_MIN_REGION_PX`]).
+    pub min_region_px: Option<u32>,
     pub heatmap: Option<String>,
     pub heatmap_data: bool,
     pub full: bool,
@@ -786,6 +833,7 @@ pub fn diff_against_baseline(
                     &a,
                     &b,
                     tolerance,
+                    options.min_region_px,
                     options.heatmap,
                     options.heatmap_data,
                     options.full,
@@ -815,6 +863,7 @@ pub fn diff_against_baseline_data(
                     &a,
                     &b,
                     tolerance,
+                    options.min_region_px,
                     options.heatmap,
                     options.heatmap_data,
                     options.full,
@@ -835,6 +884,7 @@ pub fn diff(
     baseline: Option<String>,
     baseline_data: Option<String>,
     tolerance: Option<u8>,
+    min_region_px: Option<u32>,
     heatmap: Option<String>,
     heatmap_data: bool,
     full: bool,
@@ -854,6 +904,7 @@ pub fn diff(
         &a,
         &b,
         tolerance,
+        min_region_px,
         heatmap,
         heatmap_data,
         full,
@@ -963,10 +1014,121 @@ mod tests {
             height: 1,
             rgba: vec![255, 255, 255, 255],
         };
-        let value = diff_value(&actual, &decoded, 0, None, true, false).unwrap();
+        let value = diff_value(&actual, &decoded, 0, None, None, true, false).unwrap();
         let heatmap = value["heatmap_data"].as_str().unwrap();
         let bytes = hwatu_ipc::base64::decode(heatmap).unwrap();
         assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+    }
+
+    /// The dev.to critique this pins: a mean similarity score is
+    /// trivially gamed by large unchanged backgrounds. One moved
+    /// button on a big page reads 99%+ globally, but it must surface
+    /// as one dense significant region an agent/CI can gate on
+    /// (`significant_regions > 0`), with `worst_region` naming it.
+    #[test]
+    fn dense_local_change_is_significant_despite_high_global_score() {
+        const W: usize = 640;
+        const H: usize = 640;
+        let base = Frame {
+            width: W,
+            height: H,
+            rgba: vec![255u8; W * H * 4],
+        };
+        // "Moved button": one 64x64 block of solid difference.
+        let mut rgba = vec![255u8; W * H * 4];
+        for y in 96..160 {
+            for x in 96..160 {
+                let i = (y * W + x) * 4;
+                rgba[i] = 0;
+                rgba[i + 1] = 0;
+                rgba[i + 2] = 0;
+            }
+        }
+        let moved = Frame {
+            width: W,
+            height: H,
+            rgba,
+        };
+        let value = diff_value(&base, &moved, 0, None, None, false, false).unwrap();
+        // Global score stays quotable...
+        assert!(value["match_percent"].as_f64().unwrap() > 98.0, "{value}");
+        // ...but the gate still trips.
+        assert_eq!(value["significant_regions"], 1, "{value}");
+        assert_eq!(value["min_region_px"], super::DEFAULT_MIN_REGION_PX);
+        let worst = &value["worst_region"];
+        assert_eq!(worst["mismatched_pixels"], 64 * 64);
+        assert!(
+            worst["density"].as_f64().unwrap() > 0.9,
+            "a solid block must be dense: {worst}"
+        );
+        // The worst region is also regions[0] (worst-first order).
+        assert_eq!(value["regions"][0], *worst);
+    }
+
+    /// The other half of the same critique: thin, spread-out noise
+    /// (antialiasing-style) must not trip the region gate, even when
+    /// its pixel count rivals the moved button's. Sub-threshold cells
+    /// never cluster, so `significant_regions` stays 0.
+    #[test]
+    fn spread_noise_is_not_significant() {
+        const W: usize = 640;
+        const H: usize = 640;
+        let base = Frame {
+            width: W,
+            height: H,
+            rgba: vec![255u8; W * H * 4],
+        };
+        // One differing pixel per 32x32 cell, everywhere: 400 pixels
+        // of mismatch, but every cell stays under the 5% hot floor.
+        let mut rgba = vec![255u8; W * H * 4];
+        for cy in 0..(H / 32) {
+            for cx in 0..(W / 32) {
+                let i = ((cy * 32 + 16) * W + cx * 32 + 16) * 4;
+                rgba[i] = 0;
+            }
+        }
+        let noisy = Frame {
+            width: W,
+            height: H,
+            rgba,
+        };
+        let value = diff_value(&base, &noisy, 0, None, None, false, false).unwrap();
+        assert!(value["mismatched_pixels"].as_u64().unwrap() >= 400);
+        assert_eq!(value["significant_regions"], 0, "{value}");
+        assert!(value.get("worst_region").is_none(), "{value}");
+    }
+
+    /// The floor is a knob: lowering min_region_px makes smaller
+    /// clusters count, so callers can tune what "significant" means
+    /// without touching the pixel tolerance.
+    #[test]
+    fn min_region_px_knob_controls_significance() {
+        const W: usize = 256;
+        const H: usize = 256;
+        let base = Frame {
+            width: W,
+            height: H,
+            rgba: vec![255u8; W * H * 4],
+        };
+        // A 24x24 block: 576 mismatched pixels, dense within its
+        // cells, but under the 1024 default floor.
+        let mut rgba = vec![255u8; W * H * 4];
+        for y in 32..56 {
+            for x in 32..56 {
+                let i = (y * W + x) * 4;
+                rgba[i] = 0;
+            }
+        }
+        let small = Frame {
+            width: W,
+            height: H,
+            rgba,
+        };
+        let default = diff_value(&base, &small, 0, None, None, false, false).unwrap();
+        assert_eq!(default["significant_regions"], 0, "{default}");
+        let tuned = diff_value(&base, &small, 0, Some(500), None, false, false).unwrap();
+        assert_eq!(tuned["significant_regions"], 1, "{tuned}");
+        assert_eq!(tuned["min_region_px"], 500);
     }
 
     /// The regression this pins: `resize WxH` must request the CSS
