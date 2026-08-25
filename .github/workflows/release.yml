@@ -117,3 +117,50 @@ jobs:
             exit 1
           fi
           gh release edit "${GITHUB_REF_NAME}" --draft=false --latest
+
+  aur-reminder:
+    name: AUR publish reminder
+    runs-on: ubuntu-latest
+    needs: publish
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      # The AUR push needs a maintainer SSH key that cannot live in CI,
+      # so it is the one manual step left after a release. Issue #72
+      # happened because that step was forgotten and nothing noticed.
+      # Open a tracking issue so it is visible instead of implicit.
+      - name: Open AUR publish tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          live=$(curl -s "https://aur.archlinux.org/rpc/v5/info?arg[]=hwatu" \
+            | python3 -c 'import json,sys; r=json.load(sys.stdin)["results"]; print(r[0]["Version"] if r else "none")')
+          echo "release: $tag / AUR live: $live"
+          if [ "${live%%-*}" = "${tag#v}" ]; then
+            echo "AUR already at $tag; nothing to do."
+            exit 0
+          fi
+          gh issue create \
+            --title "Publish $tag to the AUR" \
+            --label packaging \
+            --body "$(printf '%s\n' \
+              "\`$tag\` is released but the AUR package is at \`$live\`." \
+              "" \
+              "Run from a machine with the AUR SSH key:" \
+              "" \
+              '```' \
+              "scripts/aur-publish.sh" \
+              '```' \
+              "" \
+              "Then verify:" \
+              "" \
+              '```' \
+              "curl -s 'https://aur.archlinux.org/rpc/v5/info?arg[]=hwatu' | jq '.results[0].Version'" \
+              '```' \
+              "" \
+              "Opened automatically by the release workflow (see #72 for why).")" \
+            || echo "could not open issue (label may not exist); not failing the release"

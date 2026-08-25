@@ -141,3 +141,17 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v2
         with:
           command: check advisories bans licenses sources
+
+  packaging:
+    name: Packaging metadata sync
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+
+      # Issue #72: the AUR package silently sat two releases behind, so
+      # `hwatu setup` did not exist for yay users and only a bug report
+      # surfaced it. Version drift in packaging metadata is now a CI
+      # failure rather than a user-discovered outage.
+      - name: Check packaging metadata is in sync
+        run: scripts/check-packaging-sync.sh
