@@ -47,6 +47,18 @@ fn update() -> Result<(), String> {
         .and_then(|p| p.parent().map(Path::to_path_buf))
         .ok_or("cannot locate current executable")?;
 
+    // A package-manager install (pacman, apt, nix) owns these files. Writing
+    // over them desyncs the package database and, under sudo, drops unsigned
+    // binaries into a root-owned directory. Refuse and defer to the manager.
+    if !dir_is_user_writable(&install_dir) {
+        return Err(format!(
+            "{} is not writable by this user; hwatu looks package-manager installed.\n\
+             update it with your package manager instead (for example `pacman -Syu hwatu`).\n\
+             do not re-run this under sudo: it would overwrite package-owned files.",
+            install_dir.display()
+        ));
+    }
+
     let tmp = mktemp_dir()?;
     let _cleanup = Cleanup(tmp.clone());
 
@@ -165,6 +177,25 @@ fn run_ok(cmd: &mut Command, name: &str) -> Result<(), String> {
     }
 }
 
+/// True when the current user can create files in `dir`.
+///
+/// Uses an actual create attempt rather than reading mode bits, so it stays
+/// correct under ACLs, read-only mounts, and root (for whom mode bits lie).
+fn dir_is_user_writable(dir: &Path) -> bool {
+    let probe = dir.join(format!(".hwatu-write-probe-{}", std::process::id()));
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+    {
+        Ok(_) => {
+            let _ = std::fs::remove_file(&probe);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
 fn mktemp_dir() -> Result<PathBuf, String> {
     let dir = std::env::temp_dir().join(format!("hwatu-update-{}", std::process::id()));
     std::fs::create_dir_all(&dir).map_err(|e| format!("mktemp: {e}"))?;
@@ -176,5 +207,49 @@ struct Cleanup(PathBuf);
 impl Drop for Cleanup {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn writability_probe_leaves_no_residue() {
+        let dir = std::env::temp_dir().join(format!("hwatu-probe-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert!(dir_is_user_writable(&dir));
+        let leftovers: Vec<_> = std::fs::read_dir(&dir).unwrap().collect();
+        assert!(leftovers.is_empty(), "probe file must be cleaned up");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn unwritable_install_dir_is_refused() {
+        // Root bypasses permission bits, so the probe would succeed and this
+        // assertion would not describe the guard. This module deliberately
+        // carries no Rust deps, so shell out rather than pull in `libc`.
+        let euid = Command::new("id")
+            .arg("-u")
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .and_then(|s| s.trim().parse::<u32>().ok());
+        if euid == Some(0) {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("hwatu-ro-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o500)).unwrap();
+            assert!(
+                !dir_is_user_writable(&dir),
+                "a read-only directory must read as not user-writable"
+            );
+            std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
