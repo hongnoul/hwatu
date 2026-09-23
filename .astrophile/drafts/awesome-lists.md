@@ -1,7 +1,7 @@
 # Awesome-list PR pitches
 
 Entry line (agent/AI-tooling lists, primary):
-- [hwatu](https://github.com/hongnoul/hwatu) - Visual verification browser for coding agents: daemon-based WebKitGTK, ~13ms window spawn, JSON automation over a Unix socket, human hand-off into a tiling WM
+- [hwatu](https://github.com/hongnoul/hwatu) - Headless verification browser for coding agents: daemon-based WebKitGTK, ~13ms window spawn, JSON automation over a Unix socket, human hand-off into a tiling WM
 
 Entry line (WM/desktop lists):
 - [hwatu](https://github.com/hongnoul/hwatu) - Daemon-based WebKitGTK browser for tiling WMs: real rendering, ~13ms window spawn, built AI-first for agent verification

@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "IPC protocol types for hwatu, the visual verification browser for AI coding agents"
+description = "IPC protocol types for hwatu, the headless verification browser for AI coding agents"
 
 [dependencies]
 base64 = "0.22"

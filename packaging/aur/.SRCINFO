@@ -1,5 +1,5 @@
 pkgbase = hwatu
-	pkgdesc = Visual verification browser for AI coding agents: daemon-based WebKitGTK, real rendering, ~13ms window spawn
+	pkgdesc = Headless verification browser for AI coding agents: daemon-based WebKitGTK, real rendering, ~13ms window spawn
 	pkgver = 0.7.1
 	pkgrel = 1
 	url = https://github.com/hongnoul/hwatu
