@@ -155,3 +155,9 @@ jobs:
       # failure rather than a user-discovered outage.
       - name: Check packaging metadata is in sync
         run: scripts/check-packaging-sync.sh
+
+      # The AUR push script is the one manual step per release (issue #82),
+      # so a syntax break there surfaces only when someone runs it by hand.
+      # Validate it on every push instead.
+      - name: Validate AUR publish script
+        run: bash -n scripts/aur-publish.sh

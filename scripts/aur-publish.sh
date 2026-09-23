@@ -28,13 +28,32 @@ fi
 cp "$repo_root/packaging/PKGBUILD" "$workdir/aur/PKGBUILD"
 ( cd "$workdir/aur" && makepkg --printsrcinfo > .SRCINFO )
 
+# The staged packaging/aur/.SRCINFO must match what makepkg regenerates
+# from the canonical PKGBUILD. Fail loudly here (before any push) rather
+# than publishing a PKGBUILD/.SRCINFO pair that trips the sync guard in CI.
+if ! diff -u "$repo_root/packaging/aur/.SRCINFO" "$workdir/aur/.SRCINFO" >&2; then
+  echo "error: regenerated .SRCINFO differs from packaging/aur/.SRCINFO." >&2
+  echo "Run: cp packaging/PKGBUILD packaging/aur/PKGBUILD && (cd packaging/aur && makepkg --printsrcinfo > .SRCINFO)" >&2
+  exit 1
+fi
+
+# Pre-flight: refuse to no-op or downgrade against the live AUR version.
+live_ver=$(curl -s "https://aur.archlinux.org/rpc/v5/info?arg[]=$pkgname" \
+  | python3 -c 'import json,sys; r=json.load(sys.stdin)["results"]; print(r[0]["Version"] if r else "none")' 2>/dev/null || echo unknown)
+echo "live AUR version: $live_ver"
+pkgver=$(sed -n 's/^pkgver=\(.*\)$/\1/p' "$workdir/aur/PKGBUILD" | head -1)
+pkgrel=$(sed -n 's/^pkgrel=\(.*\)$/\1/p' "$workdir/aur/PKGBUILD" | head -1)
+if [ "$live_ver" = "$pkgver-$pkgrel" ]; then
+  echo "AUR already at $live_ver; nothing to push."
+  exit 0
+fi
+
 cd "$workdir/aur"
 git add PKGBUILD .SRCINFO
 if git diff --cached --quiet; then
   echo "AUR already up to date."
   exit 0
 fi
-pkgver=$(grep -oP '^pkgver=\K.*' PKGBUILD)
 git commit -m "update to $pkgver"
 git push origin HEAD:master
 echo "published $pkgname $pkgver to AUR: https://aur.archlinux.org/packages/$pkgname"
