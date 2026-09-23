@@ -123,22 +123,36 @@ jobs:
     runs-on: ubuntu-latest
     needs: publish
     timeout-minutes: 10
-    # Runs only when the maintainer has stored an AUR SSH key as the
-    # AUR_SSH_KEY secret (which registers the matching pubkey at
-    # https://aur.archlinux.org -> My Account). Without the secret the
-    # job is skipped and aur-reminder opens the manual tracking issue.
-    if: ${{ secrets.AUR_SSH_KEY != '' }}
+    outputs:
+      ran: ${{ steps.outcome.outputs.ran }}
+    # NOTE: the secrets context is not allowed in `if:` conditions at
+    # either job or step level on this runner, so every secret-dependent
+    # step checks "$AUR_SSH_KEY" inside its run script and exits 0
+    # (skip) when unset. The sentinel outcome step records whether the
+    # push actually ran; aur-reminder opens the manual issue otherwise.
     steps:
       - uses: actions/checkout@v5
 
       - name: Install makepkg (pacman)
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq pacman-package-manager
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${AUR_SSH_KEY:-}" ]; then
+            echo "AUR_SSH_KEY not set; skipping makepkg install."
+            exit 0
+          fi
+          sudo apt-get update -qq && sudo apt-get install -y -qq pacman-package-manager
 
       - name: Set up AUR SSH key
         env:
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
         run: |
           set -euo pipefail
+          if [ -z "${AUR_SSH_KEY:-}" ]; then
+            echo "AUR_SSH_KEY not set; skipping key setup."
+            exit 0
+          fi
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
           printf '%s\n' "$AUR_SSH_KEY" > ~/.ssh/aur
@@ -153,15 +167,35 @@ jobs:
       # The script itself is idempotent: it no-ops when live is current
       # and aborts on .SRCINFO drift before pushing.
       - name: Publish to AUR
-        run: scripts/aur-publish.sh
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${AUR_SSH_KEY:-}" ]; then
+            echo "AUR_SSH_KEY not set; skipping publish (aur-reminder will open the manual issue)."
+            exit 0
+          fi
+          scripts/aur-publish.sh
+
+      - name: Record publish outcome
+        id: outcome
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          if [ -n "${AUR_SSH_KEY:-}" ]; then
+            echo "ran=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ran=false" >> "$GITHUB_OUTPUT"
+            echo "AUR_SSH_KEY secret not set; automated publish skipped."
+          fi
 
   aur-reminder:
     name: AUR publish reminder
     runs-on: ubuntu-latest
     needs: [publish, aur-publish]
-    # Skip the reminder when the automated publish ran; it either pushed
-    # or no-oped because live was already current.
-    if: ${{ always() && needs.aur-publish.result == 'skipped' }}
+    # Run the reminder only when the automated publish did not run
+    # (no secret). It either pushed or no-oped because live was current.
+    if: ${{ always() && needs.aur-publish.outputs.ran != 'true' }}
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
