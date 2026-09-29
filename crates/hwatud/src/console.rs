@@ -197,56 +197,36 @@ pub fn attach(buffer: &Buffer, view: &webkit6::WebView) {
     }
 
     let buffer = buffer.clone();
-    view.connect_resource_load_started(move |view, resource, _request| {
-        let page = view.uri().map(|u| u.to_string());
-        // Connection-level failures (DNS, refused, TLS). Loads
-        // cancelled by navigating away are noise, not errors.
-        {
-            let buffer = buffer.clone();
-            let page = page.clone();
-            resource.connect_failed(move |resource, error| {
-                if error.matches(gtk::gio::IOErrorEnum::Cancelled)
-                    || error.to_string().to_lowercase().contains("cancelled")
-                {
-                    return;
-                }
-                buffer.push(Entry {
-                    ts_ms: now_ms(),
-                    kind: "network".into(),
-                    level: "error".into(),
-                    text: error.to_string(),
-                    url: resource.uri().map(|u| u.to_string()),
-                    line: None,
-                    status: None,
-                    page: page.clone(),
-                });
+    let engine = crate::engine::WebKitView(view.clone());
+    engine.on_resource(Box::new(move |ev| {
+        if let Some(error) = ev.error {
+            // Connection-level failures (DNS, refused, TLS). Cancelled
+            // loads were already filtered by the backend as noise.
+            buffer.push(Entry {
+                ts_ms: now_ms(),
+                kind: "network".into(),
+                level: "error".into(),
+                text: error,
+                url: Some(ev.url),
+                line: None,
+                status: None,
+                page: ev.page,
+            });
+        } else if let Some(status) = ev.status.filter(|&s| s >= 400) {
+            // HTTP errors: the load "succeeded" at the transport level
+            // but the server said no. 404 assets and 500 API answers.
+            buffer.push(Entry {
+                ts_ms: now_ms(),
+                kind: "network".into(),
+                level: "error".into(),
+                text: format!("HTTP {status}"),
+                url: Some(ev.url),
+                line: None,
+                status: Some(status),
+                page: ev.page,
             });
         }
-        // HTTP errors: the load "succeeded" at the transport level but
-        // the server said no. 404 assets and 500 API answers live here.
-        {
-            let buffer = buffer.clone();
-            resource.connect_finished(move |resource| {
-                let Some(response) = resource.response() else {
-                    return;
-                };
-                let status = response.status_code();
-                if status < 400 {
-                    return;
-                }
-                buffer.push(Entry {
-                    ts_ms: now_ms(),
-                    kind: "network".into(),
-                    level: "error".into(),
-                    text: format!("HTTP {status}"),
-                    url: resource.uri().map(|u| u.to_string()),
-                    line: None,
-                    status: Some(status),
-                    page: page.clone(),
-                });
-            });
-        }
-    });
+    }));
 }
 
 #[cfg(test)]

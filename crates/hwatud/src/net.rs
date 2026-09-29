@@ -24,7 +24,6 @@ use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;
 use std::time::Instant;
-use webkit6::prelude::*;
 
 /// Keep the buffer bounded; agents read recent requests, not history.
 /// Long-lived windows (dev servers polling, SPAs fetching) must not
@@ -150,75 +149,36 @@ fn classify(mime: &str, is_main: bool) -> &'static str {
 /// Entries are recorded when a resource finishes or fails; loads
 /// cancelled by navigating away are noise, not requests worth logging.
 pub fn attach(buffer: &Buffer, view: &webkit6::WebView) {
+    use crate::engine::{EngineView, WebKitView};
     let buffer = buffer.clone();
-    view.connect_resource_load_started(move |view, resource, request| {
-        let is_main = view.main_resource().as_ref() == Some(resource);
-        if is_main {
+    WebKitView(view.clone()).on_resource(Box::new(move |ev| {
+        if ev.is_main {
             // New document: restart the start_ms timeline so offsets
             // read as "ms into this page load".
             buffer.reset_epoch();
         }
-        let started = Instant::now();
-        let start_ms = buffer.offset_ms();
-        let method = request
-            .http_method()
-            .map(|m| m.to_string())
-            .unwrap_or_else(|| "GET".into());
-        let page = view.uri().map(|u| u.to_string());
-        // `finished` also fires after `failed`; first reporter wins.
-        let reported = Rc::new(Cell::new(false));
-        {
-            let buffer = buffer.clone();
-            let reported = reported.clone();
-            let method = method.clone();
-            let page = page.clone();
-            resource.connect_failed(move |resource, error| {
-                if reported.replace(true) {
-                    return;
-                }
-                if error.matches(gtk::gio::IOErrorEnum::Cancelled)
-                    || error.to_string().to_lowercase().contains("cancelled")
-                {
-                    return; // navigated away mid-load: noise
-                }
-                buffer.push(Entry {
-                    method: method.clone(),
-                    url: resource.uri().map(|u| u.to_string()).unwrap_or_default(),
-                    status: None,
-                    resource_type: "other".into(),
-                    start_ms,
-                    duration_ms: Some(started.elapsed().as_millis() as u64),
-                    error: Some(error.to_string()),
-                    page: page.clone(),
-                });
-            });
+        let duration = ev.duration_ms;
+        let start_ms = buffer
+            .offset_ms()
+            .saturating_sub(duration.unwrap_or(0));
+        if ev.error.is_none() && ev.status.is_none() && ev.mime.is_none() {
+            return; // silent cancelled load: not a request
         }
-        {
-            let buffer = buffer.clone();
-            resource.connect_finished(move |resource| {
-                if reported.replace(true) {
-                    return;
-                }
-                let response = resource.response();
-                let Some(response) = response else {
-                    // No response and no `failed`: a cancelled load
-                    // WebKit finished silently. Not a request.
-                    return;
-                };
-                let mime = response.mime_type().unwrap_or_default();
-                buffer.push(Entry {
-                    method: method.clone(),
-                    url: resource.uri().map(|u| u.to_string()).unwrap_or_default(),
-                    status: Some(response.status_code()).filter(|&s| s != 0),
-                    resource_type: classify(&mime, is_main).into(),
-                    start_ms,
-                    duration_ms: Some(started.elapsed().as_millis() as u64),
-                    error: None,
-                    page: page.clone(),
-                });
-            });
-        }
-    });
+        let resource_type = match &ev.error {
+            Some(_) => "other".into(),
+            None => classify(ev.mime.as_deref().unwrap_or(""), ev.is_main).into(),
+        };
+        buffer.push(Entry {
+            method: ev.method,
+            url: ev.url,
+            status: ev.status,
+            resource_type,
+            start_ms,
+            duration_ms: duration,
+            error: ev.error,
+            page: ev.page,
+        });
+    }));
 }
 
 #[cfg(test)]
