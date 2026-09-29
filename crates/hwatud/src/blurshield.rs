@@ -85,21 +85,11 @@ fn enabled() -> bool {
 /// (prewarm pool and popups) before page content loads, same contract
 /// as `console::wire_view`.
 pub fn wire_view(view: &webkit6::WebView) {
-    use webkit6::prelude::*;
+    use crate::engine::{EngineView, FrameScope, ScriptTime, WebKitView};
     if !enabled() {
         return;
     }
-    let Some(ucm) = view.user_content_manager() else {
-        return;
-    };
-    let script = webkit6::UserScript::new(
-        BLUR_SHIELD_JS,
-        webkit6::UserContentInjectedFrames::AllFrames,
-        webkit6::UserScriptInjectionTime::Start,
-        &[],
-        &[],
-    );
-    ucm.add_script(&script);
+    WebKitView(view.clone()).add_user_script(BLUR_SHIELD_JS, ScriptTime::Start, FrameScope::All);
 }
 
 #[cfg(test)]

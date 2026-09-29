@@ -440,23 +440,18 @@ const CLOCK_JS: &str = r#"(() => {
 /// loads page content, because the wrappers must win the race against
 /// page scripts capturing the native clocks.
 pub fn wire_view(view: &webkit6::WebView) {
-    use webkit6::prelude::WebViewExt;
-    let Some(ucm) = view.user_content_manager() else {
-        return;
-    };
+    use crate::engine::{EngineView, FrameScope, ScriptTime, WebKitView};
+    let engine = WebKitView(view.clone());
     // Deterministic-load mode: a tiny preamble script (added first, so
     // it runs first) flags the realm before the clock installs. Only
     // isolated verification daemons set this env; interactive daemons
     // keep native passthrough behavior.
     if std::env::var("HWATU_CLOCK_START_PAUSED").is_ok_and(|v| !v.is_empty() && v != "0") {
-        let flag = webkit6::UserScript::new(
+        engine.add_user_script(
             "window.__hwatu_clock_start_paused = true;",
-            webkit6::UserContentInjectedFrames::AllFrames,
-            webkit6::UserScriptInjectionTime::Start,
-            &[],
-            &[],
+            ScriptTime::Start,
+            FrameScope::All,
         );
-        ucm.add_script(&flag);
     }
     // Pin Date.now() independently of timeline state. This lets verification
     // pages finish native-clock navigation/font/hydration waits before their
@@ -465,23 +460,13 @@ pub fn wire_view(view: &webkit6::WebView) {
         .ok()
         .and_then(|value| value.parse::<i64>().ok())
     {
-        let epoch = webkit6::UserScript::new(
+        engine.add_user_script(
             &format!("window.__hwatu_clock_epoch_ms = {epoch_ms};"),
-            webkit6::UserContentInjectedFrames::AllFrames,
-            webkit6::UserScriptInjectionTime::Start,
-            &[],
-            &[],
+            ScriptTime::Start,
+            FrameScope::All,
         );
-        ucm.add_script(&epoch);
     }
-    let script = webkit6::UserScript::new(
-        CLOCK_JS,
-        webkit6::UserContentInjectedFrames::AllFrames,
-        webkit6::UserScriptInjectionTime::Start,
-        &[],
-        &[],
-    );
-    ucm.add_script(&script);
+    engine.add_user_script(CLOCK_JS, ScriptTime::Start, FrameScope::All);
 }
 
 /// Dispatch one clock command to the page's installed control surface.
@@ -542,7 +527,7 @@ return {call};"#
 /// clock installed first (scripts run in registration order, and
 /// CLOCK_JS is registered at view build time).
 fn wire_seed(daemon: &Rc<Daemon>, id: Option<u64>, seed: u64) -> Result<(), Box<Response>> {
-    use webkit6::prelude::WebViewExt;
+    use crate::engine::{EngineView, FrameScope, ScriptTime, WebKitView};
     let windows = daemon.windows.borrow();
     let win = match id {
         Some(id) => windows
@@ -562,21 +547,11 @@ fn wire_seed(daemon: &Rc<Daemon>, id: Option<u64>, seed: u64) -> Result<(), Box<
     let Some(view) = win.live_webview() else {
         return Err(Box::new(Response::err("window has no live webview")));
     };
-    let Some(ucm) = view.user_content_manager() else {
-        return Err(Box::new(Response::err("view has no user content manager")));
-    };
     let js = format!(
         "window.__hwatu_clock_seed = {seed};\n\
          if (window.__hwatu_clock) window.__hwatu_clock.seedRandom({seed});"
     );
-    let script = webkit6::UserScript::new(
-        &js,
-        webkit6::UserContentInjectedFrames::AllFrames,
-        webkit6::UserScriptInjectionTime::Start,
-        &[],
-        &[],
-    );
-    ucm.add_script(&script);
+    WebKitView(view).add_user_script(&js, ScriptTime::Start, FrameScope::All);
     Ok(())
 }
 

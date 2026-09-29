@@ -16,7 +16,6 @@
 //! until a label completes, Escape/no-match exits, scroll/blur
 //! dismisses. Unknown pages fail open — no interactables, no overlay.
 
-use webkit6::prelude::*;
 
 /// Script-message handler name for yank results.
 pub const YANK_HANDLER: &str = "hwatuHintYank";
@@ -160,26 +159,20 @@ const HINTS_JS: &str = r#"(() => {
 /// same contract as the other `wire_view`s. `on_yank` receives hrefs
 /// from yank-mode activations.
 pub fn wire_view(view: &webkit6::WebView, on_yank: impl Fn(String) + 'static) {
-    let Some(ucm) = view.user_content_manager() else {
-        return;
-    };
-    let script = webkit6::UserScript::new(
-        HINTS_JS,
-        // Main frame only: hint labels in cross-origin iframes would
-        // render at wrong coordinates and can't be activated anyway.
-        webkit6::UserContentInjectedFrames::TopFrame,
-        webkit6::UserScriptInjectionTime::Start,
-        &[],
-        &[],
+    use crate::engine::{EngineView, FrameScope, ScriptTime, WebKitView};
+    let engine = WebKitView(view.clone());
+    // Main frame only: hint labels in cross-origin iframes would
+    // render at wrong coordinates and can't be activated anyway.
+    engine.add_user_script(HINTS_JS, ScriptTime::Start, FrameScope::TopOnly);
+    engine.register_message_handler(YANK_HANDLER);
+    engine.on_message(
+        YANK_HANDLER,
+        Box::new(move |href| {
+            if !href.is_empty() {
+                on_yank(href);
+            }
+        }),
     );
-    ucm.add_script(&script);
-    ucm.register_script_message_handler(YANK_HANDLER, None);
-    ucm.connect_script_message_received(Some(YANK_HANDLER), move |_, value| {
-        let href = value.to_str().to_string();
-        if !href.is_empty() {
-            on_yank(href);
-        }
-    });
 }
 
 /// JS expression that enters hint mode. `mode`: follow | newwin | yank.
