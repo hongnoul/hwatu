@@ -1702,11 +1702,7 @@ pub fn screenshot(
         std::env::temp_dir().join(format!("hwatu-shot-{}-{ts}.png", win.id))
     });
 
-    let region = if full {
-        webkit6::SnapshotRegion::FullDocument
-    } else {
-        webkit6::SnapshotRegion::Visible
-    };
+    let region = crate::vocab::SnapshotArea::from_full_page(full).to_webkit();
     view.snapshot(
         region,
         webkit6::SnapshotOptions::NONE,

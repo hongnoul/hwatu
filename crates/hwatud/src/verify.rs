@@ -697,11 +697,7 @@ fn capture(daemon: &Rc<Daemon>, id: u64, full: bool, done: Box<dyn FnOnce(Result
         Some(v) => v,
         None => return done(Err(format!("window {id} has no live webview"))),
     };
-    let region = if full {
-        webkit6::SnapshotRegion::FullDocument
-    } else {
-        webkit6::SnapshotRegion::Visible
-    };
+    let region = crate::vocab::SnapshotArea::from_full_page(full).to_webkit();
     view.snapshot(
         region,
         webkit6::SnapshotOptions::NONE,

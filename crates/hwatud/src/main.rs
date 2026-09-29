@@ -47,6 +47,7 @@ mod snapdiff;
 mod theme;
 mod trusted_input;
 mod verify;
+mod vocab;
 mod window;
 
 use gtk::prelude::*;
