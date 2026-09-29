@@ -13,6 +13,7 @@
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
+use crate::engine::EngineView;
 use webkit6::prelude::*;
 
 /// Script message handler name the user script posts to.
@@ -165,36 +166,34 @@ const CAPTURE_JS: &str = r#"(() => {
 /// content manager. Must run on every view (prewarmed pool, popups)
 /// before it loads page content.
 pub fn wire_view(view: &webkit6::WebView) {
-    let Some(ucm) = view.user_content_manager() else {
-        return;
-    };
-    ucm.register_script_message_handler(HANDLER, None);
-    let script = webkit6::UserScript::new(
+    let engine = crate::engine::WebKitView(view.clone());
+    engine.register_message_handler(HANDLER);
+    engine.add_user_script(
         CAPTURE_JS,
-        webkit6::UserContentInjectedFrames::AllFrames,
-        webkit6::UserScriptInjectionTime::Start,
-        &[],
-        &[],
+        crate::engine::ScriptTime::Start,
+        crate::engine::FrameScope::All,
     );
-    ucm.add_script(&script);
 }
 
 /// Connect a window's buffer to a (freshly attached) WebView: script
 /// messages from the capture script, plus native resource-load
 /// failures and HTTP >= 400 responses.
 pub fn attach(buffer: &Buffer, view: &webkit6::WebView) {
-    if let Some(ucm) = view.user_content_manager() {
+    {
+        let engine = crate::engine::WebKitView(view.clone());
         let buffer = buffer.clone();
         let view = view.clone();
-        ucm.connect_script_message_received(Some(HANDLER), move |_, value| {
-            let raw = value.to_str();
-            let Ok(mut entry) = serde_json::from_str::<Entry>(&raw) else {
-                return;
-            };
-            entry.ts_ms = now_ms();
-            entry.page = view.uri().map(|u| u.to_string());
-            buffer.push(entry);
-        });
+        engine.on_message(
+            HANDLER,
+            Box::new(move |raw| {
+                let Ok(mut entry) = serde_json::from_str::<Entry>(&raw) else {
+                    return;
+                };
+                entry.ts_ms = now_ms();
+                entry.page = view.uri().map(|u| u.to_string());
+                buffer.push(entry);
+            }),
+        );
     }
 
     let buffer = buffer.clone();

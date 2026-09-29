@@ -18,6 +18,7 @@ mod console;
 mod coverage;
 mod darkmode;
 mod downloads;
+mod engine;
 mod events;
 mod external;
 mod focusshield;
