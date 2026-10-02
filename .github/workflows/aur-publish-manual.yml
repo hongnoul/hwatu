@@ -1,0 +1,54 @@
+name: AUR publish (manual)
+
+# One-click retry for the AUR push behind issue #82.
+# The automated aur-publish job in release.yml only runs on tag pushes;
+# use this workflow to (re)publish a tag without deleting and re-pushing it.
+# Requires the AUR_SSH_KEY repo secret plus its pubkey registered at
+# https://aur.archlinux.org -> My Account -> SSH Public Key.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish (e.g. v0.7.1)'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  aur-publish:
+    name: Publish to AUR
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Install makepkg (pacman)
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq pacman-package-manager
+
+      - name: Set up AUR SSH key
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${AUR_SSH_KEY:-}" ]; then
+            echo "error: AUR_SSH_KEY secret is not set." >&2
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$AUR_SSH_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          ssh-keyscan -t ed25519 aur.archlinux.org >> ~/.ssh/known_hosts 2>/dev/null
+          cat >> ~/.ssh/config <<'EOF'
+          Host aur.archlinux.org
+            IdentityFile ~/.ssh/aur
+            IdentitiesOnly yes
+          EOF
+
+      - name: Publish to AUR
+        run: scripts/aur-publish.sh
