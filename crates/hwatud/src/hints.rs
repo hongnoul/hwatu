@@ -16,7 +16,6 @@
 //! until a label completes, Escape/no-match exits, scroll/blur
 //! dismisses. Unknown pages fail open — no interactables, no overlay.
 
-
 /// Script-message handler name for yank results.
 pub const YANK_HANDLER: &str = "hwatuHintYank";
 

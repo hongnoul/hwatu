@@ -158,9 +158,7 @@ pub fn attach(buffer: &Buffer, view: &webkit6::WebView) {
             buffer.reset_epoch();
         }
         let duration = ev.duration_ms;
-        let start_ms = buffer
-            .offset_ms()
-            .saturating_sub(duration.unwrap_or(0));
+        let start_ms = buffer.offset_ms().saturating_sub(duration.unwrap_or(0));
         if ev.error.is_none() && ev.status.is_none() && ev.mime.is_none() {
             return; // silent cancelled load: not a request
         }

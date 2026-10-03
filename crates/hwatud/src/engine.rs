@@ -156,10 +156,7 @@ mod webkitgtk {
         fn disconnect(&self, handle: SignalHandle) {
             let obj: &glib::Object = self.0.upcast_ref();
             unsafe {
-                glib::gobject_ffi::g_signal_handler_disconnect(
-                    obj.to_glib_none().0,
-                    handle.0,
-                );
+                glib::gobject_ffi::g_signal_handler_disconnect(obj.to_glib_none().0, handle.0);
             }
         }
 
@@ -171,7 +168,9 @@ mod webkitgtk {
                 gtk::gio::Cancellable::NONE,
                 move |result| {
                     cb(match result {
-                        Ok(value) => Ok(value.to_json(0).map(|s| s.to_string()).unwrap_or_default()),
+                        Ok(value) => {
+                            Ok(value.to_json(0).map(|s| s.to_string()).unwrap_or_default())
+                        }
                         Err(e) => Err(e.to_string()),
                     })
                 },
@@ -235,66 +234,68 @@ mod webkitgtk {
             use std::rc::Rc;
             use std::time::Instant;
             let cb = Rc::new(cb);
-            let id = self.0.connect_resource_load_started(move |view, resource, request| {
-                let is_main = view.main_resource().as_ref() == Some(resource);
-                let started = Instant::now();
-                let method = request
-                    .http_method()
-                    .map(|m| m.to_string())
-                    .unwrap_or_else(|| "GET".into());
-                let page = view.uri().map(|u| u.to_string());
-                // `finished` also fires after `failed`; first reporter wins.
-                let reported = Rc::new(Cell::new(false));
-                {
-                    let cb = cb.clone();
-                    let reported = reported.clone();
-                    let method = method.clone();
-                    let page = page.clone();
-                    resource.connect_failed(move |resource, error| {
-                        if reported.replace(true) {
-                            return;
-                        }
-                        if error.matches(gtk::gio::IOErrorEnum::Cancelled)
-                            || error.to_string().to_lowercase().contains("cancelled")
-                        {
-                            return; // navigated away mid-load: noise
-                        }
-                        cb(super::ResourceEvent {
-                            url: resource.uri().map(|u| u.to_string()).unwrap_or_default(),
-                            method: method.clone(),
-                            status: None,
-                            mime: None,
-                            error: Some(error.to_string()),
-                            is_main,
-                            page: page.clone(),
-                            duration_ms: Some(started.elapsed().as_millis() as u64),
+            let id = self
+                .0
+                .connect_resource_load_started(move |view, resource, request| {
+                    let is_main = view.main_resource().as_ref() == Some(resource);
+                    let started = Instant::now();
+                    let method = request
+                        .http_method()
+                        .map(|m| m.to_string())
+                        .unwrap_or_else(|| "GET".into());
+                    let page = view.uri().map(|u| u.to_string());
+                    // `finished` also fires after `failed`; first reporter wins.
+                    let reported = Rc::new(Cell::new(false));
+                    {
+                        let cb = cb.clone();
+                        let reported = reported.clone();
+                        let method = method.clone();
+                        let page = page.clone();
+                        resource.connect_failed(move |resource, error| {
+                            if reported.replace(true) {
+                                return;
+                            }
+                            if error.matches(gtk::gio::IOErrorEnum::Cancelled)
+                                || error.to_string().to_lowercase().contains("cancelled")
+                            {
+                                return; // navigated away mid-load: noise
+                            }
+                            cb(super::ResourceEvent {
+                                url: resource.uri().map(|u| u.to_string()).unwrap_or_default(),
+                                method: method.clone(),
+                                status: None,
+                                mime: None,
+                                error: Some(error.to_string()),
+                                is_main,
+                                page: page.clone(),
+                                duration_ms: Some(started.elapsed().as_millis() as u64),
+                            });
                         });
-                    });
-                }
-                {
-                    let cb = cb.clone();
-                    resource.connect_finished(move |resource| {
-                        if reported.replace(true) {
-                            return;
-                        }
-                        let Some(response) = resource.response() else {
-                            // No response and no `failed`: a cancelled
-                            // load WebKit finished silently. Not a request.
-                            return;
-                        };
-                        cb(super::ResourceEvent {
-                            url: resource.uri().map(|u| u.to_string()).unwrap_or_default(),
-                            method: method.clone(),
-                            status: Some(response.status_code()).filter(|&s| s != 0),
-                            mime: response.mime_type().map(|m| m.to_string()),
-                            error: None,
-                            is_main,
-                            page: page.clone(),
-                            duration_ms: Some(started.elapsed().as_millis() as u64),
+                    }
+                    {
+                        let cb = cb.clone();
+                        resource.connect_finished(move |resource| {
+                            if reported.replace(true) {
+                                return;
+                            }
+                            let Some(response) = resource.response() else {
+                                // No response and no `failed`: a cancelled
+                                // load WebKit finished silently. Not a request.
+                                return;
+                            };
+                            cb(super::ResourceEvent {
+                                url: resource.uri().map(|u| u.to_string()).unwrap_or_default(),
+                                method: method.clone(),
+                                status: Some(response.status_code()).filter(|&s| s != 0),
+                                mime: response.mime_type().map(|m| m.to_string()),
+                                error: None,
+                                is_main,
+                                page: page.clone(),
+                                duration_ms: Some(started.elapsed().as_millis() as u64),
+                            });
                         });
-                    });
-                }
-            });
+                    }
+                });
             SignalHandle(unsafe { id.as_raw() })
         }
     }

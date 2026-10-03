@@ -10,10 +10,10 @@
 //! signals). `hwatu console` reads the buffer; `--clear` drains it so
 //! a verification loop can diff runs.
 
+use crate::engine::EngineView;
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
-use crate::engine::EngineView;
 use webkit6::prelude::*;
 
 /// Script message handler name the user script posts to.
