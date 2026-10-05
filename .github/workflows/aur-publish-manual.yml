@@ -1,8 +1,18 @@
 name: AUR publish (manual)
 
-# One-click retry for the AUR push behind issue #82.
-# The automated aur-publish job in release.yml only runs on tag pushes;
-# use this workflow to (re)publish a tag without deleting and re-pushing it.
+# One-click (re)publish of the AUR package for issue #82.
+#
+# This checks out `ref` (default: main), NOT the release tag. The
+# PKGBUILD committed at a tag can never carry that tag's own tarball
+# sha256 (the hash covers the PKGBUILD itself), so correct packaging
+# metadata always lands in a commit *after* the tag. At v0.7.1, for
+# example, packaging/PKGBUILD still says pkgver=0.7.0, AGPL-3.0-only,
+# x86_64-only; publishing from the tag would push that to the AUR.
+#
+# `tag` names the release you intend to publish. The workflow refuses to
+# run unless the checked-out PKGBUILD packages exactly that version and
+# the tag is a published GitHub release.
+#
 # Requires the AUR_SSH_KEY repo secret plus its pubkey registered at
 # https://aur.archlinux.org -> My Account -> SSH Public Key.
 on:
@@ -11,19 +21,48 @@ on:
       tag:
         description: 'Release tag to publish (e.g. v0.7.1)'
         required: true
+      ref:
+        description: 'Ref holding the packaging metadata to publish (default: main)'
+        required: false
+        default: 'main'
 
 permissions:
   contents: read
+
+concurrency:
+  group: aur-publish
+  cancel-in-progress: false
 
 jobs:
   aur-publish:
     name: Publish to AUR
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      TAG: ${{ inputs.tag }}
+      REF: ${{ inputs.ref }}
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ inputs.ref }}
+
+      - name: Check packaging metadata matches the tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          scripts/check-packaging-sync.sh
+          pkgver=$(sed -n 's/^pkgver=\(.*\)$/\1/p' packaging/PKGBUILD | head -1)
+          if [ "$pkgver" != "${TAG#v}" ]; then
+            echo "error: packaging/PKGBUILD at '$REF' packages $pkgver, not ${TAG#v}." >&2
+            echo "Bump pkgver + sha256sums on that ref first (scripts/check-packaging-sync.sh guards the rest)." >&2
+            exit 1
+          fi
+          if ! gh release view "$TAG" --json tagName >/dev/null 2>&1; then
+            echo "error: $TAG is not a published GitHub release." >&2
+            exit 1
+          fi
+          echo "publishing $pkgver from $REF for release $TAG"
 
       - name: Install makepkg (pacman)
         run: |
@@ -44,11 +83,34 @@ jobs:
           printf '%s\n' "$AUR_SSH_KEY" > ~/.ssh/aur
           chmod 600 ~/.ssh/aur
           ssh-keyscan -t ed25519 aur.archlinux.org >> ~/.ssh/known_hosts 2>/dev/null
-          cat >> ~/.ssh/config <<'EOF'
+          cat >> ~/.ssh/config <<'SSHCFG'
           Host aur.archlinux.org
             IdentityFile ~/.ssh/aur
             IdentitiesOnly yes
-          EOF
+          SSHCFG
 
+      # The script is idempotent: it no-ops when live is current and
+      # aborts on .SRCINFO drift before pushing.
       - name: Publish to AUR
         run: scripts/aur-publish.sh
+
+      # aurweb refreshes the RPC view from a post-receive hook; give it a
+      # moment rather than declaring success on the push alone.
+      - name: Verify live AUR version
+        run: |
+          set -euo pipefail
+          pkgver=$(sed -n 's/^pkgver=\(.*\)$/\1/p' packaging/PKGBUILD | head -1)
+          pkgrel=$(sed -n 's/^pkgrel=\(.*\)$/\1/p' packaging/PKGBUILD | head -1)
+          want="$pkgver-$pkgrel"
+          live=unknown
+          for _ in 1 2 3 4 5 6; do
+            live=$(curl -s 'https://aur.archlinux.org/rpc/v5/info?arg[]=hwatu' \
+              | python3 -c 'import json,sys; r=json.load(sys.stdin)["results"]; print(r[0]["Version"] if r else "none")')
+            if [ "$live" = "$want" ]; then
+              echo "AUR live version is $live; done. Close issue #82 if this was $TAG."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "error: AUR live version is $live, expected $want." >&2
+          exit 1

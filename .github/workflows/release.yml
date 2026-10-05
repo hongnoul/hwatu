@@ -128,8 +128,15 @@ jobs:
     # NOTE: the secrets context is not allowed in `if:` conditions at
     # either job or step level on this runner, so every secret-dependent
     # step checks "$AUR_SSH_KEY" inside its run script and exits 0
-    # (skip) when unset. The sentinel outcome step records whether the
-    # push actually ran; aur-reminder opens the manual issue otherwise.
+    # (skip) when unset. The publish step records whether the push
+    # actually ran; aur-reminder opens the manual issue otherwise.
+    #
+    # This job checks out the tag, and the PKGBUILD at a tag can never
+    # carry that tag's own tarball sha256 (the hash covers the PKGBUILD
+    # itself). It therefore only succeeds when packaging metadata was
+    # bumped before tagging in a way that still verifies; otherwise it
+    # skips with a notice and the reminder issue points at the manual
+    # `AUR publish (manual)` workflow, which publishes from main.
     steps:
       - uses: actions/checkout@v5
 
@@ -167,27 +174,29 @@ jobs:
       # The script itself is idempotent: it no-ops when live is current
       # and aborts on .SRCINFO drift before pushing.
       - name: Publish to AUR
-        env:
-          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
-        run: |
-          set -euo pipefail
-          if [ -z "${AUR_SSH_KEY:-}" ]; then
-            echo "AUR_SSH_KEY not set; skipping publish (aur-reminder will open the manual issue)."
-            exit 0
-          fi
-          scripts/aur-publish.sh
-
-      - name: Record publish outcome
         id: outcome
         env:
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
         run: |
-          if [ -n "${AUR_SSH_KEY:-}" ]; then
-            echo "ran=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "ran=false" >> "$GITHUB_OUTPUT"
-            echo "AUR_SSH_KEY secret not set; automated publish skipped."
+          set -euo pipefail
+          echo "ran=false" >> "$GITHUB_OUTPUT"
+          if [ -z "${AUR_SSH_KEY:-}" ]; then
+            echo "AUR_SSH_KEY not set; skipping publish (aur-reminder will open the manual issue)."
+            exit 0
           fi
+          pkgver=$(sed -n 's/^pkgver=\(.*\)$/\1/p' packaging/PKGBUILD | head -1)
+          if [ "$pkgver" != "${GITHUB_REF_NAME#v}" ]; then
+            echo "::notice::packaging/PKGBUILD at ${GITHUB_REF_NAME} packages $pkgver; skipping AUR publish. Bump packaging on main, then run the 'AUR publish (manual)' workflow."
+            exit 0
+          fi
+          want=$(sed -n "s/^sha256sums=('\(.*\)')$/\1/p" packaging/PKGBUILD | head -1)
+          have=$(curl -sL "https://github.com/${GITHUB_REPOSITORY}/archive/${GITHUB_REF_NAME}.tar.gz" | sha256sum | cut -d' ' -f1)
+          if [ "$want" != "$have" ]; then
+            echo "::notice::packaging/PKGBUILD sha256sums ($want) does not match the ${GITHUB_REF_NAME} tarball ($have); skipping AUR publish. Bump sha256sums on main, then run the 'AUR publish (manual)' workflow."
+            exit 0
+          fi
+          scripts/aur-publish.sh
+          echo "ran=true" >> "$GITHUB_OUTPUT"
 
   aur-reminder:
     name: AUR publish reminder
@@ -224,7 +233,9 @@ jobs:
             --body "$(printf '%s\n' \
               "\`$tag\` is released but the AUR package is at \`$live\`." \
               "" \
-              "Run from a machine with the AUR SSH key:" \
+              "Bump packaging/PKGBUILD (pkgver + sha256sums) on main, mirror it to" \
+              "packaging/aur/, then run the \`AUR publish (manual)\` workflow with" \
+              "\`tag=$tag\` from the Actions tab. Or, from a machine with the AUR SSH key:" \
               "" \
               '```' \
               "scripts/aur-publish.sh" \
