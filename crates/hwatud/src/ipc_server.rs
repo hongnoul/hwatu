@@ -34,12 +34,23 @@ struct TcpPermit;
 
 impl TcpPermit {
     fn acquire() -> Option<Self> {
-        TCP_CONNECTIONS
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                (current < MAX_TCP_CONNECTIONS).then_some(current + 1)
-            })
-            .ok()
-            .map(|_| Self)
+        // Manual CAS loop instead of `fetch_update`/`try_update` so we build
+        // warning-free on both the MSRV (1.85) and current stable toolchains.
+        let mut current = TCP_CONNECTIONS.load(Ordering::Acquire);
+        loop {
+            if current >= MAX_TCP_CONNECTIONS {
+                return None;
+            }
+            match TCP_CONNECTIONS.compare_exchange_weak(
+                current,
+                current + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => return Some(Self),
+                Err(actual) => current = actual,
+            }
+        }
     }
 }
 
