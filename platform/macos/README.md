@@ -7,7 +7,7 @@ speaking the same newline-delimited-JSON protocol on the same socket path.
 ## Build and install
 
 ```sh
-swiftc -O -o hwatud-mac Sources/main.swift -framework AppKit -framework WebKit
+swiftc -O -o hwatud-mac Sources/main.swift -framework AppKit -framework WebKit -framework JavaScriptCore
 cp hwatud-mac ~/.local/bin/hwatud   # the CLI spawns `hwatud` from PATH
 ```
 

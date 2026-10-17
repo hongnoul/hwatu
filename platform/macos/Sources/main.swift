@@ -17,6 +17,7 @@
 
 import AppKit
 import Foundation
+import JavaScriptCore
 import WebKit
 
 // MARK: - Socket path (mirror of crates/ipc socket_path())
@@ -285,8 +286,21 @@ func jsonValue(from any: Any?) -> Any {
     return String(describing: any)
 }
 
-/// Evaluate a JS *function body* (so `return` works); Promises are awaited.
+/// Evaluate JS with Linux-parity eval semantics (docs/agents.md "Eval
+/// semantics", mirrors crates/hwatud plan_eval_source): an expression
+/// runs as `return (expr)`; a body with explicit `return`/`await` runs
+/// as-is; a return-less body routes through indirect eval so the page
+/// answers the completion value of the last statement. Daemon-side
+/// syntax errors answer `eval failed: SyntaxError: <message>` without
+/// ever reaching the page. User code executes exactly once, in the page.
 func runJS(_ w: Window, _ js: String, timeoutMs: Int, done: @escaping (JSON) -> Void) {
+    let source: String
+    switch planEvalSource(js) {
+    case .success(let s): source = s
+    case .failure(let err):
+        done(errResponse("eval failed: SyntaxError: \(err.message)"))
+        return
+    }
     var finished = false
     let finish: (JSON) -> Void = { r in
         if !finished { finished = true; done(r) }
@@ -294,7 +308,7 @@ func runJS(_ w: Window, _ js: String, timeoutMs: Int, done: @escaping (JSON) -> 
     DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(timeoutMs)) {
         finish(errResponse("eval timed out after \(timeoutMs) ms"))
     }
-    w.webView.callAsyncJavaScript(js, arguments: [:], in: nil, in: .page) { result in
+    w.webView.callAsyncJavaScript(source, arguments: [:], in: nil, in: .page) { result in
         switch result {
         case .success(let value):
             finish(okResponse(["value": jsonValue(from: value)]))
@@ -304,6 +318,60 @@ func runJS(_ w: Window, _ js: String, timeoutMs: Int, done: @escaping (JSON) -> 
             finish(errResponse("eval: \(detail)"))
         }
     }
+}
+
+/// The shape `callAsyncJavaScript` compiles a body into (an async
+/// function wrapper), so daemon-side parse verdicts match what the
+/// page's compile would say about the same body.
+func wrapAsyncBody(_ body: String) -> String {
+    "async function __hwatu_probe() {\n\(body)\n}"
+}
+
+struct EvalSyntaxError: Error { let message: String }
+
+/// Parse-only check: evaluating a function *definition* never calls it,
+/// so the probe compiles the candidate body without executing user code.
+/// Must run on the main thread (all planEvalSource callers do).
+func jsSyntaxMessage(_ code: String) -> String? {
+    struct Holder { static let ctx = JSContext()! }
+    let ctx = Holder.ctx
+    ctx.exception = nil
+    ctx.evaluateScript(code + "\n0;")
+    if let ex = ctx.exception {
+        ctx.exception = nil
+        return ex.toString()
+    }
+    return nil
+}
+
+func jsonStringLiteral(_ s: String) -> String {
+    let arr = (try? String(data: JSONSerialization.data(withJSONObject: [s]), encoding: .utf8)) ?? "[\"\"]"
+    // Strip the array brackets: indirect eval needs the bare string.
+    return String(arr.dropFirst().dropLast())
+}
+
+func planEvalSource(_ js: String) -> Result<String, EvalSyntaxError> {
+    // Trailing semicolons are meaningless on an expression but would
+    // break the `return ( ... )` wrapping; strip them for the
+    // expression form (mirrors Linux).
+    var trimmed = js.trimmingCharacters(in: .whitespacesAndNewlines)
+    while trimmed.hasSuffix(";") {
+        trimmed = String(trimmed.dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    let expr = "return (\n\(trimmed)\n);"
+    if jsSyntaxMessage(wrapAsyncBody(expr)) == nil {
+        return .success(expr)
+    }
+    let body: String
+    if js.contains("return") || js.contains("await") {
+        body = js
+    } else {
+        body = "return (0, eval)(\(jsonStringLiteral(js)));"
+    }
+    if let msg = jsSyntaxMessage(wrapAsyncBody(body)) {
+        return .failure(EvalSyntaxError(message: msg))
+    }
+    return .success(body)
 }
 
 /// Poll until the load reaches `until` (committed|dom|settled) or timeout.

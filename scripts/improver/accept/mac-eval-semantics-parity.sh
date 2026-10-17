@@ -17,8 +17,14 @@ bin="${HWATU_BIN:-hwatu}"
 cleanup() { "$bin" quit >/dev/null 2>&1 || true; rm -rf "$work"; }
 trap cleanup EXIT INT TERM
 
-"$bin" open 'data:text/html,<title>parity</title>' --headless >/dev/null 2>&1 || {
+"$bin" --headless 'data:text/html,<title>parity</title>' >/dev/null 2>&1 || {
     echo "ACCEPT-FAIL: could not open test window"; exit 1; }
+
+# The data: URL load races first eval; wait for the title to land.
+for _ in $(seq 1 50); do
+    [[ "$("$bin" eval 'document.title' 2>&1)" == *parity* ]] && break
+    sleep 0.2
+done
 
 fail=0
 expect() { # desc js want

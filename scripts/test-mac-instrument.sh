@@ -74,6 +74,8 @@ ok "wait_load reaches dom"
 # ---- eval roundtrip ------------------------------------------------------
 out="$("$hwatu" eval --id "$id" 'return (40 + 2)')"
 check "eval roundtrips a value" json_assert 'd == 42' <<<"$out"
+out="$("$hwatu" eval --id "$id" '40 + 2')"
+check "eval answers expression form without explicit return" json_assert 'd == 42' <<<"$out"
 out="$("$hwatu" eval --id "$id" 'return document.querySelector("#marker").textContent')"
 check "eval reads the marker DOM" json_assert 'd == "'"$marker"'"' <<<"$out"
 
