@@ -225,3 +225,32 @@ External commits observed mid-session (8ab8d65 watchdog, 067e84f orphan
 daemons) were absorbed; all gates green on top of them. Iterations 1-7
 have since been pushed to origin by an external actor; the last 6
 commits remain local.
+
+## Integration-boundary validation — 2026-10-17 (post-final-acceptance)
+
+Public interfaces exercised with observed behavior:
+
+1. CLI workflow (the documented agent loop): open --headless ->
+   wait-load --until dom/settled -> eval -> navigate -> wait-load ->
+   eval -> screenshot, against both a data: URL and a real local HTTP
+   server. Observed: correct title/DOM values both times
+   ("probe|integration-ok", then "acceptance|hello hwatu" after
+   navigate), and a valid 2560x1600 PNG screenshot. Negative probe
+   confirmed the documented semantics: eval before wait-load correctly
+   races the load (returns about:blank state), which is why the agent
+   guide mandates wait-load.
+2. MCP adapter (real JSON-RPC over stdio): initialize handshake answers
+   serverInfo hwatu 0.7.1; tools/list returns 40 tools (open,
+   list_windows, goto, verify_ui, check, render, prefetch, snapshot,
+   click, type_text, ...). The adapter boundary works against the
+   fixed daemon.
+3. jcode `browser` bridge (the README's flagship integration): the
+   bridge IPC works (status, open, eval round-trips), but on this host
+   it routes to jcode's bundled hwatu-mac proxy whose app sandbox
+   blocks file reads AND localhost network ("Error opening file ...",
+   "Could not connect to 127.0.0.1"), independent of this repo's
+   daemon. The same operations succeed against the repo daemon via CLI
+   (point 1), isolating the failure to the bundled proxy's
+   sandbox/entitlements. Logged as an upstream jcode-packaging issue,
+   not a hwatu defect; convergence path is jcode shipping the current
+   hwatud-mac with network/file entitlements.
