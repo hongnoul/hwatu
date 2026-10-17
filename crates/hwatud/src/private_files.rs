@@ -17,8 +17,7 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsE
 static NEXT_FILE: AtomicU64 = AtomicU64::new(1);
 static CLEANED_ABANDONED: OnceLock<()> = OnceLock::new();
 
-#[cfg(unix)]
-const O_NOFOLLOW: i32 = 0o400000;
+// Open(2) flag values are per-kernel-ABI AND per-arch; use libc, never hardcode.
 
 #[derive(Debug)]
 pub(crate) struct StagedUpload {
@@ -152,7 +151,7 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
     #[cfg(unix)]
     {
         options.mode(0o600);
-        options.custom_flags(O_NOFOLLOW);
+        options.custom_flags(libc::O_NOFOLLOW);
     }
     let mut file = options
         .open(path)

@@ -27,3 +27,5 @@ wayland-client = "0.31"
 wayland-protocols-wlr = { version = "0.3", features = ["client"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 subtle = "2.6"
+# open(2) flag values are per-kernel-ABI AND per-arch; libc is arch-correct by construction.
+libc = { version = "0.2", default-features = false }

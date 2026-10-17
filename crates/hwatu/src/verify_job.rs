@@ -1066,12 +1066,10 @@ fn source_fingerprint(spec: &VerifySpec) -> Result<String, String> {
 }
 
 fn read_inline_source(root: &Path, path: &Path) -> Result<Vec<u8>, String> {
-    const O_NONBLOCK: i32 = 0o4000;
-    const O_NOFOLLOW: i32 = 0o400000;
-
+    // Open(2) flag values are per-kernel-ABI AND per-arch; use libc, never hardcode.
     let mut file = OpenOptions::new()
         .read(true)
-        .custom_flags(O_NONBLOCK | O_NOFOLLOW)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
         .open(path)
         .map_err(|e| format!("open inline source file {}: {e}", path.display()))?;
     let metadata = file

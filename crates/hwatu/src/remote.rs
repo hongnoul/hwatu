@@ -12,20 +12,10 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsE
 
 static NEXT_ARTIFACT: AtomicU64 = AtomicU64::new(1);
 
-// Open(2) flag values are per-kernel ABI, not POSIX: Linux uses
-// 0o4000/0o400000, while the BSD family (macOS included) uses
-// 0x4/0x100. Hardcoding the Linux values everywhere silently turned
-// O_NOFOLLOW into O_NOCTTY on macOS, so the symlink-refusal path
-// never engaged there (caught by
-// `materialization_refuses_symlink_destinations` failing on Darwin).
-#[cfg(target_os = "linux")]
-const O_NONBLOCK: i32 = 0o4000;
-#[cfg(target_os = "linux")]
-const O_NOFOLLOW: i32 = 0o400000;
-#[cfg(all(unix, not(target_os = "linux")))]
-const O_NONBLOCK: i32 = 0x0004;
-#[cfg(all(unix, not(target_os = "linux")))]
-const O_NOFOLLOW: i32 = 0x0100;
+// Open(2) flag values are per-kernel-ABI AND per-arch (O_NOFOLLOW differs
+// between x86 Linux, aarch64 Linux, and macOS), so they must come from
+// libc, never from hardcoded literals. Hardcoding silently turns the
+// symlink-refusal path into a no-op on the wrong ABI.
 
 #[derive(Default)]
 pub(crate) struct Artifacts {
@@ -288,7 +278,7 @@ fn read_inline_file(path: &str, label: &str) -> Result<String, String> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
-    options.custom_flags(O_NONBLOCK | O_NOFOLLOW);
+    options.custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW);
     let file = options
         .open(path)
         .map_err(|error| format!("cannot open {label} file {path}: {error}"))?;
@@ -351,7 +341,7 @@ impl Destination {
         #[cfg(unix)]
         {
             options.mode(0o600);
-            options.custom_flags(O_NOFOLLOW);
+            options.custom_flags(libc::O_NOFOLLOW);
         }
         let mut file = options.open(&self.path).map_err(|error| {
             format!(

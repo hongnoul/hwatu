@@ -543,6 +543,7 @@ name = "hwatu"
 version = "0.7.1"
 dependencies = [
  "hwatu-ipc",
+ "libc",
  "png",
  "serde_json",
 ]
@@ -564,6 +565,7 @@ dependencies = [
  "glib",
  "gtk4",
  "hwatu-ipc",
+ "libc",
  "png",
  "rusqlite",
  "serde",

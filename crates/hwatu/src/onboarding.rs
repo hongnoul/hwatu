@@ -153,6 +153,7 @@ fn hw_decode_probe() -> Result<String, String> {
 /// through VideoToolbox, which the daemon does not probe yet. Keep the
 /// Linux wording off macOS and stay informational (returned as `Err` so
 /// `doctor` prints an `info` line, never a failure).
+#[cfg(target_os = "macos")]
 fn macos_hw_decode_message() -> Result<String, String> {
     Err(
         "VideoToolbox hardware decode not probed on macOS; video decodes in software fallback"
@@ -175,6 +176,7 @@ fn webkit_check() -> Result<String, String> {
 /// "mac-wkwebview"), backed by the system WebKit.framework — not
 /// WebKitGTK, which is Linux-only. Pure for testability; the
 /// filesystem existence check happens in `webkit_check`.
+#[cfg(target_os = "macos")]
 fn macos_webkit_message(framework_exists: bool) -> Result<String, String> {
     if framework_exists {
         Ok("WKWebView (WebKit.framework) available".into())
@@ -959,6 +961,7 @@ mod tests {
         fs::remove_dir_all(&dir).unwrap();
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn macos_webkit_reports_wkwebview_not_webkitgtk() {
         let ok = macos_webkit_message(true).unwrap();
@@ -981,6 +984,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn macos_video_probe_avoids_linux_wording() {
         let msg = macos_hw_decode_message().unwrap_err();
