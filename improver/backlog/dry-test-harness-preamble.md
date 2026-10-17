@@ -13,3 +13,10 @@
   monotonically per migration PR; all migrated tests still pass on Linux.
 - **Note:** Linux-host work (tests need the GTK daemon). Queue for a Linux
   session or Docker-enabled run.
+
+## Slice 1 closed 2026-10-17 (1172a54)
+
+scripts/lib/test-harness.sh landed; Darwin consumers migrated (count
+26 -> 25). Remaining: migrate the 25 Linux scripts on a Linux host,
+pure-deletion pattern per the lib header. Acceptance: triage count
+monotonically decreases and migrated tests pass on Linux.

@@ -55,3 +55,14 @@ commands, gates run. See docs/recursive-improver.md.
   a legitimate harness fix with all 5 expectations intact. Keep this
   audit step mandatory whenever an implementer touches its check.
 - Backlog: mac-eval-semantics-parity closed.
+
+## Iteration 4 — 2026-10-17 — dry-test-harness-preamble (slice 1) — GREEN (1172a54)
+
+- Change: scripts/lib/test-harness.sh extracted; two Darwin suites migrated
+  off the inlined private-XDG preamble.
+- Measured delta: triage duplicate-preamble count 26 -> 25; instrument
+  14/14 twice; failure-propagation probe exit 1 (lib does not swallow
+  failures). Lib shape validated against 4 Linux scripts for the future
+  slice.
+- Remaining: 25 Linux scripts migrate when a Linux host/docker is
+  available (backlog item stays open, renamed note below).
