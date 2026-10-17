@@ -45,6 +45,15 @@ meta-loop can audit which changes moved which numbers.
    surface area.
 6. Linux stays the reference: on a macOS host, gates 1-4 run inside the
    repo `Dockerfile` image as well as natively where possible.
+7. **Structure triage (DRY gate).** Every change ends with a full filetree
+   triage before commit. The verifier walks the tree and rejects the change
+   if it introduced: duplicated logic that belongs in one place, a second
+   implementation of an existing helper, copy-pasted fixtures or scripts,
+   cross-boundary reach-through (product code importing another product's
+   module instead of a platform capability), orphaned/dead files, or new
+   code placed outside the responsibility map in `docs/roadmap.md`
+   ("Source boundary migration"). The fix is centralization, not a waiver:
+   promote shared behavior into the owning crate/module, then re-verify.
 
 A red gate means **revert, log, and move on**. The loop never weakens a gate
 in the same iteration that needs it weakened.
@@ -84,7 +93,9 @@ Candidates come from, in priority order:
 3. **Open roadmap items** in `roadmaps/verification.md` (P0→P3), then
    `platform.md`, then `browser.md`, respecting "agent inner loop wins".
 4. **User evidence**: open issues and use reports, labeled by funnel stage.
-5. **Code health**: clippy/deny findings, `TODO`/`FIXME` scan, dead fixtures.
+5. **Code health**: clippy/deny findings, `TODO`/`FIXME` scan, dead
+   fixtures, and pre-existing structure-triage findings (duplication and
+   boundary debt discovered by gate 7 on earlier iterations).
 
 Each candidate is a file in `improver/backlog/` with: title, funnel stage,
 rubric scores (frequency, activation, fit, confidence, cost, 0-3 each), the
@@ -112,6 +123,23 @@ change with the same context; implementer and verifier are separate agents
 Verifier agent runs `gates.sh`, compares scoreboard to baseline, and checks
 the acceptance check now passes. It reproduces claims rather than trusting
 the implementer's report.
+
+Then it runs the **structure triage** (gate 7) over the whole filetree, not
+just the diff:
+
+- `scripts/improver/triage.sh` mechanical pass: duplicate-block detection
+  across crates and scripts, unused files/exports, boundary-import lint
+  (portable modules clean of GTK/Cocoa, products clean of each other),
+  one-owner check for every helper that appears in more than one place.
+- Agent pass on the diff in tree context: does this change copy an existing
+  pattern instead of calling it, does it add a third way to do something
+  that already has two, is the file in the crate/module the roadmap's
+  responsibility map assigns it to.
+- Output is a triage report in the evidence log. Any finding caused by the
+  change blocks commit until centralized. Pre-existing findings become
+  backlog candidates (funnel stage `health`), so the tree monotonically
+  converges toward one implementation per behavior instead of accreting
+  spaghetti.
 
 ### 5. Decide and record
 
@@ -181,8 +209,8 @@ The improver dogfoods the product as its own instrument:
 
 ## Bootstrap order
 
-1. Land `scripts/improver/gates.sh` + `improver/policy.toml` (tolerances,
-   weights, iteration budget).
+1. Land `scripts/improver/gates.sh`, `scripts/improver/triage.sh`, and
+   `improver/policy.toml` (tolerances, weights, iteration budget).
 2. Run Sense once, commit baseline scoreboard.
 3. Seed `improver/backlog/` from current roadmap P0s and any red harness
    entries.
