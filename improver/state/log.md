@@ -26,3 +26,18 @@ commands, gates run. See docs/recursive-improver.md.
 - Process: implementer (boar) and verifier (unicorn) were separate agents;
   coordinator re-ran the acceptance check before commit.
 - Backlog: doctor-webkit-macos closed.
+
+## Iteration 2 — 2026-10-17 — macos-e2e-lane (slice 1) — GREEN (72ffb73)
+
+- Change: scripts/test-mac-instrument.sh (13 assertions, isolated daemon,
+  focus-safety asserted) + gates.sh e2e.mac gate.
+- Measured delta: mac verification coverage went from 1 smoke line to a
+  13-assertion deterministic suite run by every gates pass (13/13 twice).
+- Discovery: hwatud-mac eval semantics diverge from Linux (function body vs
+  auto-return). Filed as backlog mac-eval-semantics-parity (score 12),
+  demonstrating the loop generating its own next work item.
+- Process note (meta-loop input): verifier (hedgehog) deleted an unrelated
+  uncommitted backlog file while tidying the tree. Verifiers must be
+  read-only outside their assigned diff; tighten the verifier prompt
+  template.
+- Backlog: macos-e2e-lane slice 1 closed; remaining slices stay open.
