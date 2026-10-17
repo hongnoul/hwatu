@@ -104,6 +104,28 @@ for a in "$root"/scripts/improver/accept/*.sh; do
     run "accept.$(basename "$a" .sh)" bash "$a"
 done
 
+# ---- Scoreboard metric: warm headless open latency (Darwin). Not a
+# gate (no tolerance baseline yet); recorded per run so the meta-loop
+# can diff drift across iterations.
+open_ms_median=""
+if [[ "$host" == "Darwin" ]] && command -v hwatu >/dev/null; then
+    latwork="$(mktemp -d "${TMPDIR:-/tmp}/hwatu-lat.XXXXXX")"
+    (
+        export XDG_RUNTIME_DIR="$latwork/run"; mkdir -p "$XDG_RUNTIME_DIR"
+        hwatu --headless open about:blank >/dev/null 2>&1 || hwatu open about:blank --headless >/dev/null 2>&1 || true
+        for _ in 1 2 3 4 5; do
+            t0=$(python3 -c 'import time;print(time.time_ns())')
+            hwatu open about:blank --headless >/dev/null 2>&1
+            t1=$(python3 -c 'import time;print(time.time_ns())')
+            echo $(( (t1 - t0) / 1000000 ))
+        done | sort -n | sed -n 3p
+        hwatu quit >/dev/null 2>&1 || true
+    ) > "$latwork/median" 2>/dev/null
+    open_ms_median="$(cat "$latwork/median" 2>/dev/null | tr -d '[:space:]')"
+    rm -rf "$latwork"
+    [[ -n "$open_ms_median" ]] && gate "latency.open.warm" pass "median ${open_ms_median}ms over 5 headless opens"
+fi
+
 # ---- Emit JSON scoreboard
 {
     echo "{"
@@ -111,6 +133,7 @@ done
     echo "  \"host\": \"$host\","
     echo "  \"git\": \"$(git rev-parse --short HEAD)\","
     echo "  \"e2e\": {\"pass\": $e2e_pass, \"fail\": $e2e_fail, \"skipped\": $e2e_skip},"
+    echo "  \"latency_open_warm_ms\": ${open_ms_median:-null},"
     echo "  \"gates\": ["
     for i in "${!names[@]}"; do
         comma=","; [[ $i -eq $((${#names[@]}-1)) ]] && comma=""
