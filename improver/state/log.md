@@ -66,3 +66,49 @@ commands, gates run. See docs/recursive-improver.md.
   slice.
 - Remaining: 25 Linux scripts migrate when a Linux host/docker is
   available (backlog item stays open, renamed note below).
+
+## Iteration 5 — 2026-10-17 — macos-e2e-lane (slice 2) — GREEN (b0ada9c)
+
+- Change: instrument suite 14 -> 33 assertions; every README-claimed
+  hwatud-mac verb now covered with semantic assertions and covers: tags.
+- Measured delta: e2e.mac gate coverage 13 -> 33; acceptance floor >= 20
+  enforced; 3x deterministic; verifier manually reproduced 3 verb blocks.
+- No defects found in the 8 new verbs (honest-capability rule exercised:
+  implementer was authorized to file defects instead of faking passes;
+  none needed).
+
+## Meta-loop review 1 — 2026-10-17 (after 5 iterations)
+
+Escape analysis: no regression reached main; every commit was gated and
+coordinator re-ran acceptance before commit. No missed-fixture escapes
+observed yet.
+
+False-revert analysis: zero reverts in 5 iterations. Tolerances untouched.
+Watch item: all 5 items were green on first verify, which may mean the
+selector is picking only easy items (cost>=2 rule). Acceptable at
+bootstrap; revisit if the backlog empties of cheap wins.
+
+Scoring calibration: activation and confidence predicted real movement
+(doctor fix and eval parity were the two highest-scored and highest-value
+changes). No reweighting warranted on n=5.
+
+Process defects found and fixes applied:
+1. Verifier overstepped read-only in iteration 2 (deleted an uncommitted
+   backlog file). Fix: verifier prompts now open with an explicit
+   READ-ONLY clause. No recurrence in iterations 3-5.
+2. Implementer edited its own acceptance check in iteration 3. Fix:
+   verifier prompts now require an adversarial audit of acceptance-check
+   diffs; applied in iterations 3-5. Policy: acceptance verb lists may be
+   amended only by the coordinator.
+3. gates.sh FAIL detection greps statuses, not free text; verified no
+   false trips from "0 failed" strings (iteration 4 verifier confirmed a
+   tail-pipe artifact, not a gate bug).
+
+Harness cost: gates --fast ~2-3 min dominated by cargo; acceptable.
+Full-suite runs still Linux-blocked (no docker on this host); that remains
+the top structural gap (improver/backlog/dry-test-harness-preamble.md
+Linux slice + e2e.suite). Next Linux-capable session should run both.
+
+Loop state: healthy. Backlog open items: dry-test-harness Linux slices.
+Candidate next items when hardware allows: Linux migration, full e2e
+baseline, benchmark scoreboard wiring (bench-* not yet in gates).
