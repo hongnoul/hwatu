@@ -23,32 +23,14 @@
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
+# shellcheck source=lib/test-harness.sh
+source "$root/scripts/lib/test-harness.sh"
 hwatu="$(command -v hwatu)"
 
-work="$(mktemp -d "${TMPDIR:-/tmp}/hwatu-mac-instrument-test.XXXXXX")"
-export XDG_RUNTIME_DIR="$work/run"
-export XDG_STATE_HOME="$work/state"
-export XDG_CONFIG_HOME="$work/config"
-mkdir -p "$XDG_RUNTIME_DIR" "$XDG_STATE_HOME" "$XDG_CONFIG_HOME"
-
-cleanup() {
-    "$hwatu" quit >/dev/null 2>&1 || true
-    rm -rf "$work"
-}
-trap cleanup EXIT INT TERM
-
-pass=0
-fail=0
-ok()  { pass=$((pass + 1)); echo "ok   - $1"; }
-bad() { fail=$((fail + 1)); echo "FAIL - $1" >&2; }
-check() { # check <description> <command...>
-    local desc="$1"; shift
-    if "$@"; then ok "$desc"; else bad "$desc"; fi
-}
-json_assert() { # json_assert '<python expression using d>' <<<response
-    local expression="$1"
-    python3 -c "import json,sys; d=json.load(sys.stdin); assert ($expression), d"
-}
+hw_private_env "hwatu-mac-instrument-test"
+hw_set_quit_cmd "$hwatu"
+hw_cleanup_install
+hw_counters_init
 
 marker="mac-marker-7Q3Z"
 data_url="data:text/html,%3C!doctype%20html%3E%3Ctitle%3Emac-e2e%3C/title%3E%3Ch1%20id=%22marker%22%3E${marker}%3C/h1%3E"
@@ -114,6 +96,4 @@ else
     bad "unsupported clock command error does not name the command"
 fi
 
-echo
-echo "test-mac-instrument: $pass passed, $fail failed"
-[[ "$fail" -eq 0 ]]
+hw_summary "test-mac-instrument"

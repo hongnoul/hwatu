@@ -11,11 +11,14 @@
 set -uo pipefail
 [[ "$(uname -s)" == "Darwin" ]] || { echo "skip: Darwin-only check"; exit 0; }
 
-work="$(mktemp -d "${TMPDIR:-/tmp}/hwatu-eval-parity.XXXXXX")"
-export XDG_RUNTIME_DIR="$work/run"; mkdir -p "$XDG_RUNTIME_DIR"
+root="$(cd "$(dirname "$0")/../../.." && pwd)"
+# shellcheck source=../../../lib/test-harness.sh
+source "$root/scripts/lib/test-harness.sh"
 bin="${HWATU_BIN:-hwatu}"
-cleanup() { "$bin" quit >/dev/null 2>&1 || true; rm -rf "$work"; }
-trap cleanup EXIT INT TERM
+
+hw_private_env "hwatu-eval-parity"
+hw_set_quit_cmd "$bin"
+hw_cleanup_install
 
 "$bin" --headless 'data:text/html,<title>parity</title>' >/dev/null 2>&1 || {
     echo "ACCEPT-FAIL: could not open test window"; exit 1; }
