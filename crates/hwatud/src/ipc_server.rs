@@ -118,7 +118,7 @@ type FrameCallback = Box<dyn FnOnce(Result<Option<Vec<u8>>, FrameReadError>)>;
 
 pub fn start(daemon: Rc<Daemon>) -> std::io::Result<()> {
     let path = hwatu_ipc::socket_path();
-    // Stale socket from a dead daemon: remove and rebind.
+    ensure_socket_claimable(&path)?;
     let _ = std::fs::remove_file(&path);
 
     let listener = gio::SocketListener::new();
@@ -131,6 +131,7 @@ pub fn start(daemon: Rc<Daemon>) -> std::io::Result<()> {
             glib::Object::NONE,
         )
         .map_err(|e| std::io::Error::other(e.to_string()))?;
+    watch_socket_identity(&path);
 
     if let Some(configured) = daemon.security.tcp_listen.as_deref() {
         let socket_address = parse_tcp_listen(configured)?;
@@ -150,6 +151,44 @@ pub fn start(daemon: Rc<Daemon>) -> std::io::Result<()> {
 
     accept_next(listener, daemon);
     Ok(())
+}
+
+/// Single-instance gate: never steal a live daemon's socket.
+/// Unconditionally removing it orphans the previous daemon: it keeps
+/// its windows and web processes but can never be reached or told to
+/// quit again (observed on macOS as ghost overlays from stacked
+/// near-invisible headless windows; on Linux it leaks engines).
+/// A connect() probe distinguishes live (refuse to start) from stale
+/// (dead daemon left the file behind: caller removes and rebinds).
+fn ensure_socket_claimable(path: &std::path::Path) -> std::io::Result<()> {
+    if path.exists() && std::os::unix::net::UnixStream::connect(path).is_ok() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            format!("another hwatud is live on {}", path.display()),
+        ));
+    }
+    Ok(())
+}
+
+/// Socket watchdog: exit when the bound socket file is removed or
+/// replaced (a second daemon raced past the single-instance gate, or
+/// the runtime dir was cleaned). An unreachable daemon can never be
+/// told to quit, so dying promptly beats leaking windows and engines.
+fn watch_socket_identity(path: &std::path::Path) {
+    use std::os::unix::fs::MetadataExt;
+    let identity = |p: &std::path::Path| std::fs::metadata(p).ok().map(|m| (m.dev(), m.ino()));
+    let Some(bound) = identity(path) else { return };
+    let path = path.to_path_buf();
+    glib::timeout_add_seconds_local(5, move || {
+        if identity(&path) != Some(bound) {
+            eprintln!(
+                "hwatud: socket {} was removed or replaced; exiting",
+                path.display()
+            );
+            std::process::exit(0);
+        }
+        glib::ControlFlow::Continue
+    });
 }
 
 fn parse_tcp_listen(configured: &str) -> std::io::Result<SocketAddr> {
@@ -1573,12 +1612,34 @@ fn is_loopback_host(input: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        finish_batch, inline_output_count, normalize_url, parse_tcp_listen, tokens_equal,
-        BufferedFrame, FrameBuffer,
+        ensure_socket_claimable, finish_batch, inline_output_count, normalize_url,
+        parse_tcp_listen, tokens_equal, BufferedFrame, FrameBuffer,
     };
     use hwatu_ipc::{BatchStepResult, BatchStepStatus, Request, Response};
     use std::cell::RefCell;
     use std::rc::Rc;
+
+    #[test]
+    fn socket_gate_allows_missing_and_stale_refuses_live() {
+        let dir = std::env::temp_dir().join(format!("hwatu-gate-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("hwatu.sock");
+
+        // Missing socket: claimable.
+        assert!(ensure_socket_claimable(&path).is_ok());
+
+        // Live listener on the socket: refused with AddrInUse.
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let err = ensure_socket_claimable(&path).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AddrInUse);
+
+        // Stale socket file (listener gone, file left behind): claimable.
+        drop(listener);
+        assert!(path.exists(), "dropping the listener must leave the file");
+        assert!(ensure_socket_claimable(&path).is_ok());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn snapshot_request() -> Request {
         Request::Snapshot {
