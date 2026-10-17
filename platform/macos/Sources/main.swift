@@ -177,7 +177,11 @@ final class Window: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
             // Keep the window technically visible to the window server but
             // imperceptible and non-interactive: ~0 alpha, click-through,
             // hidden from Mission Control / window cycling, never key.
-            host.alphaValue = 0.01
+            // 0.001, not 0.01: stacked headless windows composite their
+            // alphas, and ~15 windows at 1% each produced a visible page
+            // "ghost" over the desktop. scripts/probes/macos/raf3.swift
+            // measured that snapshots still render at 0.001.
+            host.alphaValue = 0.001
             host.ignoresMouseEvents = true
             host.collectionBehavior = [.transient, .ignoresCycle, .canJoinAllSpaces]
             host.level = NSWindow.Level(Int(CGWindowLevelForKey(.desktopIconWindow)) - 1)
@@ -255,6 +259,10 @@ final class Daemon {
 }
 
 let daemon = Daemon()
+
+/// Keeps the socket watchdog's DispatchSourceTimer alive for the
+/// process lifetime (a local would be deallocated when serve() returns).
+var watchdogTimer: DispatchSourceTimer?
 
 // MARK: - Main-thread bridging
 
@@ -831,8 +839,37 @@ func targetArgsJS(_ req: JSON) -> String {
 
 // MARK: - Socket server
 
+/// True when a live daemon is accepting connections on `path`. A stale
+/// socket file (daemon crashed) answers ECONNREFUSED and reads false.
+func socketAlive(_ path: String) -> Bool {
+    let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+    guard fd >= 0 else { return false }
+    defer { Darwin.close(fd) }
+    var addr = sockaddr_un()
+    addr.sun_family = sa_family_t(AF_UNIX)
+    withUnsafeMutableBytes(of: &addr.sun_path) { raw in
+        path.withCString { cstr in
+            _ = memcpy(raw.baseAddress!, cstr, min(strlen(cstr) + 1, raw.count))
+        }
+    }
+    let size = socklen_t(MemoryLayout<sockaddr_un>.size)
+    let rc = withUnsafePointer(to: &addr) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, size) }
+    }
+    return rc == 0
+}
+
 func serve() {
     let path = socketPath()
+    // Single-instance gate: never steal a live daemon's socket. The old
+    // behavior (unconditional unlink) orphaned the previous daemon with
+    // no socket, so it could never be reached or told to quit, and its
+    // near-invisible headless windows accumulated into a visible ghost
+    // over the desktop. A stale socket file (no listener) is removed.
+    if FileManager.default.fileExists(atPath: path), socketAlive(path) {
+        FileHandle.standardError.write(Data("hwatud-mac: another daemon is live on \(path); exiting\n".utf8))
+        exit(0)
+    }
     unlink(path)
     let fd = socket(AF_UNIX, SOCK_STREAM, 0)
     guard fd >= 0 else { fatalError("socket() failed") }
@@ -851,6 +888,25 @@ func serve() {
     chmod(path, 0o600)
     guard listen(fd, 16) == 0 else { fatalError("listen failed") }
     FileHandle.standardError.write(Data("hwatud-mac: listening on \(path)\n".utf8))
+
+    // Socket watchdog: if the socket file is removed or replaced (a
+    // second daemon raced past the gate, or the user cleaned /tmp),
+    // this daemon is unreachable forever. Exit so its windows die with
+    // it instead of lingering as ghost overlays.
+    var boundStat = stat()
+    if stat(path, &boundStat) == 0 {
+        let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global())
+        timer.schedule(deadline: .now() + 5, repeating: 5)
+        timer.setEventHandler {
+            var now = stat()
+            if stat(path, &now) != 0 || now.st_ino != boundStat.st_ino || now.st_dev != boundStat.st_dev {
+                FileHandle.standardError.write(Data("hwatud-mac: socket \(path) was removed or replaced; exiting\n".utf8))
+                exit(0)
+            }
+        }
+        timer.activate()
+        watchdogTimer = timer
+    }
 
     Thread.detachNewThread {
         while true {

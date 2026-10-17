@@ -24,7 +24,15 @@ WKWebView suspends rAF/compositing for non-visible windows and reports
 `document.visibilityState === "hidden"`, which stalls render-gated JS
 (e.g. the Okta sign-in widget). Headless windows therefore:
 
-- live in a ~0-alpha, click-through, cycle-ignored window kept below
+- live in a ~0-alpha (0.001, so stacked windows cannot composite into a
+  visible ghost), click-through, cycle-ignored window kept below
   desktop icons (visible to the window server, imperceptible to the user),
 - get an injected rAF shim that races native rAF against a 32 ms timer,
 - spoof the Page Visibility API to always report visible.
+
+## Single instance
+
+Startup refuses to run when a live daemon already owns the socket, and a
+watchdog exits the daemon if its socket file is removed or replaced. Both
+guard against orphaned daemons whose unreachable headless windows would
+otherwise accumulate on the desktop.
