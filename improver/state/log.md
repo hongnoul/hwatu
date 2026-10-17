@@ -194,3 +194,34 @@ baseline, benchmark scoreboard wiring (bench-* not yet in gates).
 - All watch items from meta-loop review 1 now closed or below the
   selection bar: Linux lane (iter 7-9), sandbox (iter 9), bench wiring
   (this), clone-scroll-effect-aarch64 (open, score 6 < bar).
+
+## Final acceptance pass — 2026-10-17 (post-iteration 10)
+
+Real-path observations (not inspection):
+- macOS activation workflow (the product's defined activation event):
+  `hwatu doctor` against a fresh repo daemon = exit 0, all checks passed
+  (binary, WKWebView engine, ping build mac-wkwebview, headless render +
+  JS eval + pixel capture). Before iteration 1 this exited 1.
+- `hwatu check` on macOS answers a structured unsupported-command error
+  naming the supported verb list: documented capability honesty, check
+  is a Linux-daemon feature.
+- Linux acceptance = the repo's own E2E suite (scripts/test-*.sh), not a
+  custom harness: 25 passed / 0 failed / 3 reasoned skips with the
+  PRODUCTION WebKit sandbox enabled, plus full workspace tests and
+  clippy -D warnings, inside the aarch64 container.
+- Packaging path: the repo Dockerfile builds clean (gates
+  cargo.test.linux(docker) pass).
+- Full non-fast gates run: every gate pass, zero FAIL, latency 23ms.
+
+Environment note (pre-existing, not caused by this work): on this host
+the default session socket is owned by jcode's bundled hwatu-mac proxy
+(~/.jcode/bin/hwatu-mac, build "unknown"), which fails doctor's
+screenshot write into the jcode scratch dir. The repo daemon passes
+fully when it owns the socket; acceptance checks are hermetic and
+unaffected. If jcode's backend is updated to the fixed hwatud-mac
+(iteration 3 eval parity), both sides converge.
+
+External commits observed mid-session (8ab8d65 watchdog, 067e84f orphan
+daemons) were absorbed; all gates green on top of them. Iterations 1-7
+have since been pushed to origin by an external actor; the last 6
+commits remain local.
