@@ -1,0 +1,31 @@
+# Recursive-improver policy. See docs/recursive-improver.md.
+# The meta-loop may tune this file; VISION.md may not be changed by the loop.
+
+[iteration]
+max_items_per_iteration = 1
+max_reverts_per_item = 1
+meta_loop_every = 5
+
+[tolerances]
+# Benchmark regression gates, relative to baseline scoreboard.
+latency_p50_pct = 5
+latency_p95_pct = 10
+tokens_per_verification_pct = 5
+rss_idle_pct = 10
+
+[selector]
+# Rubric weights over continuous-improvement.md dimensions (0-3 each).
+frequency = 1
+activation = 1
+fit = 1
+confidence = 1
+cost = 1
+# Items scoring below cost >= this are not selectable (must be < 1 focused day).
+min_cost_score = 2
+
+[triage]
+# Duplicate-block heuristic: minimum identical consecutive lines across files.
+dup_min_lines = 20
+# Portable paths that must stay free of native UI imports.
+portable_paths = ["crates/ipc", "crates/hwatu"]
+forbidden_in_portable = ["gtk4", "gtk::", "webkit6", "glib::", "cocoa", "objc", "windows-sys"]
