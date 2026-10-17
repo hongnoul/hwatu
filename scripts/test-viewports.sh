@@ -25,18 +25,11 @@ if [[ ! -x "$bin/hwatu" || ! -x "$bin/hwatud" ]]; then
     cargo build --release --manifest-path "$root/Cargo.toml" >&2
 fi
 
-work="$(mktemp -d "${TMPDIR:-/tmp}/hwatu-viewports-test.XXXXXX")"
-export XDG_RUNTIME_DIR="$work/run"
-export XDG_STATE_HOME="$work/state"
-mkdir -p "$XDG_RUNTIME_DIR" "$XDG_STATE_HOME"
-
-server_pid=""
-cleanup() {
-    "$bin/hwatu" quit >/dev/null 2>&1 || true
-    [[ -n "$server_pid" ]] && kill "$server_pid" 2>/dev/null || true
-    rm -rf "$work"
-}
-trap cleanup EXIT
+# shellcheck source=lib/test-harness.sh
+source "$root/scripts/lib/test-harness.sh"
+hw_private_env "hwatu-viewports-test"
+hw_set_quit_cmd "$bin/hwatu"
+hw_cleanup_install EXIT
 
 pass=0
 fail=0
@@ -46,6 +39,7 @@ check() { # check <description> <condition...>
     local desc="$1"; shift
     if "$@"; then ok "$desc"; else bad "$desc"; fi
 }
+
 # jq-lite: read a python expression over parsed stdin JSON as `j`.
 pyj() { python3 -c "import json,sys; j=json.load(sys.stdin); print($1)"; }
 
@@ -77,6 +71,7 @@ HTML
 port=8642
 python3 -m http.server "$port" --bind 127.0.0.1 --directory "$fixdir" >"$work/http.log" 2>&1 &
 server_pid=$!
+hw_track_pid "$server_pid"
 for _ in $(seq 50); do
     curl -sf -o "$work/curl.out" "http://127.0.0.1:$port/responsive.html" && break
     sleep 0.1

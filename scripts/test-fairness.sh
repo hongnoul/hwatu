@@ -19,20 +19,13 @@ if [[ ! -x "$bin/hwatu" || ! -x "$bin/hwatud" ]]; then
     cargo build --release --manifest-path "$root/Cargo.toml" >&2
 fi
 
-work="$(mktemp -d "${TMPDIR:-/tmp}/hwatu-fairness-test.XXXXXX")"
-export XDG_RUNTIME_DIR="$work/run"
-export XDG_STATE_HOME="$work/state"
+# shellcheck source=lib/test-harness.sh
+source "$root/scripts/lib/test-harness.sh"
+hw_private_env "hwatu-fairness-test"
 export XDG_DATA_HOME="$work/data"
-export XDG_CONFIG_HOME="$work/config"
-mkdir -p "$XDG_RUNTIME_DIR" "$XDG_STATE_HOME" "$XDG_DATA_HOME" "$XDG_CONFIG_HOME"
-
-daemon_pid=""
-cleanup() {
-    "$bin/hwatu" quit >/dev/null 2>&1 || true
-    [[ -n "$daemon_pid" ]] && kill "$daemon_pid" 2>/dev/null || true
-    rm -rf "$work"
-}
-trap cleanup EXIT
+mkdir -p "$XDG_DATA_HOME"
+hw_set_quit_cmd "$bin/hwatu"
+hw_cleanup_install EXIT
 
 pass=0
 fail=0

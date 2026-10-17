@@ -9,28 +9,15 @@ bin="$root/target/debug"
 echo "test-clone-scroll-tracks: building debug binaries..." >&2
 cargo build --manifest-path "$root/Cargo.toml" >&2
 
-work="$(mktemp -d "${TMPDIR:-/tmp}/hwatu-scroll-tracks.XXXXXX")"
-export XDG_RUNTIME_DIR="$work/run"
-export XDG_STATE_HOME="$work/state"
-export XDG_CONFIG_HOME="$work/config"
-export XDG_CACHE_HOME="$work/cache"
+# shellcheck source=lib/test-harness.sh
+source "$root/scripts/lib/test-harness.sh"
+hw_private_env "hwatu-scroll-tracks"
 export XDG_DATA_HOME="$work/data"
-mkdir -p "$XDG_RUNTIME_DIR" "$XDG_STATE_HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME"
-server_pid=""
-
-cleanup() {
-    "$bin/hwatu" quit >/dev/null 2>&1 || true
-    if [[ -n "${server_pid:-}" ]]; then
-        kill "$server_pid" >/dev/null 2>&1 || true
-        wait "$server_pid" >/dev/null 2>&1 || true
-    fi
-    if [[ -z "${KEEP_HWATU_SCROLL_TRACKS_TEST:-}" ]]; then
-        rm -rf "$work"
-    else
-        echo "kept $work" >&2
-    fi
-}
-trap cleanup EXIT
+export XDG_CACHE_HOME="$work/cache"
+mkdir -p "$XDG_DATA_HOME" "$XDG_CACHE_HOME"
+hw_set_quit_cmd "$bin/hwatu"
+hw_keep_workdir_if KEEP_HWATU_SCROLL_TRACKS_TEST
+hw_cleanup_install EXIT
 
 fixture_dir="$root/scripts/fixtures"
 port="${HWATU_SCROLL_TRACKS_PORT:-$(python3 - <<'PY'
@@ -40,6 +27,7 @@ PY
 )}"
 python3 -m http.server "$port" --directory "$fixture_dir" >"$work/http.log" 2>&1 &
 server_pid=$!
+hw_track_pid "$server_pid"
 for _ in {1..50}; do
     if python3 - <<PY >/dev/null 2>&1
 import urllib.request

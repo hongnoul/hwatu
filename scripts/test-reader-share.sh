@@ -19,20 +19,14 @@ if [[ ! -x "$bin/hwatu" || ! -x "$bin/hwatud" ]]; then
     cargo build --release --manifest-path "$root/Cargo.toml" >&2
 fi
 
-work="$(mktemp -d "${TMPDIR:-/tmp}/hwatu-reader-test.XXXXXX")"
-export XDG_RUNTIME_DIR="$work/run"
-export XDG_STATE_HOME="$work/state"
+# shellcheck source=lib/test-harness.sh
+source "$root/scripts/lib/test-harness.sh"
+hw_private_env "hwatu-reader-test"
 export XDG_DATA_HOME="$work/data"
-export XDG_CONFIG_HOME="$work/config"
-mkdir -p "$XDG_RUNTIME_DIR" "$XDG_STATE_HOME" "$XDG_DATA_HOME" "$XDG_CONFIG_HOME/hwatu" "$work/bin"
+mkdir -p "$XDG_DATA_HOME" "$XDG_CONFIG_HOME/hwatu" "$work/bin"
 
-server_pid=""
-cleanup() {
-    "$bin/hwatu" quit >/dev/null 2>&1 || true
-    [[ -n "$server_pid" ]] && kill "$server_pid" 2>/dev/null || true
-    rm -rf "$work"
-}
-trap cleanup EXIT
+hw_set_quit_cmd "$bin/hwatu"
+hw_cleanup_install EXIT
 
 pass=0
 fail=0
@@ -64,6 +58,7 @@ printf '<!doctype html><title>bare</title><body><button>hi</button></body>\n' > 
 port=8650
 python3 -m http.server "$port" --directory "$site" --bind 127.0.0.1 >/dev/null 2>&1 &
 server_pid=$!
+hw_track_pid "$server_pid"
 for _ in $(seq 50); do
     curl -sf "http://127.0.0.1:$port/article.html" >/dev/null 2>&1 && break
     sleep 0.1

@@ -26,16 +26,11 @@ if [[ ! -x "$bin/hwatu" || ! -x "$bin/hwatud" ]]; then
     cargo build --release --manifest-path "$root/Cargo.toml" >&2
 fi
 
-work="$(mktemp -d "${TMPDIR:-/tmp}/hwatu-snapdiff-test.XXXXXX")"
-export XDG_RUNTIME_DIR="$work/run"
-export XDG_STATE_HOME="$work/state"
-mkdir -p "$XDG_RUNTIME_DIR" "$XDG_STATE_HOME"
-
-cleanup() {
-    "$bin/hwatu" quit >/dev/null 2>&1 || true
-    rm -rf "$work"
-}
-trap cleanup EXIT
+# shellcheck source=lib/test-harness.sh
+source "$root/scripts/lib/test-harness.sh"
+hw_private_env "hwatu-snapdiff-test"
+hw_set_quit_cmd "$bin/hwatu"
+hw_cleanup_install EXIT
 
 pass=0
 fail=0
@@ -45,6 +40,7 @@ check() { # check <description> <condition...>
     local desc="$1"; shift
     if "$@"; then ok "$desc"; else bad "$desc"; fi
 }
+
 # jq-less JSON probes (python3 is already a test dependency).
 jget() { # jget <json> <python expression over d>
     python3 -c 'import json,sys; d=json.loads(sys.argv[1]); print(eval(sys.argv[2]))' "$1" "$2"

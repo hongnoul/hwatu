@@ -55,6 +55,19 @@ hw_pids=""
 pass=0
 fail=0
 
+# Optional keep-workdir gate: hw_keep_workdir_if <ENV-VAR-NAME> [VALUE]
+# makes hw_cleanup preserve $work when that variable is set at cleanup
+# time (any non-empty value, or exactly VALUE when given).
+# Generic mechanism; the script chooses which env var gates the keep
+# (e.g. KEEP_HWATU_SCROLL_TRACKS_TEST, or HWATU_VERIFY_TEST_KEEP 1).
+hw_keep_env=""
+hw_keep_value=""
+
+hw_keep_workdir_if() { # hw_keep_workdir_if <env-var-name> [value]
+    hw_keep_env="$1"
+    hw_keep_value="${2:-}"
+}
+
 hw_private_env() { # hw_private_env [tag]
     local tag="${1:-hwatu-test}"
     work="$(mktemp -d "${TMPDIR:-/tmp}/${tag}.XXXXXX")"
@@ -90,7 +103,17 @@ hw_cleanup() {
     fi
     wait 2>/dev/null || true
     if [[ -n "$work" ]]; then
-        rm -rf "$work"
+        hw_keep_hit=0
+        if [[ -n "$hw_keep_env" && -n "${!hw_keep_env:-}" ]]; then
+            if [[ -z "$hw_keep_value" || "${!hw_keep_env}" == "$hw_keep_value" ]]; then
+                hw_keep_hit=1
+            fi
+        fi
+        if [[ "$hw_keep_hit" -eq 1 ]]; then
+            echo "kept $work" >&2
+        else
+            rm -rf "$work"
+        fi
     fi
 }
 

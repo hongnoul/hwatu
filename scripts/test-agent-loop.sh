@@ -18,37 +18,21 @@ if [[ ! -x "$bin/hwatu" || ! -x "$bin/hwatud" ]]; then
     cargo build --release --manifest-path "$root/Cargo.toml" >&2
 fi
 
-work="$(mktemp -d "${TMPDIR:-/tmp}/hwatu-agent-loop-test.XXXXXX")"
-export XDG_RUNTIME_DIR="$work/run"
-export XDG_STATE_HOME="$work/state"
-export XDG_CONFIG_HOME="$work/config"
-mkdir -p "$XDG_RUNTIME_DIR" "$XDG_STATE_HOME" "$XDG_CONFIG_HOME"
-
+# shellcheck source=lib/test-harness.sh
+source "$root/scripts/lib/test-harness.sh"
+hw_private_env "hwatu-agent-loop-test"
+hw_set_quit_cmd "$bin/hwatu"
+hw_cleanup_hook() {
+    # watch_pid is reaped mid-script; kill any leftover first.
+    [[ -n "${watch_pid:-}" ]] && kill "$watch_pid" 2>/dev/null || true
+}
+hw_cleanup_install
+# daemon_pid/server_pid/watch_pid stay readable for mid-script use;
+# the lib owns their cleanup via hw_track_pid.
 daemon_pid=""
 server_pid=""
 watch_pid=""
-cleanup() {
-    [[ -n "$watch_pid" ]] && kill "$watch_pid" 2>/dev/null || true
-    "$bin/hwatu" quit >/dev/null 2>&1 || true
-    [[ -n "$daemon_pid" ]] && kill "$daemon_pid" 2>/dev/null || true
-    [[ -n "$server_pid" ]] && kill "$server_pid" 2>/dev/null || true
-    wait 2>/dev/null || true
-    rm -rf "$work"
-}
-trap cleanup EXIT INT TERM
-
-pass=0
-fail=0
-ok()  { pass=$((pass + 1)); echo "ok   - $1"; }
-bad() { fail=$((fail + 1)); echo "FAIL - $1" >&2; }
-check() { # check <description> <command...>
-    local desc="$1"; shift
-    if "$@"; then ok "$desc"; else bad "$desc"; fi
-}
-json_assert() { # json_assert '<python expression using d>' <<<response
-    local expression="$1"
-    python3 -c "import json,sys; d=json.load(sys.stdin); assert ($expression), d"
-}
+hw_counters_init
 
 # Local-only fixtures make navigation deterministic and avoid external DNS/TLS.
 fixdir="$work/fixtures"
@@ -81,6 +65,7 @@ with socketserver.TCPServer(("127.0.0.1", 0), handler) as server:
     server.serve_forever()
 PY
 server_pid=$!
+hw_track_pid "$server_pid"
 for _ in $(seq 1 100); do [[ -s "$work/port" ]] && break; sleep 0.05; done
 if [[ ! -s "$work/port" ]]; then
     echo "FAIL - fixture server did not publish a port" >&2
@@ -90,6 +75,7 @@ base="http://127.0.0.1:$(cat "$work/port")"
 
 "$bin/hwatud" >"$work/hwatud.log" 2>&1 &
 daemon_pid=$!
+hw_track_pid "$daemon_pid"
 for _ in $(seq 1 100); do [[ -S "$XDG_RUNTIME_DIR/hwatu.sock" ]] && break; sleep 0.05; done
 if [[ ! -S "$XDG_RUNTIME_DIR/hwatu.sock" ]]; then
     echo "FAIL - isolated daemon socket was not created; log follows:" >&2
@@ -134,6 +120,7 @@ check "snapshot ref resolves and dispatches a real click" json_assert 'd == "yes
 # ---- ordered event stream --------------------------------------------
 "$bin/hwatu" watch --id "$keep_id" --kinds load >"$work/events.jsonl" &
 watch_pid=$!
+hw_track_pid "$watch_pid"
 sleep 0.2
 "$bin/hwatu" goto --id "$keep_id" --until dom "$base/two.html" >/dev/null
 sleep 0.3

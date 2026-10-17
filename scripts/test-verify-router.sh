@@ -6,20 +6,14 @@ set -euo pipefail
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
 bin="${HWATU_TEST_BIN:-$root/target/debug}"
-work="$(mktemp -d "${TMPDIR:-/tmp}/hwatu-verify-router.XXXXXX")"
+# shellcheck source=lib/test-harness.sh
+source "$root/scripts/lib/test-harness.sh"
 port="${HWATU_VERIFY_TEST_PORT:-48767}"
-export XDG_RUNTIME_DIR="$work/run" XDG_STATE_HOME="$work/state"
-mkdir -p "$XDG_RUNTIME_DIR" "$XDG_STATE_HOME" "$work/job"
-
-cleanup() {
-  "$bin/hwatu" quit >/dev/null 2>&1 || true
-  if [ "${HWATU_VERIFY_TEST_KEEP:-0}" = 1 ]; then
-    echo "kept fixture: $work"
-  else
-    rm -rf "$work"
-  fi
-}
-trap cleanup EXIT
+hw_private_env "hwatu-verify-router"
+mkdir -p "$work/job"
+hw_set_quit_cmd "$bin/hwatu"
+hw_keep_workdir_if HWATU_VERIFY_TEST_KEEP 1
+hw_cleanup_install EXIT
 
 cat > "$work/job/index.html" <<'HTML'
 <!doctype html>

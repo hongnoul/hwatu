@@ -41,23 +41,19 @@ if [[ $# -ge 1 ]]; then
     mkdir -p "$keep_out"
 fi
 
-work="$(mktemp -d "${TMPDIR:-/tmp}/hwatu-clone-suite.XXXXXX")"
+# shellcheck source=lib/test-harness.sh
+source "$root/scripts/lib/test-harness.sh"
+hw_private_env "hwatu-clone-suite"
 out="${keep_out:-$work/clones}"
 mkdir -p "$out"
-export XDG_RUNTIME_DIR="$work/run"
-export XDG_STATE_HOME="$work/state"
-mkdir -p "$XDG_RUNTIME_DIR" "$XDG_STATE_HOME"
 # Deny media autoplay in the capture daemon. WebKitGTK+GStreamer
 # (gst 1.28.5) deadlocks the web process main thread on pages with
 # several lazy-initialized autoplay videos (scale.com); a still
 # clone renders poster frames anyway, so playback buys nothing.
 export HWATU_BLOCK_AUTOPLAY=1
 
-cleanup() {
-    "$bin/hwatu" quit >/dev/null 2>&1 || true
-    rm -rf "$work"
-}
-trap cleanup EXIT
+hw_set_quit_cmd "$bin/hwatu"
+hw_cleanup_install EXIT
 
 # The ladder: url  min_avg_match  viewport
 # Thresholds reflect what Phase 0 (stills) demonstrably achieves

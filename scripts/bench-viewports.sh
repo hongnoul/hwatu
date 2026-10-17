@@ -4,17 +4,18 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 bin="$root/target/release"
-work="$(mktemp -d "${TMPDIR:-/tmp}/hwatu-vp-bench.XXXXXX")"
-export XDG_RUNTIME_DIR="$work/run" XDG_STATE_HOME="$work/state"
-mkdir -p "$XDG_RUNTIME_DIR" "$XDG_STATE_HOME"
+# shellcheck source=lib/test-harness.sh
+source "$root/scripts/lib/test-harness.sh"
+hw_private_env "hwatu-vp-bench"
+hw_set_quit_cmd "$bin/hwatu"
+hw_cleanup_install EXIT
 cat > "$work/resp.html" <<'HTML'
 <!DOCTYPE html><meta charset="utf-8"><title>bench</title>
 <style>@media (min-width:768px){body{background:#dfe8ff}}</style><div>x</div>
 HTML
 python3 -m http.server 8643 --bind 127.0.0.1 --directory "$work" >"$work/http.log" 2>&1 &
 srv=$!
-cleanup() { "$bin/hwatu" quit >/dev/null 2>&1 || true; kill "$srv" 2>/dev/null || true; rm -rf "$work"; }
-trap cleanup EXIT
+hw_track_pid "$srv"
 sleep 0.5
 "$bin/hwatu" ping >/dev/null
 url=http://127.0.0.1:8643/resp.html

@@ -253,6 +253,9 @@ elif [[ ! -x "$bin/hwatu" || ! -x "$bin/hwatud" ]]; then
 fi
 
 work="$(mktemp -d "${TMPDIR:-/tmp}/hwatu-rss-soak.XXXXXX")"
+# NOTE: not on scripts/lib/test-harness.sh: cleanup kills the daemon's whole
+# process tree, redirects quit/close logs, and --keep/--out control workdir
+# lifetime by flag, which the lib's pid-list + env-gate cleanup cannot express.
 if [[ -z "$out_dir" ]]; then
     out_dir="$work/out"
 fi

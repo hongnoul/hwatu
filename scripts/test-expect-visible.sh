@@ -10,21 +10,15 @@ if [[ ! -x "$bin/hwatu" || ! -x "$bin/hwatud" ]]; then
     cargo build --release --manifest-path "$root/Cargo.toml" >&2
 fi
 
-work="$(mktemp -d "${TMPDIR:-/tmp}/hwatu-expect-visible-test.XXXXXX")"
-export XDG_RUNTIME_DIR="$work/run"
-export XDG_STATE_HOME="$work/state"
-mkdir -p "$XDG_RUNTIME_DIR" "$XDG_STATE_HOME"
-
-daemon_pid=""
-cleanup() {
-    "$bin/hwatu" quit >/dev/null 2>&1 || true
-    [[ -n "$daemon_pid" ]] && kill "$daemon_pid" 2>/dev/null || true
-    rm -rf "$work"
-}
-trap cleanup EXIT
+# shellcheck source=lib/test-harness.sh
+source "$root/scripts/lib/test-harness.sh"
+hw_private_env "hwatu-expect-visible-test"
+hw_set_quit_cmd "$bin/hwatu"
+hw_cleanup_install EXIT
 
 "$bin/hwatud" >/dev/null 2>&1 &
 daemon_pid=$!
+hw_track_pid "$daemon_pid"
 for _ in $(seq 100); do
     [[ -S "$XDG_RUNTIME_DIR/hwatu.sock" ]] && break
     sleep 0.1
