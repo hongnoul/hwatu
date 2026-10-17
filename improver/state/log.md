@@ -183,3 +183,14 @@ baseline, benchmark scoreboard wiring (bench-* not yet in gates).
 - Coordinator-implemented harness change (meta-loop scope), verified by
   three lane runs including two with pre-policy flakes correctly
   attributed to the environment.
+
+## Iteration 10 — 2026-10-17 — latency scoreboard metric — GREEN
+
+- Change: gates.sh measures warm headless-open latency (median of 5,
+  isolated daemon) into the scoreboard JSON. Baseline on this host: 23ms.
+- Informational metric, not yet a gate; tolerance activates after
+  variance is established across runs (policy.toml latency_p50_pct=5
+  stands ready).
+- All watch items from meta-loop review 1 now closed or below the
+  selection bar: Linux lane (iter 7-9), sandbox (iter 9), bench wiring
+  (this), clone-scroll-effect-aarch64 (open, score 6 < bar).
