@@ -37,12 +37,18 @@ if [[ "$cmd" == e2e || "$cmd" == all ]]; then
     # private dirs. Inside the container there is no Wayland/X11, so
     # run under a virtual display if available.
     #
-    # WARNING (capability honesty): WebKitGTK's bwrap web-process
-    # sandbox needs user namespaces, which plain docker denies, so the
-    # sandbox is DISABLED here. This lane therefore does NOT exercise
-    # the production sandbox path; a userns-enabled or privileged
-    # container is the follow-up (improver/backlog/linux-lane-green.md).
-    export WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1
+    # WebKitGTK's bwrap web-process sandbox needs user namespaces. The
+    # sandbox-capable container (hwatu-builder2: --cap-add SYS_ADMIN,
+    # NET_ADMIN, seccomp/apparmor unconfined) exercises the production
+    # sandbox path; in a plain container bwrap cannot create namespaces
+    # and the sandbox must be disabled (capability honesty: that run
+    # does NOT cover the production sandbox).
+    if bwrap --unshare-all --share-net --ro-bind / / true 2>/dev/null; then
+        echo "webkit sandbox: ENABLED (userns available)"
+    else
+        echo "webkit sandbox: DISABLED (no userns in this container)"
+        export WEBKIT_DISABLE_SANDBOX_THIS_IS_DANGEROUS=1
+    fi
     export WEBKIT_DISABLE_DMABUF_RENDERER=1
     export LIBGL_ALWAYS_SOFTWARE=1
     export GTK_A11Y=none
@@ -50,7 +56,7 @@ if [[ "$cmd" == e2e || "$cmd" == all ]]; then
         echo "no Xvfb/weston in container; E2E needs a display server."
         echo "install: apt-get install -y xvfb   (then rerun with cmd=e2e)"
     else
-        pass=0; fail=0; skip=0; failed=""
+        pass=0; fail=0; skip=0; flaky=0; failed=""; flaked=""
         for t in scripts/test-*.sh; do
             case "$t" in
                 *test-mac-instrument*) continue ;;
@@ -76,10 +82,21 @@ if [[ "$cmd" == e2e || "$cmd" == all ]]; then
             if "${runner[@]}" >/tmp/hwatu-e2e-$(basename "$t").log 2>&1; then
                 pass=$((pass+1))
             else
-                fail=$((fail+1)); failed="$failed $(basename "$t")"
+                # The colima VM flakes ~1 test per sweep under load
+                # (pixel-diff and timing tests); each passes in
+                # isolation. Retry once: pass-on-retry is reported as
+                # FLAKY (never silently green), second failure is real.
+                sleep 2
+                if "${runner[@]}" >/tmp/hwatu-e2e-$(basename "$t").retry.log 2>&1; then
+                    pass=$((pass+1)); flaky=$((flaky+1))
+                    flaked="$flaked $(basename "$t")"
+                else
+                    fail=$((fail+1)); failed="$failed $(basename "$t")"
+                fi
             fi
         done
-        echo "e2e: $pass passed, $fail failed, $skip skipped (no-internet/no-compositor)"
+        echo "e2e: $pass passed, $fail failed, $skip skipped (no-internet/no-compositor), $flaky flaky(passed-on-retry)"
+        [[ -n "$flaked" ]] && echo "flaky:$flaked"
         [[ -n "$failed" ]] && echo "failed:$failed"
         [[ $fail -gt 0 ]] && status=1
     fi
