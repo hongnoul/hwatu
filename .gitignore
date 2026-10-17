@@ -1,3 +1,4 @@
 /target
 /docs/potential-features/
-improver/state/
+improver/state/scoreboard-*.json
+improver/state/triage-*.txt
