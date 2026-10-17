@@ -113,34 +113,78 @@ fn doctor() -> i32 {
 /// VA-API decode arrives with GStreamer's `va` plugin (gst-plugins-bad)
 /// plus a /dev/dri render node with a vendor driver. Report what is
 /// missing so the user knows which package turns it on.
+/// Informational only: never fails `doctor`.
 fn hw_decode_probe() -> Result<String, String> {
-    let render_node = fs::read_dir("/dev/dri")
-        .ok()
-        .into_iter()
-        .flatten()
-        .flatten()
-        .any(|e| e.file_name().to_string_lossy().starts_with("renderD"));
-    if !render_node {
-        return Err(
-            "no /dev/dri render node; hardware video decode unavailable (software fallback)".into(),
-        );
+    #[cfg(target_os = "macos")]
+    {
+        macos_hw_decode_message()
     }
-    let has_va = Command::new("gst-inspect-1.0")
-        .arg("va")
-        .output()
-        .map(|out| out.status.success())
-        .unwrap_or(false);
-    if has_va {
-        Ok("VA-API decode available (gstreamer va plugin + render node)".into())
-    } else {
-        Err("gstreamer `va` plugin missing; video decodes in software. \
-             Install gst-plugins-bad (Arch) / gstreamer1.0-plugins-bad (Debian) \
-             plus your GPU's VA-API driver for hardware decode"
-            .into())
+    #[cfg(not(target_os = "macos"))]
+    {
+        let render_node = fs::read_dir("/dev/dri")
+            .ok()
+            .into_iter()
+            .flatten()
+            .flatten()
+            .any(|e| e.file_name().to_string_lossy().starts_with("renderD"));
+        if !render_node {
+            return Err(
+                "no /dev/dri render node; hardware video decode unavailable (software fallback)"
+                    .into(),
+            );
+        }
+        let has_va = Command::new("gst-inspect-1.0")
+            .arg("va")
+            .output()
+            .map(|out| out.status.success())
+            .unwrap_or(false);
+        if has_va {
+            Ok("VA-API decode available (gstreamer va plugin + render node)".into())
+        } else {
+            Err("gstreamer `va` plugin missing; video decodes in software. \
+                 Install gst-plugins-bad (Arch) / gstreamer1.0-plugins-bad (Debian) \
+                 plus your GPU's VA-API driver for hardware decode"
+                .into())
+        }
     }
 }
 
+/// macOS has no /dev/dri or GStreamer VA-API path; hardware decode goes
+/// through VideoToolbox, which the daemon does not probe yet. Keep the
+/// Linux wording off macOS and stay informational (returned as `Err` so
+/// `doctor` prints an `info` line, never a failure).
+fn macos_hw_decode_message() -> Result<String, String> {
+    Err(
+        "VideoToolbox hardware decode not probed on macOS; video decodes in software fallback"
+            .into(),
+    )
+}
+
 fn webkit_check() -> Result<String, String> {
+    #[cfg(target_os = "macos")]
+    {
+        macos_webkit_message(Path::new("/System/Library/Frameworks/WebKit.framework").exists())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        webkit_linux_check()
+    }
+}
+
+/// macOS engine probe: the daemon renders via WKWebView (build
+/// "mac-wkwebview"), backed by the system WebKit.framework — not
+/// WebKitGTK, which is Linux-only. Pure for testability; the
+/// filesystem existence check happens in `webkit_check`.
+fn macos_webkit_message(framework_exists: bool) -> Result<String, String> {
+    if framework_exists {
+        Ok("WKWebView (WebKit.framework) available".into())
+    } else {
+        Err("WKWebView (WebKit.framework) not found; macOS 11+ ships it with the system".into())
+    }
+}
+
+#[allow(dead_code)]
+fn webkit_linux_check() -> Result<String, String> {
     const NEEDLES: &[&str] = &["libwebkitgtk-6.0.so"];
     // Dynamic-linker cache first: authoritative on glibc systems.
     if let Ok(out) = Command::new("ldconfig").arg("-p").output() {
@@ -913,6 +957,38 @@ mod tests {
         assert!(remove_registration(&path).is_err());
         assert_eq!(fs::read_to_string(&path).unwrap(), "[1,2");
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn macos_webkit_reports_wkwebview_not_webkitgtk() {
+        let ok = macos_webkit_message(true).unwrap();
+        assert!(
+            ok.contains("WKWebView"),
+            "ok line names the real engine: {ok}"
+        );
+        assert!(
+            !ok.contains("WebKitGTK"),
+            "macOS must not demand WebKitGTK: {ok}"
+        );
+        let err = macos_webkit_message(false).unwrap_err();
+        assert!(
+            err.contains("WebKit.framework"),
+            "err stays macOS-specific: {err}"
+        );
+        assert!(
+            !err.contains("libwebkitgtk"),
+            "err avoids Linux wording: {err}"
+        );
+    }
+
+    #[test]
+    fn macos_video_probe_avoids_linux_wording() {
+        let msg = macos_hw_decode_message().unwrap_err();
+        assert!(
+            !msg.contains("/dev/dri"),
+            "no Linux device path on macOS: {msg}"
+        );
+        assert!(!msg.contains("VA-API"), "no VA-API wording on macOS: {msg}");
     }
 
     #[test]
