@@ -272,3 +272,30 @@ Further A/B narrowing of the jcode-bridge finding:
   core use case) is broken through the bundled proxy but works with the
   repo daemon. Worth reporting to jcode maintainers with this exact
   repro.
+
+## Bridge-boundary finding CORRECTED — 2026-10-17
+
+The earlier diagnosis (proxy entitlements) was wrong. Deeper probing
+through the live bridge (navigator.userAgent = "X11; Ubuntu; Linux
+aarch64") revealed jcode's browser tool routes via a socket relay to a
+hwatud INSIDE the docker container, not the launchd hwatu-mac proxy:
+
+- file:///src/target-linux/... (container-visible path) rendered
+  correctly end to end through the bridge: title "acceptance", h1
+  "hello hwatu". file:// works; host paths simply don't exist in the
+  container namespace.
+- http://192.168.5.2:8778 (VM host gateway to a host dev server)
+  rendered correctly end to end. Network works; 127.0.0.1 is the
+  container's own loopback, standard Docker semantics.
+- Reversible daemon-swap test (launchd proxy booted out, repo
+  hwatud-mac bound to ~/.hwatu/hwatu.sock, then fully restored)
+  confirmed the bridge tool ignores that socket; it talks to the
+  container relay at /tmp/hwatu-501.sock.
+
+Conclusion: the jcode->hwatu->WebKitGTK acceptance path IS green end to
+end (open -> wait -> eval with correct DOM values through the real
+bridge, both file and HTTP). The only gap is ergonomic: localhost URLs
+need the gateway IP. Upstream correction + suggestion (rewrite
+localhost to host gateway in the bridge) sent to the jcode maintainer.
+All prior iteration evidence stands; this closes the last integration
+boundary as VALIDATED rather than blocked.
