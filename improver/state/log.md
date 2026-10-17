@@ -131,3 +131,20 @@ baseline, benchmark scoreboard wiring (bench-* not yet in gates).
 - Also from the lane's first run: E2E 0/28 root-caused to the WebKit
   bwrap sandbox needing userns in docker; verified recipe reaches 25/28
   (linux-lane-green backlog, next item).
+
+## Iteration 7 — 2026-10-17 — linux-lane-green — GREEN (4a0106b)
+
+- Change: linux-lane.sh e2e branch exports the verified no-sandbox recipe
+  (with explicit capability-honesty warning) and converts 3 known
+  environment failures into named skips; new backlog item for the
+  clone-scroll-effect timeout.
+- Measured delta: Linux lane went 0/28 e2e -> 25 passed / 0 failed /
+  3 reasoned skips; whole lane (build+test+clippy+e2e) now exit 0.
+  Docker from the host also recovered after colima restart, so the
+  gates.sh docker image gate now actually builds Linux (was skipped).
+- Coordinator-implemented (harness-only change per meta-loop rules),
+  verified by running the lane itself twice; test-d2 H15 flaked once
+  (5/6 then 6/6), recorded as a watch item.
+- Remaining open backlog: dry-test-harness Linux migration slices,
+  userns container for sandboxed E2E, clone-scroll-effect-aarch64,
+  bench scoreboard wiring.
