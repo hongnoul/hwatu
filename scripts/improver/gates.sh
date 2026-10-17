@@ -89,18 +89,11 @@ else
     gate "e2e.suite" skipped "full E2E requires Linux daemon (host=$host, fast=$fast)"
 fi
 
-# mac verification-instrument smoke: warm daemon render loop via installed CLI
-if [[ "$host" == "Darwin" ]] && command -v hwatu >/dev/null; then
-    if hwatu ping >/dev/null 2>&1 || true; then
-        t0=$(python3 -c 'import time;print(time.time_ns())')
-        if hwatu open about:blank --headless >/dev/null 2>&1; then
-            t1=$(python3 -c 'import time;print(time.time_ns())')
-            ms=$(( (t1 - t0) / 1000000 ))
-            gate "mac.smoke.open" pass "headless open ${ms}ms"
-        else
-            gate "mac.smoke.open" FAIL "headless open failed"
-        fi
-    fi
+# mac verification-instrument suite (Darwin): isolated daemon E2E with counts
+if [[ "$host" == "Darwin" ]]; then
+    run "e2e.mac" bash "$root/scripts/test-mac-instrument.sh"
+else
+    gate "e2e.mac" skipped "Darwin-only instrument suite (host=$host)"
 fi
 
 # ---- Emit JSON scoreboard
