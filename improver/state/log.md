@@ -168,3 +168,18 @@ baseline, benchmark scoreboard wiring (bench-* not yet in gates).
 - Watch item: colima VM E2E flake rate (~1 test per full sweep under
   parallel load; 0 when runs are spaced). Candidate fix: serialize lane
   e2e with retry-once-and-report, or move the lane to a real Linux host.
+
+## Iteration 9 — 2026-10-17 — sandboxed Linux lane + flake policy — GREEN (08aed9f)
+
+- Change: sandbox-capable container (hwatu-builder2, SYS_ADMIN+NET_ADMIN,
+  seccomp/apparmor unconfined) lets the lane run WebKit's production
+  bwrap sandbox; linux-lane.sh probes bwrap and reports sandbox
+  ENABLED/DISABLED honestly; host driver prefers the capable container;
+  e2e failures retry once and surface as FLAKY instead of silently green.
+- Measured delta: first fully-green lane run with the production sandbox
+  path exercised (previously always disabled): build+test+clippy+e2e
+  25/0/3, 0 flaky. Closes the "userns sandbox" watch item from meta-loop
+  review 1.
+- Coordinator-implemented harness change (meta-loop scope), verified by
+  three lane runs including two with pre-policy flakes correctly
+  attributed to the environment.
