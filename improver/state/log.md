@@ -112,3 +112,22 @@ Linux slice + e2e.suite). Next Linux-capable session should run both.
 Loop state: healthy. Backlog open items: dry-test-harness Linux slices.
 Candidate next items when hardware allows: Linux migration, full e2e
 baseline, benchmark scoreboard wiring (bench-* not yet in gates).
+
+## Iteration 6 — 2026-10-17 — aarch64-o-nofollow-security — GREEN (c493bf7)
+
+- SECURITY: hardcoded O_NOFOLLOW was the x86-only value; symlink-overwrite
+  protection was silently absent on all aarch64 Linux builds. All open(2)
+  flag sites now use libc constants; macOS-only doctor helpers cfg-gated
+  (fixes the Linux clippy escape from iteration 1).
+- Found by the loop itself: standing up the Linux lane (linux-lane.sh +
+  colima driver, 0b0603a) surfaced the failing unit test; investigator
+  (kitten) proved the root cause with functional probes; implementer
+  (poodle) and verifier (hare) closed it with cross-platform evidence
+  including a compiled libc-value probe.
+- Escape recorded for meta-loop: iteration 1 shipped a Linux clippy
+  regression because Linux gates were honestly skipped but nothing
+  enforced a Linux check before commit. Fix direction: linux-lane checks
+  join gates.sh when the lane is reachable (linux-lane-green backlog).
+- Also from the lane's first run: E2E 0/28 root-caused to the WebKit
+  bwrap sandbox needing userns in docker; verified recipe reaches 25/28
+  (linux-lane-green backlog, next item).
