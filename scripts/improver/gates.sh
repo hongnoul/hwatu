@@ -96,6 +96,14 @@ else
     gate "e2e.mac" skipped "Darwin-only instrument suite (host=$host)"
 fi
 
+# ---- Acceptance regression suite: every closed iteration's acceptance
+# check keeps running forever (meta-loop review 1). Checks self-skip on
+# unsupported hosts, which counts as pass here; real failures gate.
+for a in "$root"/scripts/improver/accept/*.sh; do
+    [[ -x "$a" ]] || continue
+    run "accept.$(basename "$a" .sh)" bash "$a"
+done
+
 # ---- Emit JSON scoreboard
 {
     echo "{"
