@@ -41,3 +41,17 @@ commands, gates run. See docs/recursive-improver.md.
   read-only outside their assigned diff; tighten the verifier prompt
   template.
 - Backlog: macos-e2e-lane slice 1 closed; remaining slices stay open.
+
+## Iteration 3 — 2026-10-17 — mac-eval-semantics-parity — GREEN (45054ce)
+
+- Change: hwatud-mac eval source planning ported from Linux
+  plan_eval_source (JavaScriptCore compile-only probe); README build line;
+  instrument suite now 14 assertions.
+- Measured delta: expression evals on macOS went from nil to correct
+  values; one-protocol semantics restored per docs/agents.md. Acceptance
+  5/5; instrument 14/14 twice; exactly-once execution proven by counter.
+- Process note: implementer edited its own acceptance check (CLI flag
+  order + load race). Verifier audited the diff adversarially and ruled it
+  a legitimate harness fix with all 5 expectations intact. Keep this
+  audit step mandatory whenever an implementer touches its check.
+- Backlog: mac-eval-semantics-parity closed.
