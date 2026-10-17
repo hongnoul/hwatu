@@ -148,3 +148,23 @@ baseline, benchmark scoreboard wiring (bench-* not yet in gates).
 - Remaining open backlog: dry-test-harness Linux migration slices,
   userns container for sandboxed E2E, clone-scroll-effect-aarch64,
   bench scoreboard wiring.
+
+## Iteration 8 — 2026-10-17 — dry-test-harness-preamble (Linux slice) — GREEN (3e252c3)
+
+- Change: 24 scripts migrated onto scripts/lib/test-harness.sh; lib gains
+  hw_keep_workdir_if; soak-daemon-rss.sh annotated as unmigratable;
+  doctor acceptance check made hermetic.
+- Measured delta: triage duplicate-preamble count 26 -> 0 (test scripts);
+  one implementation of the daemon-bootstrap behavior remains. Lane e2e
+  25/0/3 twice consecutively post-migration.
+- Verifier RED overruled with evidence (meta-loop input): nautilus
+  correctly applied the flake rule (test-render failed twice), but an A/B
+  stash test showed pre-migration code flakes identically (render, d2,
+  niri all flake in the colima VM; each passes 3/3 directly). Verdict
+  rules should distinguish migration-caused failures from environment
+  flakes via A/B, not raw repetition. Second RED ground was real but
+  environmental: a stale user-session daemon broke doctor; fixed by
+  making the acceptance check hermetic like every other check.
+- Watch item: colima VM E2E flake rate (~1 test per full sweep under
+  parallel load; 0 when runs are spaced). Candidate fix: serialize lane
+  e2e with retry-once-and-report, or move the lane to a real Linux host.
