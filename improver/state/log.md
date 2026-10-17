@@ -254,3 +254,21 @@ Public interfaces exercised with observed behavior:
    sandbox/entitlements. Logged as an upstream jcode-packaging issue,
    not a hwatu defect; convergence path is jcode shipping the current
    hwatud-mac with network/file entitlements.
+
+## Bridge-boundary refinement — 2026-10-17
+
+Further A/B narrowing of the jcode-bridge finding:
+- Through the bridge proxy (hwatu-mac, launchd-spawned, adhoc-signed):
+  https://example.com loads and evals correctly (title "Example
+  Domain"), in-page fetch to external hosts works, but loopback
+  (http://127.0.0.1) answers "Connection refused" and file:// answers
+  "No such file or directory". So the proxy is NOT fully sandboxed; it
+  specifically lacks local-resource access (likely local-network/file
+  entitlements or an internal policy in the jcode build).
+- Same operations against this repo's daemon (same host, same pages):
+  loopback and file URLs load and eval correctly (verified twice).
+- Conclusion stands and sharpens: upstream jcode issue, scope = local
+  resources only. Agent verification of localhost dev servers (hwatu's
+  core use case) is broken through the bundled proxy but works with the
+  repo daemon. Worth reporting to jcode maintainers with this exact
+  repro.
