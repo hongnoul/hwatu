@@ -14,3 +14,15 @@ commands, gates run. See docs/recursive-improver.md.
   duplication (dry-test-harness-preamble), mac E2E gap (macos-e2e-lane).
 - Reproduced activation defect: doctor fails on macOS demanding WebKitGTK
   (doctor-webkit-macos, acceptance check failing as required).
+
+## Iteration 1 — 2026-10-17 — doctor-webkit-macos — GREEN (a72d0f5)
+
+- Change: platform-honest `hwatu doctor` (webkit + video probes) in
+  crates/hwatu/src/onboarding.rs only.
+- Measured delta: macOS activation fixture doctor exit 1 -> 0; engine line
+  now reports WKWebView (WebKit.framework). Linux logic verified unchanged.
+- Evidence: accept script ACCEPT-PASS; cargo test 122+27+8; clippy -D
+  warnings clean; gates.sh --fast no FAIL; triage no new findings.
+- Process: implementer (boar) and verifier (unicorn) were separate agents;
+  coordinator re-ran the acceptance check before commit.
+- Backlog: doctor-webkit-macos closed.
