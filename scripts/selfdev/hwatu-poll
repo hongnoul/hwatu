@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# First promoted fix from the self-development loop (synth.py: "sleeps",
+# est. ~455s/task recovery). Replaces `sleep N && hwatu eval <pred>` with
+# predicate polling: returns as soon as the page is actually ready.
+#
+# Usage:
+#   hwatu-poll <window-id> '<js predicate returning truthy>' [timeout_s] [interval_s]
+# Example (instead of `sleep 20; hwatu eval --id 17 '...Budae...'`):
+#   hwatu-poll 17 'return document.body.innerText.includes("Budae")' 20
+#
+# Exit 0 with the predicate's value on success, exit 1 on timeout.
+set -euo pipefail
+id=${1:?window id}
+pred=${2:?js predicate}
+timeout=${3:-20}
+interval=${4:-0.25}
+
+deadline=$(( $(date +%s) + timeout ))
+while :; do
+  out=$(hwatu eval --id "$id" "$pred" 2>/dev/null || true)
+  case "$out" in
+    ""|false|null|0) ;;
+    *) printf '%s\n' "$out"; exit 0 ;;
+  esac
+  [ "$(date +%s)" -ge "$deadline" ] && { echo "hwatu-poll: timeout after ${timeout}s" >&2; exit 1; }
+  sleep "$interval"
+done

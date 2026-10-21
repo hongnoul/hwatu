@@ -83,3 +83,106 @@ Going native on tool transport saves ~1%. The meaningful fixes are
 **fewer, fatter turns** (composite/scripted operations) and
 **event-driven waits instead of sleeps**. The agent loop, not hwatu,
 is where the time goes.
+
+## Closed self-development loop: driving bottlenecks to zero
+
+A loop is "closed" when every proposed fix is gated on a measured
+improvement against replayed real tasks, so the system can iterate
+without human judgment in the inner loop. Six stages, each feeding the
+next:
+
+### 1. Instrument (observe)
+
+Every agent run emits a trace: per-tool-call wall clock split into
+{model think, transport, daemon, page wait, sleep}, token counts in and
+out, and the full command sequence. hwatu already timestamps
+daemon-side; the harness adds turn-level timing. Zero-config, always
+on.
+
+### 2. Attribute (profile)
+
+A profiler reduces traces to the ranked table above, per run and
+aggregated. The loop's objective function is explicit: total wall
+clock per completed task, with turn count and token volume as
+secondary metrics. Regressions and plateaus are visible, not vibes.
+
+### 3. Synthesize (generate fixes)
+
+Each bottleneck class has a known fix generator, run offline by an
+agent against the trace corpus:
+
+- **Turn count (#1, #2):** mine recurring call sequences across
+  traces, cluster them, and compile each cluster into a deterministic
+  script, skill, or daemon-side composite op (the `hwatu check`
+  pattern, generalized). The model is then only invoked at genuine
+  novelty points; everything routine becomes code. This is the main
+  engine: it converts inference time into ~ms script time.
+- **Sleeps (#3):** for every `sleep N` in a trace, find the condition
+  that was actually being waited on (what the next command checked)
+  and synthesize an `expect`/poll predicate to replace it.
+- **Page waits (#4):** learn per-site readiness signals and downgrade
+  `settled` to `--until dom` + predicate where traces show it's safe.
+- **Context (#5):** learn per-command output shapers (what the model
+  actually used from each output) and truncate at the source.
+- **Transport (#6):** route through the persistent socket / MCP once,
+  mechanically.
+
+### 4. Verify (the closing edge)
+
+Candidate fixes run against a replay harness: recorded tasks
+(fixtures + real sites) re-executed with the fix applied. Promotion
+gate: task still succeeds AND wall clock / turns / tokens improve.
+`scripts/bench-*.sh` style budget gates catch regressions, CI-style.
+No fix lands on belief.
+
+### 5. Promote
+
+Passing fixes become durable assets: a new skill, a new composite
+verb in hwatud, a learned wait predicate in a per-site profile, a
+default output shaper. They apply to all future runs automatically.
+
+### 6. Re-measure and repeat
+
+The profile is re-ranked after each promotion. Because the generators
+target whatever is currently #1, the loop is self-steering: as sleeps
+disappear, turn-compilation becomes the whole profile, and the loop
+pressure moves there.
+
+### Fixed point
+
+The loop converges to a floor where the only remaining cost is model
+inference at genuine decision points plus irreducible page time.
+Everything repeatable has been compiled away. By Amdahl, the final
+lever is shrinking that residual: smaller or local models for routine
+decisions, and speculative parallel branches (fire the likely next
+composite op before the model confirms) so inference overlaps with
+page time instead of serializing behind it.
+
+## Implementation
+
+The loop is live in `scripts/selfdev/`:
+
+- `profile.py` (stages 1-2): parses Jcode session logs into the
+  ranked attribution {model, tool exec, tool sleep, user wait}, with
+  tokens, per-turn cost, and slowest calls.
+- `synth.py` (stage 3): consumes `profile.py --json`, emits ranked fix
+  candidates: every sleep with its awaited condition, recurring
+  command n-grams to compile into composite ops, oversized outputs to
+  shape at source, each with estimated seconds saved.
+- `verify.py` (stages 4-6): baseline/gate over profiles. A fix only
+  promotes if a replay improves wall clock, turns, sleep, or tokens
+  without regressing any of them.
+- `hwatu-poll`: first promoted fix (sleeps class): predicate polling
+  that replaces `sleep N && hwatu eval <pred>`, returning the moment
+  the page is ready.
+
+First real run (the Budae Jjige DoorDash session, 204 turns, 1944 s
+agent wall clock) measured: model 61.5%, explicit sleeps 29.3%
+(569 s), tool exec 9.2%. Synth ranked turn-compilation first
+(~984 s: 168 compilable turns x 5.9 s/turn) and sleep removal second
+(~456 s). `hwatu-poll` verified on a fixture: page ready at 1.3 s,
+poll returned at 1.48 s where the trace slept a blind 8-20 s.
+
+Loop cadence: run a task, `profile.py --latest | synth.py`, implement
+the top candidate, replay, `verify.py gate`, promote or discard,
+repeat.
