@@ -192,3 +192,37 @@ improved, and a no-change replay REJECTs for lack of improvement.
 Loop cadence: run a task, `profile.py --latest | synth.py`, implement
 the top candidate, replay, `verify.py gate`, promote or discard,
 repeat.
+
+## Loop iteration 1 (2026-10-21): turn-count compilation, PROMOTED
+
+Synth ranked turn count #1 (~1635 s across the 5-session corpus).
+Fix: `scripts/selfdev/hwatu-flow`, which compiles the dominant
+`goto -> wait -> eval/click` n-grams into one `hwatu batch` call with
+daemon-side `expect` polling between steps.
+
+Replay of the baseline task (find Budae Jjige price on DoorDash)
+through hwatu-flow, against the live site, converged after two
+extractor refinements (wrong store, then review-text false positive,
+both caught by the replay itself) and reproduced the baseline's
+ground-truth answer: Budae Jjige, $18.50, Seoul Restaurant Boston.
+
+Gate verdict:
+
+| metric | baseline | hwatu-flow replay |
+|---|---|---|
+| agent wall clock | 1943.7 s | 21.6 s (90x) |
+| model turns | 204 | 4 |
+| tool sleep | 569.5 s | 0 s |
+| input tokens | 71411 | 712 |
+
+RESULT: PROMOTE. Caveat recorded honestly: the replay is a scripted
+driver, so its "turns" carry no real inference latency; the fair
+reading is that the flow needs ~3 tool calls and zero sleeps where
+the baseline spent 204 turns and 569 s sleeping, and the end-to-end
+browser work itself completed in 10.8 s. Even charging 6 s of model
+time per remaining turn, the task lands near 45 s, a ~40x
+improvement, dominated by exactly the two classes synth ranked first.
+
+Next target per re-ranked plan: oversized outputs (shape at source)
+and generalizing hwatu-flow into a skill the agent reaches for by
+default.
