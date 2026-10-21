@@ -18,24 +18,25 @@ each fail one requirement:
 - **Cloud browser services** move the session outside the user's trust
   boundary, meter every page, and sell spoofed fingerprints as identity.
 
-Hwatu: one warm local daemon, native web views, headless by construction, one
-JSON protocol, the live session as the hand-off unit. Verification in ~35 ms.
-Focus stealing unrepresentable. Identity granted by the human without exposing
-a credential. No cloud.
+Hwatu's answer: the agent gets its own real browser on the user's machine.
+Invisible unless summoned. Instant, because it never starts cold. Checks come
+back in ~35 ms as measurements, not screenshots to squint at. When a login or
+judgment call needs the human, the exact page in progress appears as a window,
+the human acts, and the agent continues where they left off. No credential
+ever passes through the agent. No cloud.
 
 ## The outcome
 
-The same loop on Linux, macOS, and Windows:
+On Linux, macOS, and Windows alike, an agent can:
 
-1. connect to one warm local daemon,
-2. open or adopt a prewarmed native web view without taking focus,
-3. inspect, drive, measure, and compare pages through one JSON protocol,
-4. materialize the live session when a person is needed,
-5. return it to the background without losing state.
+1. open a page instantly, invisibly, without touching the human's screen,
+2. read, drive, measure, and compare it, and get answers as data,
+3. pull the human in to see the exact live page when needed,
+4. take it back and continue, nothing lost.
 
 "Cross-platform" means: install normally for the OS, run `hwatu doctor`,
-connect an agent via CLI or MCP, pass the shared verification fixture, perform
-a live hand-off. Compiling on three targets is not cross-platform.
+connect an agent, pass the shared verification fixture, perform a live
+hand-off. Compiling on three targets is not cross-platform.
 
 ## Three planes, one session
 
@@ -44,22 +45,21 @@ live session.
 
 ### 1. Verification
 
-The first product. Wins all shared-runtime conflicts. "Pixel-perfect" is a
-claim; `match_percent: 97.49` is a measurement. One `check` call opens, waits,
-evaluates, screenshots, and closes in one IPC roundtrip. Pixel diffs are
-scores an agent can climb. Animations are numbers. Console and network errors
-are data.
+The first product. Wins all conflicts. "Pixel-perfect" is a claim;
+`match_percent: 97.49` is a measurement. One call opens a page, waits,
+reads it, screenshots it, and cleans up. Pixel diffs are scores an agent can
+climb. Animations are numbers. Errors are data.
 
 ### 2. Identity: delegated authentication
 
-The agent hits a login wall or CAPTCHA. `challenge` detects it. `focus <id>`
-gives the human the same live window. The human types the credential into the
-real site. The agent resumes the session, cookies intact, persisted across
-daemon restarts.
+The agent hits a login wall or CAPTCHA. It detects the wall and shows the
+human the exact page, live. The human types the password into the real site.
+The agent takes the page back, logged in, and stays logged in across
+restarts.
 
-The agent never sees the credential. The human never gives a password to a
-model, a config file, or a cloud. The agent holds only sessions it was
-granted, not the user's whole logged-in browser. Session scope is the
+The agent never sees the password. The human never gives a password to a
+model, a config file, or a cloud. The agent holds only the logins it was
+granted, not the user's whole browsing life. What was granted is the
 permission model.
 
 Extension bridges expose everything and call it convenience. Cloud services
@@ -68,10 +68,10 @@ a time.
 
 ### 3. Hand-off
 
-Focus and unfocus preserve page, cookies, navigation, and in-progress work in
-both directions. The human enters for one judgment call or credential, then
-returns the session. A screenshot of another browser is not hand-off. Opening
-the URL elsewhere is not hand-off.
+The same live page moves between agent and human with nothing lost: not the
+page, not the login, not half-filled forms. The human enters for one judgment
+call or credential, then hands it back. A screenshot of another browser is
+not hand-off. Opening the URL elsewhere is not hand-off.
 
 Verification makes the agent trustworthy. Delegated identity makes it capable
 on the authenticated web. Hand-off keeps the human sovereign over both.
