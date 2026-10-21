@@ -10,42 +10,31 @@
 mod abp;
 mod adblock;
 mod automation;
-mod bar;
 mod blurshield;
 mod clock;
 mod compositor;
 mod console;
 mod coverage;
-mod darkmode;
 mod downloads;
 mod engine;
 mod events;
-mod external;
 mod focusshield;
-mod hints;
 mod history;
 mod ipc_server;
-mod keys;
 mod launcher;
 mod mediashim;
 mod net;
-mod notify;
 mod observe;
 mod opfs;
-mod palette;
 mod passfill;
 mod private_files;
 mod prompts;
-mod reader;
 mod search;
 mod session;
-mod share;
 mod sitedata;
 mod siteua;
-mod smoothwheel;
 mod snapbudget;
 mod snapdiff;
-mod theme;
 mod trusted_input;
 mod verify;
 mod vocab;
@@ -93,8 +82,6 @@ pub struct Daemon {
     /// Downloads this daemon session started (coverage C5), for
     /// `hwatu downloads`.
     pub downloads: downloads::Registry,
-    /// Resolved keybindings (defaults + ~/.config/hwatu/keys.conf).
-    pub keymap: keys::Keymap,
     /// Window most recently targeted by an automation command (eval,
     /// navigate, screenshot, ...), by explicit id or resolution.
     /// Id-less commands fall back to it when several windows are open
@@ -210,7 +197,6 @@ impl Daemon {
             history: history::History::load(!security.ephemeral_profile),
             handoffs: RefCell::new(Vec::new()),
             downloads: downloads::Registry::default(),
-            keymap: keys::Keymap::load(),
             last_target: RefCell::new(None),
             recently_closed: RefCell::new(Vec::new()),
             check_pool: RefCell::new(Vec::new()),
@@ -603,7 +589,6 @@ fn main() -> glib::ExitCode {
             .borrow_mut()
             .take()
             .expect("application startup runs once");
-        bar::install_css();
         // Reclaim session blobs orphaned by a crashed/killed daemon.
         if !security.ephemeral_profile {
             window::sweep_discard_dir();
@@ -621,9 +606,6 @@ fn main() -> glib::ExitCode {
         open_sandbox_for_media();
         // Spell check (H6): Enchant backend on, locale-derived language.
         enable_spell_checking();
-        // Theme continuity (H37): follow the desktop color scheme so
-        // prefers-color-scheme resolves like native apps'.
-        theme::follow_system();
         // Internal pages (hwatu://launcher) before any WebView exists.
         launcher::register_scheme();
         adblock::Adblock::init(&daemon);

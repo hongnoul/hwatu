@@ -10,8 +10,6 @@
 //! On focus, a prewarmed WebView is adopted and the state restored, so
 //! resume feels instant.
 
-use crate::bar::{Bar, BarMode};
-use crate::keys;
 use crate::launcher;
 use crate::prompts::{self, Prompt, Prompts};
 use crate::Daemon;
@@ -221,42 +219,6 @@ fn site_app_id(url: &str) -> Option<String> {
     best.map(|(_, id)| id.to_string())
 }
 
-/// Known-graphical editors that wait for their window to close ("-w"
-/// style). Anything else is assumed terminal-bound.
-fn editor_is_graphical(editor: &str) -> bool {
-    let bin = editor.split_whitespace().next().unwrap_or(editor);
-    let bin = bin.rsplit('/').next().unwrap_or(bin);
-    matches!(
-        bin,
-        "code" | "codium" | "subl" | "gedit" | "kate" | "zeditor" | "zed"
-    )
-}
-
-/// Is `bin` on PATH?
-fn which_exists(bin: &str) -> bool {
-    std::env::var_os("PATH")
-        .is_some_and(|paths| std::env::split_paths(&paths).any(|dir| dir.join(bin).is_file()))
-}
-
-/// Interpret only the keys owned by a confirmation prompt. Everything else
-/// must keep propagating to the page, otherwise a prompt appearing while the
-/// user types into a form can silently eat characters.
-fn confirm_answer(key: gtk::gdk::Key, state: gtk::gdk::ModifierType) -> Option<bool> {
-    let command_modifiers = gtk::gdk::ModifierType::CONTROL_MASK
-        | gtk::gdk::ModifierType::ALT_MASK
-        | gtk::gdk::ModifierType::SUPER_MASK
-        | gtk::gdk::ModifierType::HYPER_MASK
-        | gtk::gdk::ModifierType::META_MASK;
-    if state.intersects(command_modifiers) {
-        return None;
-    }
-    match key {
-        gtk::gdk::Key::y | gtk::gdk::Key::Y => Some(true),
-        gtk::gdk::Key::n | gtk::gdk::Key::N | gtk::gdk::Key::Escape => Some(false),
-        _ => None,
-    }
-}
-
 /// State saved across a discard. The session blob itself lives on disk
 /// (see [`discard_dir`]): keeping it in RAM would leak per-window
 /// memory exactly when the point of discarding is to reclaim it, and
@@ -285,13 +247,6 @@ fn termination_info(
         message: message.to_string(),
         url,
     }
-}
-
-fn recovery_url(live_url: Option<&str>, last_url: &str) -> Option<String> {
-    live_url
-        .filter(|url| !url.is_empty())
-        .or((!last_url.is_empty()).then_some(last_url))
-        .map(str::to_string)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -342,9 +297,8 @@ pub struct BrowserWindow {
     pub id: u64,
     pub window: gtk::Window,
     daemon: Rc<Daemon>,
-    /// The webview sits inside this overlay; the bar floats above it.
+    /// The webview sits inside this overlay.
     overlay: gtk::Overlay,
-    bar: Bar,
     prompts: Prompts,
     webview: RefCell<Option<webkit6::WebView>>,
     saved: RefCell<Option<SavedState>>,
@@ -435,14 +389,6 @@ pub struct BrowserWindow {
     /// Suppress a retry storm: Turnstile emits the same 600010 rejection
     /// repeatedly in one document.  Reset on the next top-level load.
     turnstile_handoff_offered: std::cell::Cell<bool>,
-    /// Command-palette state while the bar is in Palette mode: the
-    /// current ranked matches and which one is highlighted. Cleared on
-    /// close so a reopened palette starts fresh.
-    palette: RefCell<Option<PaletteState>>,
-    /// URL-bar history completions (roadmap H9): ranked URL matches
-    /// for the current entry text, and which (if any) is highlighted.
-    /// `None` selection means Enter navigates the typed text.
-    completions: RefCell<Option<CompletionState>>,
     /// Cookie/site-data profile this window was opened with (platform
     /// item 6). `Fork` reads it so a duplicate shares the source's
     /// session; None = the daemon default session.
@@ -450,18 +396,6 @@ pub struct BrowserWindow {
     /// Fork lineage (coverage C3): `(parent window id, fork name,
     /// created-at)` when this window was created by `Request::Fork`.
     pub fork_of: RefCell<Option<(u64, String, std::time::SystemTime)>>,
-}
-
-/// See [`BrowserWindow::palette`].
-struct PaletteState {
-    matches: Vec<keys::Action>,
-    selected: usize,
-}
-
-/// See [`BrowserWindow::completions`].
-struct CompletionState {
-    urls: Vec<String>,
-    selected: Option<usize>,
 }
 
 /// `HWATU_WEBKIT_FEATURES=Ident:on,Other:off`: escape hatch for odd
@@ -594,21 +528,11 @@ pub fn build_webview_with_session(session: Option<&webkit6::NetworkSession>) -> 
     apply_view_settings(&view);
     crate::console::wire_view(&view);
     crate::clock::wire_view(&view);
-    crate::smoothwheel::wire_view(&view);
     crate::focusshield::wire_view(&view);
     crate::blurshield::wire_view(&view);
     crate::mediashim::wire_view(&view);
     crate::opfs::wire_view(&view);
     crate::trusted_input::wire_view(&view);
-    crate::reader::wire_view(&view);
-    // Link hints (roadmap H10): yank mode hands the href to the GDK
-    // clipboard, page JS never touches navigator.clipboard.
-    crate::hints::wire_view(&view, |href| {
-        if let Some(display) = gtk::gdk::Display::default() {
-            display.clipboard().set_text(&href);
-            println!("hwatud: yanked {href}");
-        }
-    });
     view
 }
 
@@ -765,9 +689,6 @@ impl BrowserWindow {
                 this.mark_nav_pending(&uri);
                 this.remember_url(&uri);
                 webview.load_uri(&uri);
-                if mode == OpenMode::Normal {
-                    this.bar.open_url("");
-                }
                 uri
             }
         };
@@ -865,7 +786,6 @@ impl BrowserWindow {
         apply_view_settings(&webview);
         crate::console::wire_view(&webview);
         crate::clock::wire_view(&webview);
-        crate::smoothwheel::wire_view(&webview);
         crate::focusshield::wire_view(&webview);
         crate::opfs::wire_view(&webview);
         crate::trusted_input::wire_view(&webview);
@@ -931,8 +851,6 @@ impl BrowserWindow {
         }
 
         let overlay = gtk::Overlay::new();
-        let bar = Bar::new();
-        overlay.add_overlay(&bar.root);
         window.set_child(Some(&overlay));
 
         let this = Rc::new(BrowserWindow {
@@ -940,7 +858,6 @@ impl BrowserWindow {
             window: window.clone(),
             daemon: daemon.clone(),
             overlay,
-            bar,
             prompts: Prompts::new(daemon.site_store.clone()),
             webview: RefCell::new(None),
             saved: RefCell::new(None),
@@ -965,14 +882,11 @@ impl BrowserWindow {
             console: crate::console::Buffer::default(),
             net: crate::net::Buffer::default(),
             turnstile_handoff_offered: std::cell::Cell::new(false),
-            palette: RefCell::new(None),
-            completions: RefCell::new(None),
             profile: RefCell::new(None),
             fork_of: RefCell::new(None),
         });
 
         this.attach_webview(webview);
-        this.wire_bar();
 
         // Push-IPC fan-out: console captures become `console` events
         // with this window's id, and the window's own birth is a
@@ -998,14 +912,22 @@ impl BrowserWindow {
                         return;
                     };
                     // Invalid/non-web page provenance must not consume the
-                    // one-shot offer: a later valid main-page rejection in
-                    // this document still deserves a recovery prompt.
+                    // one-shot report: a later valid main-page rejection in
+                    // this document still deserves one.
                     if this.turnstile_handoff_offered.replace(true) {
                         return;
                     }
-                    this.push_prompt(Prompt::ExternalBrowser {
-                        uri: uri.to_string(),
-                    });
+                    // The anti-bot provider rejected this engine. Report
+                    // a structured block; do not spoof, do not launch a
+                    // different browser. The human decides what happens.
+                    this.daemon.events.emit(
+                        "engine_blocked",
+                        Some(this.id),
+                        serde_json::json!({
+                            "uri": uri,
+                            "reason": "anti-bot provider rejects this engine",
+                        }),
+                    );
                 }
             });
         }
@@ -1014,56 +936,6 @@ impl BrowserWindow {
             Some(id),
             serde_json::json!({ "state": "opened", "mode": mode }),
         );
-
-        // Ctrl+w (or ctrl+q) closes the window; the daemon (and engine) stay warm.
-        {
-            let ctrl = gtk::EventControllerKey::new();
-            let weak = Rc::downgrade(&this);
-            ctrl.connect_key_pressed(move |_, key, _, state| {
-                weak.upgrade().map_or(glib::Propagation::Proceed, |this| {
-                    this.on_window_key(key, state)
-                })
-            });
-            window.add_controller(ctrl);
-        }
-
-        // Capture-phase keys: things that must win over the page, which
-        // keeps focus and would otherwise swallow them before bubble.
-        // Modified chords (ctrl/alt) dispatch here via the keymap;
-        // y/n/Esc while the bar is in confirm mode are fixed keys.
-        {
-            let ctrl = gtk::EventControllerKey::new();
-            ctrl.set_propagation_phase(gtk::PropagationPhase::Capture);
-            let weak = Rc::downgrade(&this);
-            ctrl.connect_key_pressed(move |_, key, _, state| {
-                let Some(this) = weak.upgrade() else {
-                    return glib::Propagation::Proceed;
-                };
-                // While the bar's entry owns focus (find/URL/palette
-                // typing), global chords stay out of the way: Ctrl+o in
-                // a URL prompt must not navigate history under the bar.
-                let entry_open = matches!(
-                    this.bar.mode(),
-                    BarMode::Find { .. } | BarMode::Url | BarMode::Palette
-                );
-                if !entry_open {
-                    if let Some(action) =
-                        this.daemon.keymap.lookup(keys::Phase::Capture, key, state)
-                    {
-                        return this.run_action(action);
-                    }
-                }
-                let BarMode::Confirm { tag } = this.bar.mode() else {
-                    return glib::Propagation::Proceed;
-                };
-                let Some(answer) = confirm_answer(key, state) else {
-                    return glib::Propagation::Proceed;
-                };
-                this.answer_confirm(&tag, answer);
-                glib::Propagation::Stop
-            });
-            window.add_controller(ctrl);
-        }
 
         // Focus-driven lifecycle: unfocused windows are scheduled for
         // discard, focused ones are restored immediately.
@@ -1207,17 +1079,6 @@ impl BrowserWindow {
                     let level = this.daemon.site_store.zoom(&host).unwrap_or(1.0);
                     if (wv.zoom_level() - level).abs() > 0.001 {
                         wv.set_zoom_level(level);
-                    }
-                    // Forced dark mode (roadmap H15): re-apply the
-                    // per-site/global preference on the new document.
-                    if crate::darkmode::should_darken(&this.daemon.site_store, &host) {
-                        wv.evaluate_javascript(
-                            &crate::darkmode::apply_js(true),
-                            None,
-                            None,
-                            gtk::gio::Cancellable::NONE,
-                            |_| {},
-                        );
                     }
                     // Global history (roadmap H9): record user
                     // navigations. Headless windows belong to agent
@@ -1450,21 +1311,9 @@ impl BrowserWindow {
             let this = self.clone();
             webview.connect_close(move |_| this.window.close());
         }
-        // window.print() (roadmap H7): route the page-initiated print
-        // through the same dialog as ctrl+p.
-        {
-            let this = self.clone();
-            webview.connect_print(move |_, operation| {
-                this.run_print_operation(operation);
-                true // handled; WebKit must not run its own dialog too
-            });
-        }
-        // Web notifications (roadmap H4): forward to the desktop over
-        // D-Bus; a click presents this window (an explicit request).
-        {
-            let this = self.clone();
-            crate::notify::wire_view(&webview, move || this.window.present());
-        }
+        // window.print(): headless daemon has no print dialog. Swallow
+        // the request so WebKit does not try to raise its own UI.
+        webview.connect_print(move |_, _operation| true);
         // Ctrl+click follows the same client-tab path as Ctrl+t instead of
         // replacing the current page. Non-displayable responses
         // (Content-Disposition: attachment, MIME types WebKit can't render)
@@ -1571,7 +1420,7 @@ impl BrowserWindow {
     /// True while any of the discard guards forbid tearing down the
     /// WebView: focused window, open bar, pending prompt.
     fn discard_blocked(&self) -> bool {
-        self.window.is_active() || self.bar.is_open() || self.prompts.has_pending()
+        self.window.is_active() || self.prompts.has_pending()
     }
 
     /// Serialize state, destroy the WebView, show a placeholder.
@@ -1887,7 +1736,7 @@ impl BrowserWindow {
         if self.promoted_from.get().is_none() {
             return;
         }
-        if self.window.is_active() || self.bar.is_open() || self.prompts.has_pending() {
+        if self.window.is_active() || self.prompts.has_pending() {
             self.schedule_auto_demote();
             return;
         }
@@ -2011,8 +1860,14 @@ impl BrowserWindow {
 
     /// Passive bar message (downloads etc.). No-op if the bar is busy
     /// with an interactive prompt.
-    pub fn flash_bar(&self, message: &str, secs: u64) {
-        self.bar.flash(message, secs);
+    /// Surface a transient notice for this window. Headless daemon:
+    /// the notice is emitted as a `notice` event for subscribed agents.
+    pub fn flash_bar(&self, message: &str, _secs: u64) {
+        self.daemon.events.emit(
+            "notice",
+            Some(self.id),
+            serde_json::json!({ "message": message }),
+        );
     }
 
     /// The live WebView, if this window is not discarded. Used by the
@@ -2147,1025 +2002,51 @@ impl BrowserWindow {
         }
     }
 
-    /// Scroll the page by `pages` half-viewports (negative = up). Runs
-    /// in the page's JS world; a discarded window has no page and this
-    /// is a no-op.
-    fn scroll_page(&self, pages: f64) {
-        let Some(webview) = self.live_webview() else {
-            return;
-        };
-        let js = format!("window.scrollBy(0, window.innerHeight * 0.5 * {pages});");
-        webview.evaluate_javascript(&js, None, None, gtk::gio::Cancellable::NONE, |_| {});
-    }
-
     // ---- bar & keyboard UX ----------------------------------------
 
-    /// Run one keymap action. Returns Proceed only for actions that
-    /// decline (repeat-search keys with no committed search fall through to the page).
-    fn run_action(self: &Rc<Self>, action: keys::Action) -> glib::Propagation {
-        use keys::Action;
-        match action {
-            Action::Close => self.window.close(),
-            Action::NewWindow => {
-                Self::open(&self.daemon, None, None, OpenMode::Normal);
-            }
-            Action::UrlOpen => self.bar.open_url(""),
-            Action::UrlEdit => self.open_url_bar(),
-            Action::YankUrl => self.yank_url(),
-            Action::Find => self.bar.open_find(false),
-            Action::FindBack => self.bar.open_find(true),
-            Action::FindNext => return self.find_next(true),
-            Action::FindPrev => return self.find_next(false),
-            Action::ScrollDown => self.scroll_page(1.0),
-            Action::ScrollUp => self.scroll_page(-1.0),
-            Action::Back => self.history_go(false),
-            Action::Forward => self.history_go(true),
-            Action::Reload => self.reload(false),
-            Action::HardReload => self.reload(true),
-            Action::ZoomIn => self.zoom_by(1.1),
-            Action::ZoomOut => self.zoom_by(1.0 / 1.1),
-            Action::ZoomReset => self.zoom_reset(),
-            Action::Fullscreen => {
-                if self.window.is_fullscreen() {
-                    self.window.unfullscreen();
-                } else {
-                    self.window.fullscreen();
-                }
-            }
-            Action::Mute => self.toggle_mute(),
-            Action::ReopenClosed => self.reopen_closed(),
-            Action::Print => self.print_page(),
-            Action::HintFollow => self.start_hints("follow"),
-            Action::HintNewWindow => self.start_hints("newwin"),
-            Action::HintYank => self.start_hints("yank"),
-            Action::FillPassword => self.fill_password(),
-            Action::DarkMode => self.toggle_dark_mode(),
-            Action::OpenMpv => self.open_mpv(),
-            Action::EditInEditor => self.edit_in_editor(),
-            Action::Reader => self.toggle_reader(),
-            Action::Share => self.open_share_menu(),
-            Action::CommandPalette => self.open_palette(),
-        }
-        glib::Propagation::Stop
-    }
-
-    /// Toggle the page's own video mute — the same state a reels/player
-    /// UI shows — not the WebView-level audio kill switch, which page
-    /// mute buttons don't reflect. Picks the most prominent visible
-    /// video (playing first, then largest on screen), flips `.muted`,
-    /// and flashes the result. Flashes "no video" when the page has
-    /// none; a discarded window has no page and this is a no-op.
-    ///
-    /// The choice persists across videos: feeds like Instagram reels
-    /// mount each clip as a fresh muted `<video>`, so the first toggle
-    /// installs a capture-phase `play` listener that re-applies the
-    /// preferred state to every video that starts. Site-side mute
-    /// clicks are adopted as the new preference (a click handler
-    /// re-reads the state) so the key and the page UI never fight.
-    fn toggle_mute(self: &Rc<Self>) {
-        let Some(webview) = self.live_webview() else {
-            return;
-        };
-        let js = r#"(() => {
-            const S = window.__hwatuMute ??= { muted: null, installed: false };
-            const inView = (v) => {
-                const r = v.getBoundingClientRect();
-                return r.width > 0 && r.height > 0 && r.bottom > 0 &&
-                    r.right > 0 && r.top < innerHeight && r.left < innerWidth;
-            };
-            const visArea = (v) => {
-                const r = v.getBoundingClientRect();
-                return Math.max(0, Math.min(r.right, innerWidth) - Math.max(r.left, 0)) *
-                    Math.max(0, Math.min(r.bottom, innerHeight) - Math.max(r.top, 0));
-            };
-            const pick = () => {
-                const vids = [...document.querySelectorAll('video')].filter(inView);
-                vids.sort((a, b) => (a.paused - b.paused) || (visArea(b) - visArea(a)));
-                return vids[0];
-            };
-            const apply = (v) => {
-                v.muted = S.muted;
-                if (!S.muted && v.volume === 0) v.volume = 1;
-            };
-            const v = pick();
-            if (!v) return 'no video';
-            S.muted = !v.muted;
-            apply(v);
-            if (!S.installed) {
-                S.installed = true;
-                document.addEventListener('play', (e) => {
-                    if (e.target instanceof HTMLVideoElement && S.muted !== null &&
-                        e.target.muted !== S.muted) {
-                        apply(e.target);
-                    }
-                }, true);
-                document.addEventListener('click', () => {
-                    setTimeout(() => {
-                        const v = pick();
-                        if (v) S.muted = v.muted;
-                    }, 100);
-                }, true);
-            }
-            return S.muted ? 'muted' : 'unmuted';
-        })()"#;
-        let this = self.clone();
-        webview.evaluate_javascript(js, None, None, gtk::gio::Cancellable::NONE, move |result| {
-            let msg = result
-                .ok()
-                .map(|v| v.to_str().to_string())
-                .unwrap_or_else(|| "mute toggle failed".into());
-            this.flash_bar(&msg, 2);
-        });
-    }
-
-    /// Copy the current page URL to the desktop clipboard.
-    fn yank_url(self: &Rc<Self>) {
-        self.restore();
-        let Some(url) = self
-            .live_webview()
-            .and_then(|webview| webview.uri())
-            .map(|uri| uri.to_string())
-            .filter(|url| !url.is_empty())
-        else {
-            self.flash_bar("no page URL to copy", 2);
-            return;
-        };
-        let Some(display) = gtk::gdk::Display::default() else {
-            self.flash_bar("clipboard unavailable", 2);
-            return;
-        };
-        display.clipboard().set_text(&url);
-        self.flash_bar("URL copied", 2);
-    }
-
-    /// Reload the current page, optionally bypassing the cache
-    /// (ctrl+shift+r, the "the CSS is stale" reflex). Restores a
-    /// discarded window first (restore already brings the page back at
-    /// its saved state, so this is only a fresh restore in that case).
-    fn reload(self: &Rc<Self>, bypass_cache: bool) {
-        self.restore();
-        let Some(webview) = self.live_webview() else {
-            return;
-        };
-        if webview.uri().is_none_or(|uri| uri.is_empty()) {
-            let last_url = self.last_url.borrow().clone();
-            if let Some(url) = recovery_url(None, &last_url) {
-                self.mark_nav_pending(&url);
-                webview.load_uri(&url);
-            }
-            return;
-        }
-        if bypass_cache {
-            webview.reload_bypass_cache();
-        } else {
-            webview.reload();
-        }
-    }
-
-    /// Multiply the page zoom by `factor`, clamped to a sane range.
-    /// Zoom is per-window state on the WebView, like other browsers,
-    /// and the resulting level persists per-site (roadmap H5).
-    fn zoom_by(self: &Rc<Self>, factor: f64) {
-        let Some(webview) = self.live_webview() else {
-            return;
-        };
-        let level = (webview.zoom_level() * factor).clamp(0.25, 5.0);
-        webview.set_zoom_level(level);
-        self.remember_zoom(&webview, level);
-        self.flash_bar(&format!("zoom {:.0}%", level * 100.0), 1);
-    }
-
-    /// Back to 100% (ctrl+0).
-    fn zoom_reset(self: &Rc<Self>) {
-        let Some(webview) = self.live_webview() else {
-            return;
-        };
-        webview.set_zoom_level(1.0);
-        self.remember_zoom(&webview, 1.0);
-        self.flash_bar("zoom 100%", 1);
-    }
-
-    /// Persist the zoom preference for the current page's host.
-    fn remember_zoom(&self, webview: &webkit6::WebView, level: f64) {
-        let host = prompts::host_of(&webview.uri().unwrap_or_default());
-        if !host.is_empty() && !host.starts_with("hwatu") {
-            self.daemon.site_store.set_zoom(&host, level);
-        }
-    }
-
-    /// Print the page (roadmap H7): system print dialog on the
-    /// current window; print-to-PDF comes free with GTK's dialog.
-    /// Sites that call window.print() land here too via the
-    /// WebView's `print` signal.
-    fn print_page(self: &Rc<Self>) {
-        let Some(webview) = self.live_webview() else {
-            return;
-        };
-        let operation = webkit6::PrintOperation::new(&webview);
-        self.run_print_operation(&operation);
-    }
-
-    /// Run one print dialog, reporting failures in the bar.
-    fn run_print_operation(self: &Rc<Self>, operation: &webkit6::PrintOperation) {
-        let this = self.clone();
-        operation.connect_failed(move |_, error| {
-            eprintln!("hwatud: print failed: {error}");
-            this.flash_bar("print failed", 4);
-        });
-        operation.run_dialog(Some(&self.window));
-    }
-
-    /// Enter link-hint mode (roadmap H10). `mode`: follow | newwin |
-    /// yank. The page-side machinery reports "no hints" when the page
-    /// has no visible interactables; surface that instead of silence.
-    fn start_hints(self: &Rc<Self>, mode: &str) {
-        let Some(webview) = self.live_webview() else {
-            return;
-        };
-        let this = self.clone();
-        webview.evaluate_javascript(
-            &crate::hints::start_js(mode),
-            None,
-            None,
-            gtk::gio::Cancellable::NONE,
-            move |result| {
-                if let Ok(value) = result {
-                    if value.is_string() && value.to_str() == "no hints" {
-                        this.flash_bar("no hints on this page", 1);
-                    }
-                }
-            },
-        );
-    }
-
-    /// Toggle forced dark mode for the current site (roadmap H15).
-    /// The new state persists per host on the site store and re-applies
-    /// on every future navigation to it.
-    fn toggle_dark_mode(self: &Rc<Self>) {
-        let Some(webview) = self.live_webview() else {
-            return;
-        };
-        let host = prompts::host_of(&webview.uri().unwrap_or_default());
-        if host.is_empty() || host.starts_with("hwatu") {
-            self.flash_bar("no site to darken", 2);
-            return;
-        }
-        let on = !crate::darkmode::should_darken(&self.daemon.site_store, &host);
-        self.daemon.site_store.set_dark_mode(&host, on);
-        let this = self.clone();
-        webview.evaluate_javascript(
-            &crate::darkmode::apply_js(on),
-            None,
-            None,
-            gtk::gio::Cancellable::NONE,
-            move |_| {
-                this.flash_bar(
-                    if on {
-                        "dark mode on (this site)"
-                    } else {
-                        "dark mode off (this site)"
-                    },
-                    2,
-                );
-            },
-        );
-    }
-
-    /// Hand the current page URL to mpv (roadmap H17): the loved
-    /// mitigation for engine video gaps (DRM, codec walls). Detached
-    /// spawn; mpv owns its own lifecycle.
-    fn open_mpv(self: &Rc<Self>) {
-        let Some(webview) = self.live_webview() else {
-            return;
-        };
-        let Some(url) = webview.uri().filter(|u| u.starts_with("http")) else {
-            self.flash_bar("no page URL for mpv", 2);
-            return;
-        };
-        match std::process::Command::new("mpv")
-            .arg(url.as_str())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-        {
-            Ok(_) => self.flash_bar("handed to mpv", 2),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                self.flash_bar("mpv not installed", 4);
-            }
-            Err(e) => {
-                eprintln!("hwatud: mpv spawn failed: {e}");
-                self.flash_bar("mpv failed to start", 4);
-            }
-        }
-    }
-
-    /// Edit the focused text field in $EDITOR (roadmap H18): dump the
-    /// field's value to a temp file, open $EDITOR (terminal editors
-    /// get a terminal via $TERMINAL/foot/alacritty/kitty), and paste
-    /// the saved contents back with framework-safe value setting.
-    /// The watcher polls the file's mtime; closing the editor without
-    /// saving changes nothing.
-    fn edit_in_editor(self: &Rc<Self>) {
-        let Some(webview) = self.live_webview() else {
-            return;
-        };
-        // 1. Read the focused editable's value (fail open when the
-        // focus isn't editable).
-        let this = self.clone();
-        webview.evaluate_javascript(
-            r#"(() => {
-  const el = document.activeElement;
-  if (!el) return null;
-  if (el.matches('textarea, input[type=text], input[type=search], input:not([type])'))
-    return el.value;
-  if (el.isContentEditable) return el.innerText;
-  return null;
-})()"#,
-            None,
-            None,
-            gtk::gio::Cancellable::NONE,
-            move |result| {
-                let Ok(value) = result else { return };
-                if value.is_null() {
-                    this.flash_bar("focus a text field first", 2);
-                    return;
-                }
-                let text = value.to_str().to_string();
-                this.spawn_editor(text);
-            },
-        );
-    }
-
-    /// Phase 2 of [`Self::edit_in_editor`]: editor round-trip.
-    fn spawn_editor(self: &Rc<Self>, initial: String) {
-        let path =
-            std::env::temp_dir().join(format!("hwatu-edit-{}-{}.txt", std::process::id(), self.id));
-        if std::fs::write(&path, &initial).is_err() {
-            self.flash_bar("cannot write temp file", 4);
-            return;
-        }
-        let editor = std::env::var("VISUAL")
-            .or_else(|_| std::env::var("EDITOR"))
-            .unwrap_or_else(|_| "vi".to_string());
-        // Terminal editors need a terminal. GUI editors ($VISUAL set
-        // to e.g. "code -w") mostly cope with being spawned directly.
-        let mut cmd = if editor_is_graphical(&editor) {
-            let mut parts = editor.split_whitespace();
-            let mut cmd = std::process::Command::new(parts.next().unwrap_or("vi"));
-            cmd.args(parts);
-            cmd.arg(&path);
-            cmd
-        } else {
-            let terminal = std::env::var("TERMINAL").ok().or_else(|| {
-                ["foot", "alacritty", "kitty", "wezterm"]
-                    .iter()
-                    .find(|t| which_exists(t))
-                    .map(|t| t.to_string())
-            });
-            let Some(terminal) = terminal else {
-                self.flash_bar("no terminal for $EDITOR (set $TERMINAL)", 4);
-                return;
-            };
-            let mut cmd = std::process::Command::new(terminal);
-            cmd.arg("-e");
-            let mut parts = editor.split_whitespace();
-            if let Some(bin) = parts.next() {
-                cmd.arg(bin);
-                cmd.args(parts);
-            }
-            cmd.arg(&path);
-            cmd
-        };
-        let mut child = match cmd.spawn() {
-            Ok(child) => child,
-            Err(e) => {
-                eprintln!("hwatud: editor spawn failed: {e}");
-                self.flash_bar("editor failed to start", 4);
-                let _ = std::fs::remove_file(&path);
-                return;
-            }
-        };
-        self.flash_bar("editing… save + close to paste back", 3);
-        // Poll for editor exit on the GTK loop (no blocking wait).
-        let this = self.clone();
-        glib::timeout_add_local(std::time::Duration::from_millis(300), move || {
-            match child.try_wait() {
-                Ok(None) => glib::ControlFlow::Continue,
-                Ok(Some(status)) => {
-                    let text = std::fs::read_to_string(&path).unwrap_or_default();
-                    let _ = std::fs::remove_file(&path);
-                    if status.success() {
-                        this.paste_into_focused(&text);
-                    } else {
-                        this.flash_bar("editor exited nonzero; not pasted", 3);
-                    }
-                    glib::ControlFlow::Break
-                }
-                Err(_) => {
-                    let _ = std::fs::remove_file(&path);
-                    glib::ControlFlow::Break
-                }
-            }
-        });
-    }
-
-    /// Write `text` into the currently focused editable, framework-safe.
-    fn paste_into_focused(self: &Rc<Self>, text: &str) {
-        let Some(webview) = self.live_webview() else {
-            return;
-        };
-        let payload = serde_json::to_string(text).unwrap_or_else(|_| "\"\"".into());
-        let js = format!(
-            r#"(() => {{
-  const TEXT = {payload};
-  const el = document.activeElement;
-  if (!el) return 'no focus';
-  if (el.isContentEditable) {{ el.innerText = TEXT; return 'pasted'; }}
-  if (!el.matches('textarea, input')) return 'not editable';
-  const proto = Object.getPrototypeOf(el);
-  const desc = Object.getOwnPropertyDescriptor(proto, 'value')
-    || Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
-  if (desc && desc.set) desc.set.call(el, TEXT); else el.value = TEXT;
-  el.dispatchEvent(new Event('input', {{ bubbles: true }}));
-  el.dispatchEvent(new Event('change', {{ bubbles: true }}));
-  return 'pasted';
-}})()"#
-        );
-        let this = self.clone();
-        webview.evaluate_javascript(
-            &js,
-            None,
-            None,
-            gtk::gio::Cancellable::NONE,
-            move |result| {
-                let msg = match result {
-                    Ok(v) if v.is_string() => v.to_str().to_string(),
-                    _ => "paste failed".to_string(),
-                };
-                this.flash_bar(&msg, 2);
-            },
-        );
-    }
-
-    /// Toggle reader mode (roadmap H34): article extraction into a
-    /// clean-typography overlay; Esc or re-toggle exits, original DOM
-    /// untouched. The page-side machinery reports what happened.
-    fn toggle_reader(self: &Rc<Self>) {
-        let Some(webview) = self.live_webview() else {
-            return;
-        };
-        let this = self.clone();
-        webview.evaluate_javascript(
-            crate::reader::toggle_js(),
-            None,
-            None,
-            gtk::gio::Cancellable::NONE,
-            move |result| {
-                if let Ok(value) = result {
-                    if value.is_string() {
-                        this.flash_bar(&value.to_str(), 2);
-                    }
-                }
-            },
-        );
-    }
-
-    /// Share the page URL (roadmap H36): one share.conf target runs
-    /// directly; several open the palette-style list; none explains
-    /// how to configure.
-    fn open_share_menu(self: &Rc<Self>) {
-        let Some(webview) = self.live_webview() else {
-            return;
-        };
-        let Some(url) = webview.uri().filter(|u| u.starts_with("http")) else {
-            self.flash_bar("no page URL to share", 2);
-            return;
-        };
-        let targets = crate::share::targets();
-        match targets.len() {
-            0 => self.flash_bar("no share targets (write ~/.config/hwatu/share.conf)", 4),
-            _ => {
-                // Reuse the bar's row surface as a picker: rows are
-                // (name, command head); Up/Down+Enter via the palette
-                // machinery would need a dedicated mode, so run the
-                // first target directly for 1 and list names for >1
-                // via sequential flash. Simplicity beats a modal here;
-                // heavy users bind `share` per target in share.conf
-                // order (share1..shareN planned if demand appears).
-                let target = &targets[0];
-                match crate::share::run(target, &url) {
-                    Ok(()) => self.flash_bar(&format!("shared via {}", target.name), 2),
-                    Err(e) => self.flash_bar(&e, 4),
-                }
-            }
-        }
-    }
-
-    /// Fill login credentials from the system password manager
-    /// (roadmap H11). The backend query runs on a worker thread —
-    /// gpg pinentry can take seconds — and the fill JS runs back on
-    /// the GTK thread. Secrets never hit logs or the bar.
-    fn fill_password(self: &Rc<Self>) {
-        let Some(webview) = self.live_webview() else {
-            return;
-        };
-        let host = prompts::host_of(&webview.uri().unwrap_or_default());
-        if host.is_empty() || host.starts_with("hwatu") {
-            self.flash_bar("no site to fill", 2);
-            return;
-        }
-        self.flash_bar("looking up credentials…", 2);
-        let (tx, rx) = std::sync::mpsc::channel();
-        {
-            let host = host.clone();
-            std::thread::spawn(move || {
-                let _ = tx.send(crate::passfill::lookup(&host));
-            });
-        }
-        let this = self.clone();
-        glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
-            match rx.try_recv() {
-                Ok(Ok(credential)) => {
-                    let Some(webview) = this.live_webview() else {
-                        return glib::ControlFlow::Break;
-                    };
-                    let this2 = this.clone();
-                    webview.evaluate_javascript(
-                        &crate::passfill::fill_js(&credential),
-                        None,
-                        None,
-                        gtk::gio::Cancellable::NONE,
-                        move |result| {
-                            let msg = match result {
-                                Ok(v) if v.is_string() => v.to_str().to_string(),
-                                _ => "fill failed".to_string(),
-                            };
-                            this2.flash_bar(&msg, 2);
-                        },
-                    );
-                    glib::ControlFlow::Break
-                }
-                Ok(Err(error)) => {
-                    this.flash_bar(&error.to_string(), 4);
-                    glib::ControlFlow::Break
-                }
-                Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    this.flash_bar("password lookup crashed", 4);
-                    glib::ControlFlow::Break
-                }
-            }
-        });
-    }
-
-    /// Reopen the most recently closed window (ctrl+shift+t), popping
-    /// the daemon's recently-closed stack. Reopened windows always
-    /// take focus regardless of how the original was opened: the user
-    /// pressed a key asking for the page back.
-    fn reopen_closed(self: &Rc<Self>) {
-        let entry = self.daemon.recently_closed.borrow_mut().pop();
-        let Some(entry) = entry else {
-            self.flash_bar("nothing to reopen", 1);
-            return;
-        };
-        Self::open(
-            &self.daemon,
-            Some(entry.url),
-            entry.app_id,
-            OpenMode::Normal,
-        );
-    }
-
-    /// Back/forward through this window's history. Restores a
-    /// discarded window first (its history came back with the blob).
-    fn history_go(self: &Rc<Self>, forward: bool) {
-        self.restore();
-        let Some(webview) = self.live_webview() else {
-            return;
-        };
-        if forward {
-            webview.go_forward();
-        } else {
-            webview.go_back();
-        }
-    }
-
-    /// Window-level keys. This controller is on the toplevel in the
-    /// default (bubble) phase, so it only sees keys the WebView did
-    /// not consume. Unhandled keys pass through to the page: the URL
-    /// prompt opens only via its bound chords (ctrl+l), never from
-    /// stray typing. Modified chords are handled by the capture
-    /// controller.
-    fn on_window_key(
-        self: &Rc<Self>,
-        key: gtk::gdk::Key,
-        state: gtk::gdk::ModifierType,
-    ) -> glib::Propagation {
-        match self.bar.mode() {
-            BarMode::Hidden | BarMode::Status => {
-                match self.daemon.keymap.lookup(keys::Phase::Bubble, key, state) {
-                    Some(action) => self.run_action(action),
-                    None if key == gtk::gdk::Key::Escape => {
-                        if self.close_if_bare_launcher() {
-                            return glib::Propagation::Stop;
-                        }
-                        self.stop_find();
-                        self.bar.close();
-                        glib::Propagation::Proceed
-                    }
-                    None => glib::Propagation::Proceed,
-                }
-            }
-            // Find mode: entry has focus and eats printable keys; we
-            // only see what bubbles past it (Escape/Enter handled in
-            // wire_bar on the entry itself). Swallow the rest so keys
-            // don't leak into the page under the bar.
-            BarMode::Find { .. } | BarMode::Url | BarMode::Palette => glib::Propagation::Proceed,
-            BarMode::Confirm { tag } => {
-                let Some(answer) = confirm_answer(key, state) else {
-                    return glib::Propagation::Proceed;
-                };
-                self.answer_confirm(&tag, answer);
-                glib::Propagation::Stop
-            }
-        }
-    }
-
-    /// Hook the bar's entry: incremental find while typing, Enter
-    /// commits (focus returns to page, repeat-search keys work), Escape cancels.
-    fn wire_bar(self: &Rc<Self>) {
-        // Incremental search on every keystroke; palette re-ranks on
-        // every keystroke the same way.
-        {
-            let weak = Rc::downgrade(self);
-            self.bar.entry.connect_changed(move |entry| {
-                let Some(this) = weak.upgrade() else { return };
-                match this.bar.mode() {
-                    BarMode::Find { backwards } => this.run_find(&entry.text(), backwards),
-                    BarMode::Palette => this.refresh_palette(&entry.text()),
-                    BarMode::Url => this.refresh_completions(&entry.text()),
-                    _ => {}
-                }
-            });
-        }
-        // Enter: find keeps highlights and returns focus to the page;
-        // URL mode navigates.
-        {
-            let weak = Rc::downgrade(self);
-            self.bar.entry.connect_activate(move |entry| {
-                let Some(this) = weak.upgrade() else { return };
-                match this.bar.mode() {
-                    BarMode::Find { .. } => {
-                        this.bar.close();
-                        this.focus_webview();
-                    }
-                    BarMode::Url => {
-                        // A highlighted completion wins over the typed
-                        // text (roadmap H9); plain Enter navigates what
-                        // the user typed.
-                        let completion = {
-                            let state = this.completions.borrow();
-                            state
-                                .as_ref()
-                                .and_then(|s| s.selected.and_then(|i| s.urls.get(i).cloned()))
-                        };
-                        let text = completion.unwrap_or_else(|| entry.text().trim().to_string());
-                        this.completions.replace(None);
-                        this.bar.close();
-                        if !text.is_empty() {
-                            this.navigate(&text);
-                        }
-                        this.focus_webview();
-                    }
-                    BarMode::Palette => this.run_palette_selected(),
-                    _ => {}
-                }
-            });
-        }
-        // Escape inside the entry: cancel find/URL entry entirely.
-        // On a bare launcher window, cancelling means the window
-        // itself was a mis-fire: close it. Up/Down while the palette
-        // is open move its highlight instead of the entry cursor.
-        {
-            let weak = Rc::downgrade(self);
-            let ctrl = gtk::EventControllerKey::new();
-            ctrl.connect_key_pressed(move |_, key, _, _| {
-                let Some(this) = weak.upgrade() else {
-                    return glib::Propagation::Proceed;
-                };
-                if key == gtk::gdk::Key::Escape {
-                    if this.close_if_bare_launcher() {
-                        return glib::Propagation::Stop;
-                    }
-                    this.palette.replace(None);
-                    this.completions.replace(None);
-                    this.stop_find();
-                    this.bar.close();
-                    this.focus_webview();
-                    return glib::Propagation::Stop;
-                }
-                if this.bar.mode() == BarMode::Palette {
-                    match key {
-                        gtk::gdk::Key::Down => {
-                            this.palette_move(1);
-                            return glib::Propagation::Stop;
-                        }
-                        gtk::gdk::Key::Up => {
-                            this.palette_move(-1);
-                            return glib::Propagation::Stop;
-                        }
-                        _ => {}
-                    }
-                }
-                if this.bar.mode() == BarMode::Url {
-                    match key {
-                        gtk::gdk::Key::Down | gtk::gdk::Key::Tab => {
-                            this.completions_move(1);
-                            return glib::Propagation::Stop;
-                        }
-                        gtk::gdk::Key::Up | gtk::gdk::Key::ISO_Left_Tab => {
-                            this.completions_move(-1);
-                            return glib::Propagation::Stop;
-                        }
-                        _ => {}
-                    }
-                }
-                glib::Propagation::Proceed
-            });
-            self.bar.entry.add_controller(ctrl);
-        }
-    }
-
-    // ---- command palette -------------------------------------------
-
-    /// How many ranked matches the palette shows at once.
-    const PALETTE_ROWS: usize = 8;
-
-    /// Open the palette over every keymap action.
-    fn open_palette(self: &Rc<Self>) {
-        self.bar.open_palette();
-        self.refresh_palette("");
-    }
-
-    /// Re-rank against `query`, reset the highlight, redraw.
-    fn refresh_palette(self: &Rc<Self>, query: &str) {
-        let items = crate::palette::items(&self.daemon.keymap);
-        let ranked = crate::palette::filter(&items, query);
-        let rows: Vec<(String, String)> = ranked
-            .iter()
-            .take(Self::PALETTE_ROWS)
-            .map(|i| (i.title.to_string(), i.detail.clone()))
-            .collect();
-        self.palette.replace(Some(PaletteState {
-            matches: ranked
-                .iter()
-                .take(Self::PALETTE_ROWS)
-                .map(|i| i.action)
-                .collect(),
-            selected: 0,
-        }));
-        self.bar.set_palette_rows(&rows, 0);
-    }
-
-    /// Move the highlight by `delta`, wrapping at the ends.
-    fn palette_move(self: &Rc<Self>, delta: isize) {
-        let mut state = self.palette.borrow_mut();
-        let Some(state) = state.as_mut() else {
-            return;
-        };
-        let n = state.matches.len();
-        if n == 0 {
-            return;
-        }
-        state.selected = (state.selected as isize + delta).rem_euclid(n as isize) as usize;
-        self.bar.set_palette_selected(state.selected);
-    }
-
-    /// Run the highlighted action. The bar closes first so actions
-    /// that open the bar themselves (find, URL) start clean.
-    fn run_palette_selected(self: &Rc<Self>) {
-        let action = {
-            let state = self.palette.borrow();
-            state
-                .as_ref()
-                .and_then(|s| s.matches.get(s.selected).copied())
-        };
-        self.palette.replace(None);
-        self.bar.close();
-        self.focus_webview();
-        if let Some(action) = action {
-            self.run_action(action);
-        }
-    }
-
-    // ---- URL completion (roadmap H9) --------------------------------
-
-    /// How many history completions the URL bar shows.
-    const COMPLETION_ROWS: usize = 6;
-
-    /// Re-query history for the current entry text. Skipped when the
-    /// text equals the page's own URL (opening ctrl+l prefills it;
-    /// completing against it would just echo the current page).
-    fn refresh_completions(self: &Rc<Self>, text: &str) {
-        let text = text.trim();
-        let current = self.last_url.borrow().clone();
-        let hits = if text == current.as_str() {
-            Vec::new()
-        } else {
-            self.daemon.history.complete(text, Self::COMPLETION_ROWS)
-        };
-        let rows: Vec<(String, String)> = hits
-            .iter()
-            .map(|h| {
-                let title = if h.title.is_empty() {
-                    String::new()
-                } else {
-                    h.title.clone()
-                };
-                (h.url.clone(), title)
-            })
-            .collect();
-        self.completions.replace(if hits.is_empty() {
-            None
-        } else {
-            Some(CompletionState {
-                urls: hits.into_iter().map(|h| h.url).collect(),
-                selected: None,
-            })
-        });
-        self.bar.set_completions(&rows, None);
-    }
-
-    /// Move the completion highlight (Down/Tab and Up/Shift+Tab).
-    /// Wraps through a no-selection state so the typed text is always
-    /// reachable again.
-    fn completions_move(self: &Rc<Self>, delta: isize) {
-        let mut state = self.completions.borrow_mut();
-        let Some(state) = state.as_mut() else {
-            return;
-        };
-        let n = state.urls.len() as isize;
-        if n == 0 {
-            return;
-        }
-        // Cycle: None -> 0 -> 1 ... n-1 -> None (and reverse).
-        let next = match state.selected {
-            None if delta > 0 => Some(0),
-            None => Some((n - 1) as usize),
-            Some(i) => {
-                let j = i as isize + delta;
-                if j < 0 || j >= n {
-                    None
-                } else {
-                    Some(j as usize)
-                }
-            }
-        };
-        state.selected = next;
-        self.bar.set_palette_selected(next.unwrap_or(usize::MAX));
-    }
-
-    /// Close this window if it is still an untouched launcher: showing
-    /// the launcher page with no navigation history. Returns whether
-    /// it closed.
-    fn close_if_bare_launcher(self: &Rc<Self>) -> bool {
-        let Some(webview) = self.live_webview() else {
-            return false;
-        };
-        let on_launcher = webview.uri().is_some_and(|u| launcher::is_launcher(&u));
-        if on_launcher && !webview.can_go_back() {
-            self.window.close();
-            return true;
-        }
-        false
-    }
-
-    /// Open the URL prompt prefilled with the current page's URL.
-    fn open_url_bar(self: &Rc<Self>) {
-        // A discarded window revives on focus before anyone can type,
-        // but restore() explicitly for the WM-rule corner cases.
-        self.restore();
-        let current = self
-            .webview
-            .borrow()
-            .as_ref()
-            .and_then(|wv| wv.uri())
-            .map(|u| u.to_string())
-            .unwrap_or_default();
-        self.bar.open_url(&current);
-    }
-
-    /// Navigate this window, normalizing bare hosts the same way the
-    /// CLI does (`example.com` -> `https://example.com`).
-    fn navigate(self: &Rc<Self>, input: &str) {
-        self.restore();
-        if let Some(webview) = self.live_webview() {
-            let url = crate::ipc_server::normalize_url(input.to_string());
-            self.mark_nav_pending(&url);
-            self.remember_url(&url);
-            webview.load_uri(&url);
-        }
-    }
-
-    fn find_controller(&self) -> Option<webkit6::FindController> {
-        self.webview
-            .borrow()
-            .as_ref()
-            .and_then(|wv| wv.find_controller())
-    }
-
-    fn run_find(self: &Rc<Self>, text: &str, backwards: bool) {
-        let Some(fc) = self.find_controller() else {
-            return;
-        };
-        if text.is_empty() {
-            fc.search_finish();
-            self.bar.set_status("");
-            return;
-        }
-        let mut opts = webkit6::FindOptions::CASE_INSENSITIVE | webkit6::FindOptions::WRAP_AROUND;
-        if backwards {
-            opts |= webkit6::FindOptions::BACKWARDS;
-        }
-        // Wire match-count feedback once per controller instance.
-        self.wire_find_signals(&fc);
-        fc.count_matches(text, opts.bits(), u32::MAX);
-        fc.search(text, opts.bits(), u32::MAX);
-    }
-
-    fn wire_find_signals(self: &Rc<Self>, fc: &webkit6::FindController) {
-        // Idempotence: tag the controller so signals connect once even
-        // though run_find fires per keystroke.
-        unsafe {
-            if fc.data::<bool>("hwatu-wired").is_some() {
-                return;
-            }
-            fc.set_data("hwatu-wired", true);
-        }
-        let bar = self.bar.clone();
-        fc.connect_counted_matches(move |_, n| {
-            bar.set_status(&format!("{n} match{}", if n == 1 { "" } else { "es" }));
-        });
-        let bar = self.bar.clone();
-        fc.connect_failed_to_find_text(move |_| {
-            bar.set_status("no matches");
-        });
-    }
-
-    fn find_next(self: &Rc<Self>, forward: bool) -> glib::Propagation {
-        let Some(fc) = self.find_controller() else {
-            return glib::Propagation::Proceed;
-        };
-        // No committed search: let the repeat-search key through to the page.
-        if fc.search_text().is_none_or(|t| t.is_empty()) {
-            return glib::Propagation::Proceed;
-        }
-        if forward {
-            fc.search_next();
-        } else {
-            fc.search_previous();
-        }
-        glib::Propagation::Stop
-    }
-
-    fn stop_find(&self) {
-        if let Some(fc) = self.find_controller() {
-            fc.search_finish();
-        }
-    }
-
-    fn focus_webview(&self) {
-        if let Some(wv) = self.webview.borrow().as_ref() {
-            wv.grab_focus();
-        }
-    }
-
-    /// Queue a permission/TLS question; open the bar if it is next.
+    /// Queue a permission/TLS question. Headless daemon: remembered
+    /// decisions answer silently; new questions are emitted as a
+    /// structured `prompt` event and auto-answered per policy
+    /// (HWATU_TEST_CONFIRM=allow|deny, default deny), because there is
+    /// no screen to wait on. Denial is safe and visible: the agent sees
+    /// the event and can retry after the human grants the permission.
     fn push_prompt(self: &Rc<Self>, prompt: Prompt) {
         if let Some(question) = self.prompts.push(prompt) {
-            self.bar.open_confirm("prompt", &question);
-            // Test hook: HWATU_TEST_CONFIRM=allow|deny auto-answers
-            // prompts, for headless/scripted verification only.
-            if let Ok(answer) = std::env::var("HWATU_TEST_CONFIRM") {
-                let this = self.clone();
-                glib::timeout_add_local_once(std::time::Duration::from_millis(300), move || {
-                    this.answer_confirm("prompt", answer == "allow");
-                });
-            }
+            self.daemon.events.emit(
+                "prompt",
+                Some(self.id),
+                serde_json::json!({ "question": question }),
+            );
+            let allow = matches!(
+                std::env::var("HWATU_TEST_CONFIRM").as_deref(),
+                Ok("allow")
+            );
+            let this = self.clone();
+            glib::timeout_add_local_once(std::time::Duration::from_millis(50), move || {
+                this.answer_confirm("prompt", allow);
+            });
         }
     }
 
-    /// Resolve the pending y/n prompt, then show the next queued one.
+    /// Resolve the pending prompt, then process the next queued one.
     fn answer_confirm(self: &Rc<Self>, _tag: &str, yes: bool) {
         let next = self
             .prompts
             .answer_front(yes, self.webview.borrow().as_ref());
-        match next {
-            Some(question) => self.bar.open_confirm("prompt", &question),
-            None => {
-                self.bar.close();
-                self.focus_webview();
-            }
+        if let Some(question) = next {
+            self.daemon.events.emit(
+                "prompt",
+                Some(self.id),
+                serde_json::json!({ "question": question }),
+            );
+            let allow = matches!(
+                std::env::var("HWATU_TEST_CONFIRM").as_deref(),
+                Ok("allow")
+            );
+            let this = self.clone();
+            glib::timeout_add_local_once(std::time::Duration::from_millis(50), move || {
+                this.answer_confirm("prompt", allow);
+            });
         }
     }
 }
@@ -3174,7 +2055,7 @@ impl BrowserWindow {
 mod tests {
     use super::{
         external_uri_scheme, is_ctrl_click_link, load_was_cancelled, parse_feature_overrides,
-        recovery_url, remember_recently_closed, termination_info,
+        remember_recently_closed, termination_info,
     };
 
     /// The reopen stack (ctrl+shift+t) records user windows newest
@@ -3324,32 +2205,6 @@ mod tests {
     }
 
     #[test]
-    fn confirmation_keys_only_claim_explicit_answers() {
-        let none = gtk::gdk::ModifierType::empty();
-        assert_eq!(super::confirm_answer(gtk::gdk::Key::y, none), Some(true));
-        assert_eq!(
-            super::confirm_answer(gtk::gdk::Key::Y, gtk::gdk::ModifierType::SHIFT_MASK),
-            Some(true)
-        );
-        assert_eq!(super::confirm_answer(gtk::gdk::Key::n, none), Some(false));
-        assert_eq!(super::confirm_answer(gtk::gdk::Key::N, none), Some(false));
-        assert_eq!(
-            super::confirm_answer(gtk::gdk::Key::Escape, none),
-            Some(false)
-        );
-        assert_eq!(super::confirm_answer(gtk::gdk::Key::a, none), None);
-        assert_eq!(super::confirm_answer(gtk::gdk::Key::exclam, none), None);
-        assert_eq!(
-            super::confirm_answer(gtk::gdk::Key::y, gtk::gdk::ModifierType::CONTROL_MASK),
-            None
-        );
-        assert_eq!(
-            super::confirm_answer(gtk::gdk::Key::n, gtk::gdk::ModifierType::ALT_MASK),
-            None
-        );
-    }
-
-    #[test]
     fn cancelled_webkit_load_is_not_a_page_failure() {
         let error = glib::Error::new(webkit6::NetworkError::Cancelled, "Load request cancelled");
         assert!(load_was_cancelled(&error));
@@ -3420,19 +2275,6 @@ mod tests {
         assert_eq!(external_uri_scheme("hwatu://launcher"), None);
         assert_eq!(external_uri_scheme("not a uri"), None);
         assert_eq!(external_uri_scheme("1invalid:value"), None);
-    }
-
-    #[test]
-    fn recovery_url_prefers_live_and_falls_back_to_last_non_empty_url() {
-        assert_eq!(
-            recovery_url(Some("https://live.test/"), "https://last.test/"),
-            Some("https://live.test/".into())
-        );
-        assert_eq!(
-            recovery_url(Some(""), "https://last.test/"),
-            Some("https://last.test/".into())
-        );
-        assert_eq!(recovery_url(None, ""), None);
     }
 
     #[test]
