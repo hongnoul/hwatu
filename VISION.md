@@ -1,441 +1,360 @@
 # Hwatu vision
 
-Status: direction of travel. The current plan of record remains
-[`docs/roadmap.md`](docs/roadmap.md). This document defines the product
-principles that roadmap items and platform work must preserve.
+Status: direction of travel. The plan of record is
+[`docs/roadmap.md`](docs/roadmap.md). This document defines the principles
+roadmap items and platform work must preserve.
 
-## The thesis
+## Thesis
 
-An AI agent needs a browser the way a compiler needs a filesystem: constantly,
-in parallel, and without asking anyone's permission to look. Every existing
-answer gets one of three things wrong:
+Agents need browsers constantly, in parallel, and invisibly. Existing options
+each fail one requirement:
 
-- **Automation frameworks** (Playwright, CDP drivers) are cold, verbose, and
-  built for test suites, not for an agent's inner loop. Five calls and
-  hundreds of milliseconds to answer "does the page look right?"
-- **Extensions riding in the human's browser** share one window manager, one
-  tab strip, and one focus with a person who is trying to work. Every action
-  in that architecture is one `active: true` away from stealing the screen.
-  This is not hypothetical: we measured a production agent bridge stealing
-  focus on three of its six core actions, including every screenshot of a
-  background tab. The bug class is *representable*, so it recurs.
-- **Cloud browser services** solve isolation by moving the browser away from
-  the machine, the session, and the user's trust boundary, then charge rent
-  on every page load and call fingerprint-spoofing "verified identity."
+- **Automation frameworks** (Playwright, CDP) are built for test suites. A
+  page check costs five calls and hundreds of milliseconds.
+- **Extensions in the human's browser** share the human's focus, tabs, and
+  logins. Every action is one `active: true` from stealing the screen. We
+  measured a production bridge stealing focus on three of six core actions.
+  The bug class is representable, so it recurs.
+- **Cloud browser services** move the session outside the user's trust
+  boundary, meter every page, and sell spoofed fingerprints as identity.
 
-Hwatu's answer: one warm local daemon owning real native web views, headless by
-construction, driven over one JSON protocol, with the live session itself as
-the unit of hand-off between agent and human. Verification in ~35 ms, focus
-stealing unrepresentable, identity granted by the human without ever exposing
-a credential, and no cloud in the loop.
+Hwatu: one warm local daemon, native web views, headless by construction, one
+JSON protocol, the live session as the hand-off unit. Verification in ~35 ms.
+Focus stealing unrepresentable. Identity granted by the human without exposing
+a credential. No cloud.
 
 ## The outcome
 
-Hwatu should give an AI coding agent the same loop on Linux, macOS, and
-Windows:
+The same loop on Linux, macOS, and Windows:
 
 1. connect to one warm local daemon,
 2. open or adopt a prewarmed native web view without taking focus,
-3. inspect, drive, measure, and compare the rendered page through the same
-   JSON protocol,
-4. materialize that exact live session when a person is needed, and
+3. inspect, drive, measure, and compare pages through one JSON protocol,
+4. materialize the live session when a person is needed,
 5. return it to the background without losing state.
 
-"Cross-platform" does not mean that the Rust workspace happens to compile on
-three targets. It means a user can install Hwatu in the normal way for their
-OS, run `hwatu doctor`, connect an agent through CLI or MCP, complete the same
-verification fixture, and perform a live human hand-off.
+"Cross-platform" means: install normally for the OS, run `hwatu doctor`,
+connect an agent via CLI or MCP, pass the shared verification fixture, perform
+a live hand-off. Compiling on three targets is not cross-platform.
 
 ## Three planes, one session
 
-Hwatu is best understood as three capabilities that competitors treat as three
-products, unified by the fact that they all operate on the *same live
-session*:
+Competitors sell these as three products. Hwatu unifies them over the same
+live session.
 
-### 1. Verification: evidence instead of vibes
+### 1. Verification
 
-The first product and the tiebreaker in every conflict. "Pixel-perfect" is a
-claim; `match_percent: 97.49` is a measurement. One `check` call opens,
-waits, evaluates, screenshots, and closes in a single IPC roundtrip. Pixel
-diffs are scores an agent can climb. Animations are numbers. Console and
-network errors arrive as data. The agent's inner loop runs at memory speed,
-in parallel, invisibly.
+The first product. Wins all shared-runtime conflicts. "Pixel-perfect" is a
+claim; `match_percent: 97.49` is a measurement. One `check` call opens, waits,
+evaluates, screenshots, and closes in one IPC roundtrip. Pixel diffs are
+scores an agent can climb. Animations are numbers. Console and network errors
+are data.
 
-### 2. Identity: delegated authentication, not credential sharing
+### 2. Identity: delegated authentication
 
-The under-told story. When an agent hits a login wall or a CAPTCHA, the
-`challenge` / `focus <id>` / resume loop turns authentication into a
-**delegation protocol**:
+The agent hits a login wall or CAPTCHA. `challenge` detects it. `focus <id>`
+gives the human the same live window. The human types the credential into the
+real site. The agent resumes the session, cookies intact, persisted across
+daemon restarts.
 
-- the agent detects the wall and materializes the same live window for the
-  human,
-- the human types the password or solves the challenge *in a real window,
-  into the real site*,
-- the agent resumes the same session, cookies intact, and keeps it across
-  daemon restarts in its own persistent profiles.
+The agent never sees the credential. The human never gives a password to a
+model, a config file, or a cloud. The agent holds only sessions it was
+granted, not the user's whole logged-in browser. Session scope is the
+permission model.
 
-The agent never sees the credential. The human never shares a password with a
-model, a config file, or a cloud. And unlike an extension in the daily
-browser, the agent holds *only* the sessions it was explicitly granted, not
-the user's entire logged-in life. Session scope is the permission model.
+Extension bridges expose everything and call it convenience. Cloud services
+spoof fingerprints and call it identity. Hwatu earns sessions one hand-off at
+a time.
 
-This inverts the industry default. Extension bridges expose everything and
-call it convenience; cloud services spoof fingerprints and call it identity.
-Hwatu's sessions are earned one hand-off at a time, which is both the safest
-and the most honest version of "the agent can act as me."
-
-### 3. Hand-off: the live session is the interface between agent and human
+### 3. Hand-off
 
 Focus and unfocus preserve page, cookies, navigation, and in-progress work in
-both directions. The agent works headless; the human can be pulled in for
-exactly one judgment call or one credential and then hand the session back. A
-screenshot of a replacement browser is not hand-off. Opening the URL in
-another browser is not hand-off. Same view, same session, visibility as a
-property.
+both directions. The human enters for one judgment call or credential, then
+returns the session. A screenshot of another browser is not hand-off. Opening
+the URL elsewhere is not hand-off.
 
-Each plane is independently useful. Together they compound: verification makes
-the agent trustworthy, delegated identity makes it capable on the
-authenticated web, and hand-off keeps the human sovereign over both.
+Verification makes the agent trustworthy. Delegated identity makes it capable
+on the authenticated web. Hand-off keeps the human sovereign over both.
 
 ## Product constitution
 
-These decisions are more durable than any backend.
+More durable than any backend.
 
-- **Agent verification leads.** AI verification is the first product and wins
-  shared-runtime conflicts. Its interfaces stay focused on reproducible
-  evidence rather than absorbing general browser UI.
-- **Focus stealing is unrepresentable, not discouraged.** Headless and
-  background work must not steal focus, and the architecture must make the
-  violation impossible to express: agent-facing tools reject focus verbs,
-  visibility is a live window property rather than a launch mode, and
-  materialization happens only through the human-facing hand-off path. A
-  guideline that every call site must remember is a bug that has not happened
-  yet. We fixed exactly this class in an extension-based bridge; Hwatu must
-  never be able to host it.
+- **Verification leads.** It wins shared-runtime conflicts. Its interfaces
+  stay evidence-focused.
+- **Focus stealing is unrepresentable, not discouraged.** Agent tools reject
+  focus verbs. Visibility is a window property, not a launch mode.
+  Materialization happens only through the hand-off path. A guideline every
+  call site must remember is a bug that has not happened yet.
 - **The agent never holds a credential.** Authentication is delegation:
-  challenge detection, hand-off, human action, resume. Hwatu does not solve
-  CAPTCHAs, spoof fingerprints, inject tokens, or store the user's passwords.
-  Sessions the human grants are kept; secrets are never seen.
-- **Warm by default.** The daemon, engine, rendering context, and one useful
-  view remain warm between short-lived clients.
-- **The live session is the hand-off.** Focus and unfocus preserve page,
-  cookies, navigation, and in-progress work. A screenshot of a replacement
-  browser is not hand-off.
-- **Local-first, no rent.** The daemon runs on the user's machine, inside the
-  user's trust boundary. No cloud relay sees the user's sessions, and no
-  per-page metering shapes the agent's behavior.
-- **One protocol.** CLI, MCP, and native integrations remain adapters over the
-  versioned newline-delimited JSON contract in `hwatu-ipc`.
-- **Native engines, portable behavior.** Use the OS engine and window stack:
-  WebKitGTK on Linux, WKWebView on macOS, and WebView2 on Windows. Do not
-  hide a bundled Chromium download behind the word native.
-- **Measured parity, not claimed parity.** Web engines differ. Hwatu
-  guarantees command semantics and reports engine/platform capabilities
-  explicitly. Pixel output is only compared against a baseline captured for
-  the same declared engine unless the caller opts into another policy.
-- **The human side earns its keep, then some.** Since v0.7.0 the human side is
-  a credible primary browser for tiling WMs: mainstream keybinds,
-  media-correct playback, unified shortform controls, Chromium-curve
-  scrolling. The [roadmap](docs/roadmap.md) has since adopted this as a real
-  second audience: the daily-driver polish is cheap because it shares
-  machinery with agent verification, and a browser the human already lives in
-  makes the hand-off stronger, not weaker. The true churn magnets (tabs,
-  sync, an extension platform, a password store of our own) stay out. When
-  agent and human needs conflict, the agent inner loop wins.
-- **Small core, hard boundaries.** Portable orchestration and verification
-  math must not import GTK, GLib, Cocoa, Win32, or engine-specific types.
+  detect, hand off, human acts, resume. No CAPTCHA solving, no fingerprint
+  spoofing, no token injection, no password store.
+- **Warm by default.** Daemon, engine, rendering context, and one view stay
+  warm between clients.
+- **The live session is the hand-off.** Same view, same state, visibility
+  toggled.
+- **Local-first, no rent.** The daemon runs on the user's machine. No relay
+  sees the sessions. No metering shapes agent behavior.
+- **One protocol.** CLI, MCP, and integrations are adapters over the
+  versioned JSON contract in `hwatu-ipc`.
+- **Native engines.** WebKitGTK on Linux, WKWebView on macOS, WebView2 on
+  Windows. No bundled Chromium behind the word native.
+- **Measured parity.** Engines differ. Hwatu guarantees command semantics and
+  reports capabilities explicitly. Pixels compare only against baselines from
+  the same declared engine unless the caller opts out.
+- **The human side earns its keep.** Since v0.7.0 the human side is a
+  credible tiling-WM browser. It shares machinery with verification, and a
+  browser the human lives in strengthens hand-off. Tabs, sync, extensions,
+  and a password store stay out. Agent loop wins conflicts.
+- **Small core, hard boundaries.** Portable code must not import GTK, GLib,
+  Cocoa, Win32, or engine types.
 
 ## Position against the field
 
-Stated once, so roadmap debates do not relitigate it.
+Stated once so roadmap debates do not relitigate it.
 
-| | Hwatu | Extension in the user's browser | Playwright-class driver | Cloud browser service |
+| | Hwatu | Extension bridge | Playwright-class | Cloud service |
 |---|---|---|---|---|
-| Focus safety | unrepresentable by design | one `active:true` from regression, measured in production | headed mode steals always | n/a (remote) |
-| Check latency, warm | one call, ~35-87 ms | 4-10x slower through host/extension hops | ~9x slower as a warm service | network-bound |
-| Identity model | delegated per-session, credential never seen | agent inherits the user's entire logged-in browser | fresh profiles, no story | spoofed fingerprints, rented trust |
-| Parallelism | N headless views, no contention | one shared tab strip and focus | good | metered |
-| Failure coupling | daemon restarts alone | dies with the host browser | per-test | someone else's outage |
-| Trust boundary | user's machine | user's machine, user's whole identity | user's machine | vendor's cloud |
+| Focus safety | unrepresentable | measured 3/6 steal | headed steals always | n/a |
+| Warm check | ~35-87 ms, one call | 4-10x slower | ~9x slower as a service | network-bound |
+| Identity | delegated per session | inherits whole browser | none | spoofed |
+| Parallelism | N headless views | one shared tab strip | good | metered |
+| Failure coupling | daemon restarts alone | dies with browser | per-test | vendor outage |
+| Trust boundary | user's machine | user's whole identity | user's machine | vendor cloud |
 
-The extension column is not a strawman: where the user must be *recognized* by
-a site through years of accumulated browser history, an identity-bearing
-bridge still has a narrow edge. Hwatu's answer is one hand-off per site and a
-persistent granted session, which covers that slice in practice while keeping
-the permission model scoped. If a hard case remains, it is a deliberate
-escape hatch, never the default plane.
+One honest residue: sites that gate on years of accumulated browser history.
+Delegated hand-off plus a persistent granted session covers nearly all of
+them. The rest is a documented escape hatch, never the default.
 
 ## One platform, two products
 
-The shared native-browser platform supports two independently judged products:
+- **AI verification** owns observation, checks, evidence, agent ergonomics,
+  delegated authentication, and session persistence.
+- **The tiling-WM browser** owns keyboard navigation, chrome, media, and
+  daily-driver usability.
 
-- **AI verification** owns machine-readable observation, deterministic checks,
-  evidence, and agent ergonomics. Delegated authentication and session
-  persistence live here: they are agent capabilities, not browser chrome.
-- **The tiling-WM browser** owns keyboard navigation, human-facing chrome,
-  media behavior, and daily-driver site usability.
-
-They share the daemon, protocol, native backend, live sessions, and hand-off.
-They do not depend on each other's product policy. Reusable behavior is
-promoted into the shared platform with a capability contract and conformance
-coverage; it is never copied periodically from one product into the other. The
-portfolio and track plans live in the [roadmap index](docs/roadmap.md).
+They share the daemon, protocol, backends, sessions, and hand-off. They do
+not share product policy. Reusable behavior is promoted into the platform
+with a capability contract and conformance coverage, never copied between
+products. Plans live in the [roadmap index](docs/roadmap.md).
 
 ## What stays portable
 
-The target architecture separates product behavior from native mechanisms.
-Names below describe responsibilities, not a commitment to one large refactor.
-Extraction should follow working seams and preserve the wire format
-throughout.
+Product behavior separates from native mechanism. Names describe
+responsibilities, not a refactor plan. Extraction follows working seams and
+preserves the wire format.
 
-| Layer | Portable responsibility | Native responsibility |
+| Layer | Portable | Native |
 | --- | --- | --- |
-| `hwatu-ipc` | request/response/event schema, capability model, compatibility tests | local endpoint naming and security |
-| client (`hwatu`) | argument parsing, MCP translation, request framing, structured output | connect/spawn/update/install integration |
-| daemon core | IDs, pools, profiles, quotas, request dispatch, session policy, verification workflows | main-loop scheduling and process lifecycle |
-| verification core | image diff, regions, tolerances, assertions, JSON shaping | capture pixels and engine events |
-| browser backend | backend-neutral view/window capabilities and lifecycle contracts | WebKitGTK, WKWebView, or WebView2 implementation |
-| platform shell | intent such as focus, background, open download, paths, notifications | GTK/Wayland/X11, AppKit, or Win32 behavior |
+| `hwatu-ipc` | schema, capability model, compatibility tests | endpoint naming, security |
+| client (`hwatu`) | parsing, MCP translation, framing, output | connect/spawn/update/install |
+| daemon core | IDs, pools, profiles, quotas, dispatch, session policy, workflows | main loop, process lifecycle |
+| verification core | image diff, regions, tolerances, assertions, JSON shaping | pixel capture, engine events |
+| browser backend | view/window capability contracts | WebKitGTK, WKWebView, WebView2 |
+| platform shell | intent: focus, background, downloads, paths, notifications | GTK/Wayland/X11, AppKit, Win32 |
 
-The backend contract should be capability-oriented rather than a giant trait
-that pretends every engine is identical. At minimum it must make these
-operations explicit:
+The backend contract is capability-oriented, not one trait pretending engines
+are identical. Minimum explicit operations:
 
-- create, prewarm, navigate, close, focus, unfocus, and resize a view;
-- evaluate JavaScript and bridge structured messages;
-- observe load, console, network, download, permission, popup, and crash
-  events;
+- create, prewarm, navigate, close, focus, unfocus, resize;
+- evaluate JavaScript, bridge structured messages;
+- observe load, console, network, download, permission, popup, crash;
 - capture viewport and full-document pixels;
 - inject scripts and content-blocking rules before document code;
-- persist or truthfully report inability to persist session state; and
-- report engine name/version plus supported and degraded capabilities.
+- persist session state or truthfully report inability;
+- report engine name/version and capability status.
 
 Unsupported behavior returns a stable structured error. It never silently
-succeeds, shells out to a different browser, or changes meaning by platform.
+succeeds, shells out to another browser, or changes meaning by platform.
 
-Session persistence deserves emphasis: granted sessions are the product of a
-human hand-off and must survive daemon restarts, be enumerable, and be
-revocable. A backend that cannot persist a session says so in its capability
-matrix; it does not pretend by re-authenticating silently.
+Granted sessions are the product of a hand-off. They must survive daemon
+restarts, be enumerable, and be revocable. A backend that cannot persist says
+so in its capability matrix. It does not re-authenticate silently.
 
 ## Native platform targets
 
 ### Linux
 
-WebKitGTK + GTK remains the reference implementation while portable seams are
-extracted. Wayland/X11 details such as `app_id`, display availability, and
-window mapping stay inside the Linux shell. Existing behavior and performance
-are regression constraints, not disposable prototype details.
+WebKitGTK + GTK is the reference implementation. Wayland/X11 details stay in
+the Linux shell. Existing behavior and performance are regression
+constraints.
 
 ### macOS
 
-WKWebView runs inside an AppKit host. The daemon is a per-user process, the
-local transport uses a protected Unix-domain socket, and
-caches/configuration use Apple-standard directories. Focus/unfocus must
-operate on the same `WKWebView` and avoid activating the app for agent-only
-work. Distribution is a signed and notarized universal application/CLI
-package.
+WKWebView in an AppKit host. Per-user daemon, protected Unix socket,
+Apple-standard directories. Focus/unfocus operates on the same `WKWebView`
+without activating the app for agent work. Distribution: signed, notarized
+universal package.
 
-Feasibility is measured, not assumed. Probes in
-[`scripts/probes/macos/`](scripts/probes/macos/) establish these constraints;
-the analysis and competitive reasoning are in
+Feasibility is measured in [`scripts/probes/macos/`](scripts/probes/macos/);
+analysis in
 [`docs/research-macos-headless.md`](docs/research-macos-headless.md).
 
-- An unbundled CLI binary with `NSApplication.activationPolicy = .prohibited`
-  can load, evaluate, and snapshot an offscreen `WKWebView` with no dock icon
-  and no focus steal. Warm eval is under 1 ms and warm snapshot is 2 ms, so
-  the warm-service architecture transfers intact.
-- **`requestAnimationFrame` is throttled to 0-1 fps whenever the view is
-  offscreen or occluded**, and no window-level trick recovers it. macOS
-  therefore reports `motion.realtime` as degraded. Readiness must never
-  depend on frame counts. Deterministic WAAPI seek does render the sought
-  instant offscreen, so the verification instrument keeps working; realtime
-  motion and scroll-feel work only mean anything in a visible window.
-- `takeSnapshot` is viewport-only. Full-document capture has no direct peer
-  for WebKitGTK's `SnapshotRegion::FullDocument` and needs an explicit
+- A CLI binary with `activationPolicy = .prohibited` loads, evaluates, and
+  snapshots an offscreen `WKWebView` with no dock icon and no focus steal.
+  Warm eval under 1 ms, warm snapshot 2 ms. The warm-service architecture
+  transfers.
+- **Offscreen `requestAnimationFrame` throttles to 0-1 fps.** No window trick
+  recovers it. macOS reports `motion.realtime` degraded. Readiness must never
+  depend on frame counts. Deterministic WAAPI seek renders offscreen, so
+  verification works; realtime motion requires a visible window.
+- `takeSnapshot` is viewport-only. Full-document capture needs an explicit
   strategy.
-- A logged-in GUI session appears to be required. Hosting `WKWebView` on a
-  GUI-less macOS CI runner is unproven and must be verified or documented as
-  unsupported rather than implied.
+- A logged-in GUI session appears required. GUI-less CI hosting is unproven;
+  verify or document as unsupported.
 
 ### Windows
 
-WebView2 runs inside a Win32 host using the installed Evergreen runtime. The
-local transport is a per-user named pipe with an ACL restricted to that user.
-Headless/background work uses a real hidden or non-activating host window
-whose same WebView2 controller can be shown for hand-off. Distribution
-provides signed x86_64 and arm64 artifacts and diagnoses a missing WebView2
-runtime clearly.
+WebView2 in a Win32 host on the Evergreen runtime. Transport: per-user named
+pipe, user-restricted ACL. Background work uses a hidden or non-activating
+host window whose controller can be shown for hand-off. Distribution: signed
+x86_64 and arm64 artifacts, clear WebView2-runtime diagnostics.
 
 ## Portability rules
 
-1. Platform dependencies live behind target-specific crates or modules and
-   target-specific Cargo dependency tables.
-2. Portable crates compile and run their unit/contract tests on all three CI
-   runners without native browser SDKs.
-3. Paths come from platform directory APIs. No portable module assumes
-   `/tmp`, `$HOME`, XDG variables, a Unix UID, or slash-separated paths.
-4. Transport is an interface. Unix sockets and Windows named pipes carry the
-   same framing, timeout, subscription, and authentication semantics.
+1. Platform dependencies live in target-specific crates/modules and
+   dependency tables.
+2. Portable crates compile and test on all three CI runners without native
+   SDKs.
+3. Paths come from platform APIs. No portable module assumes `/tmp`, `$HOME`,
+   XDG, a Unix UID, or slash separators.
+4. Transport is an interface. Sockets and named pipes carry the same framing,
+   timeout, subscription, and authentication semantics.
 5. Daemon discovery/spawn is race-safe and idempotent. Concurrent clients
-   must converge on one healthy per-user daemon.
-6. The public protocol evolves additively. Capabilities are negotiated before
-   a caller depends on optional engine behavior.
-7. Automation semantics are tested against shared fixtures. Backend-specific
-   code does not fork the CLI or MCP surface.
+   converge on one healthy per-user daemon.
+6. The protocol evolves additively. Capabilities are negotiated before use.
+7. Automation semantics are tested against shared fixtures. Backends do not
+   fork the CLI or MCP surface.
 8. Performance is measured per platform. Linux numbers are not marketed as
-   Windows or macOS numbers.
+   another OS's numbers.
 
 ## Known hard problems
 
-Portability work should attack these risks early rather than discovering them
-after three backends exist.
+Attack early, not after three backends exist.
 
-- **Three UI loops.** GLib, AppKit, and Win32/COM have different thread and
-  reentrancy rules. The daemon core needs a small `spawn_on_ui`/timer
-  contract, while engine objects remain confined to their native UI thread.
-- **Prewarm may not transfer.** A native engine can make view creation or
-  process reuse opaque. Each backend must prove warm adoption with
-  measurements and expose degraded pooling honestly if the OS prevents it.
-- **Pixels have provenance.** Device scale, color profile, font
-  rasterization, scrollbar policy, and capture APIs differ. Screenshot
-  metadata and baseline keys must include platform, engine/version, scale,
-  viewport, and color space.
-- **Content blocking is asymmetric.** WebKit content-rule lists and WebView2
-  request interception do not have identical coverage or cost. The
-  capability matrix must distinguish native blocking levels rather than
-  promise one implementation.
-- **GUI CI can lie.** A compile-only runner cannot prove non-activation,
-  focus hand-off, DPI behavior, or GPU capture. Hosted CI covers contracts,
-  while a small physical/native runner pool owns those release gates and
-  publishes its evidence.
-- **Sites gate on accumulated identity.** Some services recognize a browser
-  profile with years of history and challenge a fresh one harder. Delegated
-  hand-off plus persistent granted sessions is the answer for almost all of
-  these; the residue must be documented honestly rather than papered over
-  with fingerprint tricks that violate the constitution.
+- **Three UI loops.** GLib, AppKit, and Win32/COM differ in thread and
+  reentrancy rules. The core needs a small `spawn_on_ui`/timer contract;
+  engine objects stay on their native UI thread.
+- **Prewarm may not transfer.** An engine can make view creation opaque. Each
+  backend proves warm adoption with measurements or exposes degraded pooling
+  honestly.
+- **Pixels have provenance.** Scale, color profile, font rasterization,
+  scrollbars, and capture APIs differ. Baseline keys include platform,
+  engine/version, scale, viewport, color space.
+- **Content blocking is asymmetric.** WebKit rule lists and WebView2
+  interception differ in coverage and cost. The capability matrix
+  distinguishes levels.
+- **GUI CI can lie.** Compile-only runners cannot prove non-activation,
+  hand-off, DPI, or GPU capture. A physical runner pool owns those gates and
+  publishes evidence.
+- **Sites gate on accumulated identity.** Hand-off plus persistent sessions
+  covers nearly all. Document the residue; never spoof.
 
 ## Delivery sequence and exit gates
 
-### M0: freeze the contract and establish the matrix
+### M0: freeze the contract
 
-- Record golden JSON fixtures for every request, response, event, and
-  structured error.
-- Add platform/engine metadata and capability negotiation without breaking an
-  older client.
-- Create Linux, macOS, and Windows CI lanes for portable crates.
-- Inventory all GTK/WebKitGTK, GLib, Wayland/X11, Unix socket, XDG,
-  shell-tool, installer, and updater assumptions.
+- Golden JSON fixtures for every request, response, event, error.
+- Platform/engine metadata and capability negotiation, backward compatible.
+- Three CI lanes for portable crates.
+- Inventory every GTK, GLib, Wayland/X11, socket, XDG, shell-tool, installer,
+  and updater assumption.
 
-**Exit gate:** protocol compatibility tests and portable crate tests pass on
-all three hosted runners. Every platform assumption has an owner and
-destination.
+**Gate:** compatibility and portable tests pass on all three runners. Every
+assumption has an owner and destination.
 
 ### M1: extract without changing Linux
 
-- Isolate local transport, platform directories, daemon lifecycle,
-  verification math, and engine/window operations behind narrow boundaries.
+- Isolate transport, directories, lifecycle, verification math, engine ops
+  behind narrow boundaries.
 - Move GTK/WebKitGTK types out of portable orchestration.
-- Keep Linux as a continuously working reference, including prewarm, check
-  pool, events, focus/unfocus, screenshots, console capture, downloads, and
-  recovery.
+- Linux stays continuously working: prewarm, check pool, events,
+  focus/unfocus, screenshots, console, downloads, recovery.
 
-**Exit gate:** the existing Linux end-to-end suite and benchmarks pass,
-portable modules contain no Linux UI/engine imports, and the CLI can exercise
-an in-memory fake backend for contract tests.
+**Gate:** Linux e2e suite and benchmarks pass. Portable modules contain no
+Linux UI/engine imports. The CLI exercises an in-memory fake backend.
 
-### M2: prove one vertical slice on macOS and Windows
+### M2: one vertical slice on macOS and Windows
 
-Implement the smallest complete path on each native backend:
-`doctor → daemon discovery → open headless → wait → eval → screenshot →
-focus → unfocus → close`.
+Smallest complete path per backend: `doctor → discovery → open headless →
+wait → eval → screenshot → focus → unfocus → close`.
 
-**Exit gate:** that path runs on physical or hosted native runners, uses the
-same CLI commands and JSON assertions as Linux, does not steal focus before
-`focus`, and keeps the same page identity and session state through hand-off.
+**Gate:** the path runs on native runners with the same CLI commands and JSON
+assertions as Linux, steals no focus before `focus`, and keeps page identity
+and session state through hand-off.
 
-On macOS the slice is scoped to the verification instrument first: a warm,
-focusless `check`/`diff` against a baseline, shipped without the browser
-shell. That is the capability no competitor offers, and it is the part of the
-codebase that touches native types least. The tiling-WM browser is explicitly
-not a macOS target: there is no tiling WM to serve, and offscreen rAF
-throttling makes the scroll-feel work meaningless there. See
+macOS scope: verification instrument first. Warm focusless `check`/`diff`,
+no browser shell. The tiling-WM browser is not a macOS target: no tiling WM
+to serve, and rAF throttling voids scroll-feel work. See
 [`docs/research-macos-headless.md`](docs/research-macos-headless.md).
 
-### M3: reach agent-loop parity
+### M3: agent-loop parity
 
-Add snapshot/interactables, click/type/scroll/upload, expect, diff/check,
-console/network errors, events/subscriptions, profiles, downloads, prompts,
-popups, crash recovery, prefetch, and pooled reuse according to the
-advertised capability matrix. Delegated authentication reaches parity here
-too: challenge detection, hand-off, resume, and persistent granted sessions
-behave identically on every platform that claims them.
+Snapshot/interactables, click/type/scroll/upload, expect, diff/check,
+console/network errors, events, profiles, downloads, prompts, popups, crash
+recovery, prefetch, pooled reuse, per the capability matrix. Delegated
+authentication reaches parity: challenge detection, hand-off, resume, and
+persistent granted sessions behave identically wherever claimed.
 
-**Exit gate:** the shared conformance suite passes for every capability
-marked supported. Failures for unavailable capabilities are structured and
-tested. Each platform publishes cold start, warm connect, open, and
-complete-check latency plus idle and per-view memory.
+**Gate:** conformance passes for every supported capability. Unavailable
+capabilities fail structurally, with tests. Each platform publishes cold
+start, warm connect, open, complete-check latency, idle and per-view memory.
 
-### M4: make installation native
+### M4: native installation
 
-- Linux keeps distro packages and explicit WebKitGTK diagnostics.
-- macOS ships signed/notarized universal artifacts and launch integration.
-- Windows ships signed x86_64/arm64 artifacts, named-pipe lifecycle
-  integration, and WebView2 runtime diagnostics.
-- `setup`, `doctor`, `update`, and uninstall are previewable, idempotent, and
-  reversible on every platform.
+- Linux: distro packages, explicit WebKitGTK diagnostics.
+- macOS: signed/notarized universal artifacts, launch integration.
+- Windows: signed x86_64/arm64 artifacts, named-pipe lifecycle, WebView2
+  diagnostics.
+- `setup`, `doctor`, `update`, uninstall: previewable, idempotent,
+  reversible.
 
-**Exit gate:** a clean OS image can install, connect an MCP client, run the
-shared smoke fixture, update, and uninstall without source tools or
-undocumented steps.
+**Gate:** a clean OS image installs, connects MCP, runs the smoke fixture,
+updates, and uninstalls without source tools or undocumented steps.
 
 ### M5: declare support
 
-**Exit gate:** two consecutive releases satisfy the conformance, focus-safety,
-lifecycle, soak, packaging, and performance gates on all supported
-architectures. Only then may README and release metadata claim that platform
-as supported.
+**Gate:** two consecutive releases pass conformance, focus-safety, lifecycle,
+soak, packaging, and performance gates on all supported architectures. Only
+then may README and release metadata claim the platform.
 
 ## Swarm execution model
 
-Portability is a dependency graph, not three agents independently rewriting
-the daemon. Use long-lived ownership lanes with short integration slices.
+Portability is a dependency graph, not three agents rewriting the daemon.
+Long-lived ownership lanes, short integration slices.
 
 | Lane | Owns | Must not own |
 | --- | --- | --- |
-| Contract | `hwatu-ipc`, capabilities, golden fixtures, compatibility policy | native backend behavior |
-| Core extraction | daemon orchestration, pools, verification interfaces, fake backend | platform implementations |
-| Transport/lifecycle | endpoint abstraction, discovery, spawn, shutdown, per-user security | protocol payloads |
-| Linux guardian | reference backend and regression/performance gates | portable API changes made only for Linux convenience |
-| macOS backend | WKWebView/AppKit implementation, packaging evidence | shared semantics |
-| Windows backend | WebView2/Win32 implementation, packaging evidence | shared semantics |
-| Conformance | shared fixtures, focus-safety tests, soak and fault injection | waiving failures for a platform |
-| Release | signing, artifacts, clean-image install/update/uninstall | declaring parity without conformance evidence |
+| Contract | `hwatu-ipc`, capabilities, fixtures, compatibility | backend behavior |
+| Core extraction | orchestration, pools, verification interfaces, fake backend | platform implementations |
+| Transport/lifecycle | endpoints, discovery, spawn, shutdown, security | protocol payloads |
+| Linux guardian | reference backend, regression/performance gates | Linux-convenience API changes |
+| macOS backend | WKWebView/AppKit, packaging evidence | shared semantics |
+| Windows backend | WebView2/Win32, packaging evidence | shared semantics |
+| Conformance | fixtures, focus-safety tests, soak, fault injection | waiving failures |
+| Release | signing, artifacts, clean-image lifecycle | claiming parity without evidence |
 
-### How the swarm works
+### Rules
 
-1. **Contract first.** The contract and conformance lanes publish a failing
-   test and capability expectation before a native feature is assigned.
-2. **Vertical slices.** Platform agents take one end-to-end operation at a
-   time, not whole directories. A slice includes implementation, fixture
-   evidence, failure semantics, and diagnostics.
-3. **One writer per boundary.** The contract, core interface, and each
-   backend have a single active owner. Other agents propose changes through
-   tests or a small interface request to prevent merge-conflict architecture.
-4. **Linux remains green.** Extraction lands only when the Linux guardian can
-   demonstrate unchanged behavior and compare benchmark deltas.
-5. **Two-sided gates.** A backend implementer cannot approve its own
-   conformance or focus-safety gate. The verification lane reproduces it on
-   the target OS.
-6. **Capability honesty.** Missing parity becomes an explicit matrix entry
-   and a runnable test, never a hidden conditional or documentation footnote.
-7. **Small integration cadence.** Merge protocol/core changes first, then
-   rebase all platform slices. Avoid long-lived platform mega-branches.
-8. **Evidence is the hand-off.** Every completed swarm task reports commands,
-   runner/OS and engine versions, fixture output, performance delta,
-   remaining capability gaps, and files it intentionally did not inspect.
+1. **Contract first.** A failing test and capability expectation precede every
+   native feature assignment.
+2. **Vertical slices.** One end-to-end operation at a time: implementation,
+   fixture evidence, failure semantics, diagnostics.
+3. **One writer per boundary.** Others propose via tests or an interface
+   request.
+4. **Linux stays green.** Extraction lands with demonstrated unchanged
+   behavior and benchmark deltas.
+5. **Two-sided gates.** Implementers do not approve their own conformance or
+   focus-safety gates. The verification lane reproduces on the target OS.
+6. **Capability honesty.** Missing parity becomes a matrix entry and a
+   runnable test, never a hidden conditional.
+7. **Small cadence.** Protocol/core first, then rebase platform slices. No
+   platform mega-branches.
+8. **Evidence is the hand-off.** Each task reports commands, runner and
+   engine versions, fixture output, performance delta, capability gaps, and
+   files not inspected.
 
-A practical first swarm wave is:
+First wave:
 
 ```text
 Contract ─────┬─> transport/lifecycle ─┬─> macOS vertical slice
@@ -446,37 +365,30 @@ Contract ─────┬─> transport/lifecycle ─┬─> macOS vertical sl
                                       └─> Windows verification gate
 ```
 
-No platform lane should begin broad feature parity until M1's fake backend
-and Linux regression gate make the portable boundary executable.
+No platform lane starts broad parity until M1's fake backend and Linux
+regression gate make the boundary executable.
 
 ## What we will not do
 
-- Bundle Electron, CEF, or a private Chromium to manufacture uniformity.
-- Ride inside the user's daily browser as an extension. Sharing the human's
-  focus, tab strip, and full logged-in identity is an architecture whose
-  failure modes we have measured, not a feature.
-- Store, transmit, or ever observe the user's credentials. Authentication is
-  delegation through hand-off; the agent keeps granted sessions, never
-  secrets.
-- Spoof fingerprints, solve CAPTCHAs, inject challenge tokens, or bypass
-  access controls. Hwatu's identity story is honest or it does not exist.
-- Add a cloud relay between the agent and the page.
-- Replace the stable protocol with platform-specific CLIs or MCP tools.
-- Promise pixel-identical rendering across WebKitGTK, WKWebView, and
-  WebView2.
-- Reduce hand-off to opening the URL in another browser.
-- Put browser-shell policy into verification or portable runtime code. Tabs,
-  sync, a password store, and a general extension platform remain out of
-  scope. Focused daily-browser work belongs to the tiling-WM browser roadmap.
-- Block useful Linux roadmap work while portability foundations are
-  incremental.
+- Bundle Electron, CEF, or a private Chromium.
+- Ride inside the user's daily browser as an extension. We measured that
+  architecture's failure modes.
+- Store, transmit, or observe user credentials.
+- Spoof fingerprints, solve CAPTCHAs, inject tokens, or bypass access
+  controls.
+- Add a cloud relay between agent and page.
+- Replace the protocol with platform-specific CLIs or MCP tools.
+- Promise pixel-identical rendering across engines.
+- Reduce hand-off to opening a URL in another browser.
+- Put browser-shell policy in verification or portable code. Tabs, sync, a
+  password store, and an extension platform stay out of scope.
+- Block Linux roadmap work on portability foundations.
 - Claim support from cross-compilation alone.
 
 ## Decision test
 
-A change belongs in Hwatu when it makes the same agent verification, delegated
-identity, or live hand-off outcome reliable without weakening the constitution
-above. If it only makes code look abstract, moves platform details into
-conditionals, exposes a credential to make a login convenient, or buys nominal
-parity by losing warmth, invisibility, measurement, or session continuity, it
-is not progress.
+A change belongs in Hwatu when it makes the same verification, delegated
+identity, or hand-off outcome reliable without weakening the constitution. If
+it only makes code look abstract, moves platform details into conditionals,
+exposes a credential for convenience, or buys nominal parity by losing
+warmth, invisibility, measurement, or session continuity, it is not progress.
