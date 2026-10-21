@@ -505,7 +505,7 @@ pub fn wait_load(
     // LoadEvent::Started, so cover both.
     let stage_reached = !win.nav_pending()
         && match until {
-            LoadStage::Settled => !view.is_loading(),
+            LoadStage::Settled | LoadStage::Quiescent => !view.is_loading(),
             LoadStage::Committed | LoadStage::Dom => win.load_committed(),
         };
     if stage_reached {
@@ -514,6 +514,11 @@ pub fn wait_load(
             // readiness inside the page before releasing the caller.
             arm_timeout(reply.clone(), timeout_ms, "wait_load");
             return await_dom_ready(&view, move |_| reply.send(Response::window(win.info())));
+        }
+        if until == LoadStage::Quiescent {
+            // Settled already; now wait out the hydration tail.
+            arm_timeout(reply.clone(), timeout_ms, "wait_load");
+            return await_dom_quiescent(&view, move |_| reply.send(Response::window(win.info())));
         }
         return reply.send(Response::window(win.info()));
     }
@@ -760,6 +765,51 @@ return document.readyState;"#;
     });
 }
 
+/// Release once the DOM stops mutating: no mutations for
+/// `QUIESCENT_QUIET_MS`, bounded by `QUIESCENT_CAP_MS` so a page with
+/// a ticking clock or animation loop cannot stall the caller forever.
+/// This runs *after* Settled and is what turns "the load event fired"
+/// into "the SPA finished hydrating what it was going to hydrate".
+/// On cap expiry it still succeeds: the caller wanted "as stable as
+/// it gets", and endless mutation is as stable as that page gets.
+const QUIESCENT_QUIET_MS: u64 = 300;
+const QUIESCENT_CAP_MS: u64 = 5_000;
+
+fn await_dom_quiescent(view: &webkit6::WebView, done: impl FnOnce(&webkit6::WebView) + 'static) {
+    let js = format!(
+        r#"const QUIET = {quiet};
+const CAP = {cap};
+return await new Promise((resolve) => {{
+  let last = performance.now();
+  const started = last;
+  const mo = new MutationObserver(() => {{ last = performance.now(); }});
+  mo.observe(document.documentElement || document, {{
+    childList: true, subtree: true, attributes: true, characterData: true,
+  }});
+  const tick = () => {{
+    const now = performance.now();
+    if (now - last >= QUIET) {{
+      mo.disconnect();
+      resolve({{ quiescent: true, waited_ms: Math.round(now - started) }});
+    }} else if (now - started >= CAP) {{
+      mo.disconnect();
+      resolve({{ quiescent: false, waited_ms: Math.round(now - started),
+                 note: 'DOM still mutating at cap; page may animate continuously' }});
+    }} else {{
+      setTimeout(tick, Math.min(QUIET / 3, 100));
+    }}
+  }};
+  setTimeout(tick, Math.min(QUIET / 3, 100));
+}});"#,
+        quiet = QUIESCENT_QUIET_MS,
+        cap = QUIESCENT_CAP_MS,
+    );
+    let view2 = view.clone();
+    view.call_async_javascript_function(&js, None, None, None, gio::Cancellable::NONE, move |_| {
+        done(&view2)
+    });
+}
+
 /// Fire `done` once the window's load reaches `stage`.
 fn wire_load_stage(
     view: &webkit6::WebView,
@@ -771,6 +821,9 @@ fn wire_load_stage(
         LoadStage::Settled => wire_load_settled(view, win, done),
         LoadStage::Committed => wire_load_committed(view, win, done),
         LoadStage::Dom => wire_load_committed(view, win, move |view| await_dom_ready(view, done)),
+        LoadStage::Quiescent => {
+            wire_load_settled(view, win, move |view| await_dom_quiescent(view, done))
+        }
     }
 }
 
@@ -1144,8 +1197,14 @@ pub fn check(
     // wiring is correct for it.
     if adopted && win.load_committed() && !win.nav_pending() {
         if !view.is_loading() {
-            let view = view.clone();
-            glib::idle_add_local_once(move || proceed(&view));
+            if until == LoadStage::Quiescent {
+                // Load finished, but the hydration tail is exactly
+                // what quiescent exists to wait out.
+                await_dom_quiescent(&view, proceed);
+            } else {
+                let view = view.clone();
+                glib::idle_add_local_once(move || proceed(&view));
+            }
         } else {
             match until {
                 LoadStage::Committed => {
@@ -1154,6 +1213,9 @@ pub fn check(
                 }
                 LoadStage::Dom => await_dom_ready(&view, proceed),
                 LoadStage::Settled => wire_load_settled(&view, win.clone(), proceed),
+                LoadStage::Quiescent => wire_load_settled(&view, win.clone(), move |view| {
+                    await_dom_quiescent(view, proceed)
+                }),
             }
         }
     } else {
@@ -2714,8 +2776,15 @@ if (refIdx !== null) {{
 	  }}
 	  let els = documents.flatMap(doc => [...doc.querySelectorAll(selector)]);
   const total = els.length;
-  if (contains !== null)
+  if (contains !== null) {{
     els = els.filter(e => ((e.textContent || '') + ' ' + (e.value || '')).includes(contains));
+    // Leaf preference: a page-root div's textContent contains
+    // everything, so ancestor matches shadow the element the caller
+    // actually means. Keep only matches that do not contain another
+    // match; document order is preserved, so nth stays meaningful
+    // over the de-shadowed list.
+    els = els.filter(e => !els.some(o => o !== e && e.contains(o)));
+  }}
   el = els[nth];
   if (!el) {{
     const filt = contains === null ? '' : ` (${{els.length}} after contains filter)`;

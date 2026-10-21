@@ -1242,6 +1242,8 @@ impl Request {
                 | Request::Console { .. }
                 | Request::GetContent { .. }
                 | Request::FillForm { .. }
+                | Request::Open { .. }
+                | Request::Close { .. }
         ) || matches!(self, Request::Expect { watch: false, .. })
     }
 
@@ -1302,7 +1304,7 @@ impl Request {
             }
             if !action.is_batch_action() {
                 return Err(format!(
-                    "batch action {index} ({}) is unsupported; allowed actions are eval, navigate, screenshot, wait_load, scroll, snapshot, click, type, press, paste, console, expect",
+                    "batch action {index} ({}) is unsupported; allowed actions are open, close, eval, navigate, screenshot, wait_load, scroll, snapshot, click, type, press, paste, console, get_content, fill_form, expect",
                     action.kind()
                 ));
             }
@@ -1422,6 +1424,13 @@ pub enum LoadStage {
     /// wire default for backward compatibility.
     #[default]
     Settled,
+    /// Settled, then the DOM stopped mutating (no mutations for a
+    /// quiet window, bounded by a cap). SPAs keep hydrating long
+    /// after `load`: skeleton screens, lazy menus, client-side
+    /// routing. This is the stage that means "what you read now is
+    /// what a user would see", and it exists to replace the blind
+    /// `sleep N` agents otherwise wrap around every SPA navigation.
+    Quiescent,
 }
 
 impl LoadStage {
@@ -1431,6 +1440,7 @@ impl LoadStage {
             "committed" | "commit" => Some(Self::Committed),
             "dom" | "ready" => Some(Self::Dom),
             "settled" | "load" | "full" => Some(Self::Settled),
+            "quiescent" | "quiet" | "hydrated" => Some(Self::Quiescent),
             _ => None,
         }
     }
@@ -2512,7 +2522,7 @@ mod tests {
             .unwrap_err()
             .contains("nested"));
 
-        let unsupported = vec![Request::Close { id: 1 }];
+        let unsupported = vec![Request::Quit];
         assert!(Request::validate_batch(&unsupported)
             .unwrap_err()
             .contains("unsupported"));
@@ -2531,6 +2541,42 @@ mod tests {
         assert!(Request::validate_batch(&watch)
             .unwrap_err()
             .contains("watch"));
+    }
+
+    #[test]
+    fn batch_accepts_open_and_close_for_whole_journey_flows() {
+        // The agent inner loop is open -> navigate -> expect -> eval ->
+        // close; keeping open/close out of batches forced two extra
+        // process spawns and two extra agent turns per journey.
+        let journey = vec![
+            Request::Open {
+                url: Some("https://example.com".into()),
+                app_id: None,
+                mode: OpenMode::Headless,
+                profile: None,
+            },
+            Request::Eval {
+                id: None,
+                js: "return document.title".into(),
+                timeout_ms: None,
+            },
+            Request::Close { id: 1 },
+        ];
+        Request::validate_batch(&journey).unwrap();
+    }
+
+    #[test]
+    fn load_stage_parses_quiescent_aliases() {
+        assert_eq!(LoadStage::parse("quiescent"), Some(LoadStage::Quiescent));
+        assert_eq!(LoadStage::parse("quiet"), Some(LoadStage::Quiescent));
+        assert_eq!(LoadStage::parse("hydrated"), Some(LoadStage::Quiescent));
+        // wire form is snake_case of the variant
+        let json = serde_json::to_string(&LoadStage::Quiescent).unwrap();
+        assert_eq!(json, "\"quiescent\"");
+        assert_eq!(
+            serde_json::from_str::<LoadStage>("\"quiescent\"").unwrap(),
+            LoadStage::Quiescent
+        );
     }
 
     #[test]

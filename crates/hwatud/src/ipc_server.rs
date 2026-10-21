@@ -1796,7 +1796,7 @@ mod tests {
 
     #[test]
     fn daemon_batch_validation_rejects_before_execution() {
-        let actions = vec![Request::Close { id: 1 }];
+        let actions = vec![Request::Quit];
         assert!(Request::validate_batch(&actions)
             .unwrap_err()
             .contains("unsupported"));
