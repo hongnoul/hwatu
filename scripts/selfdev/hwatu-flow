@@ -1,25 +1,122 @@
-#!/usr/bin/env bash
-# Second promoted fix from the self-development loop (synth.py: "turn
-# count", est. ~1635s/corpus). Compiles the dominant multi-turn agent
-# pattern (goto -> wait -> eval/click/type -> wait -> eval ...) into ONE
-# tool call via `hwatu batch`, with daemon-side `expect` polling instead
-# of sleeps between steps.
-#
-# Usage:
-#   hwatu-flow <window-id> <<'JSON'
-#   [{"cmd":"navigate","url":"..."},
-#    {"cmd":"expect","selector":"body","contains":"Budae","timeout_ms":15000},
-#    {"cmd":"eval","js":"return ..."}]
-#   JSON
-#
-# One process spawn, one socket roundtrip, zero sleeps, zero extra model
-# turns. Steps run in order; first failure aborts and reports which step.
-set -euo pipefail
-id=${1:?window id}
-WIN_ID="$id" python3 -c '
-import json, os, sys
-acts = json.load(sys.stdin)
-for a in acts:
-    a.setdefault("id", int(os.environ["WIN_ID"]))
-print(json.dumps(acts))
-' | hwatu batch --stdin
+#!/usr/bin/env python3
+"""Second promoted fix from the self-development loop (synth.py: "turn
+count", est. ~1635s/corpus). Compiles the dominant multi-turn agent
+pattern (goto -> wait -> eval/click/type -> wait -> eval ...) into ONE
+tool call via `hwatu batch`, with daemon-side `expect` polling instead
+of sleeps between steps.
+
+Usage:
+  hwatu-flow <window-id> <<'JSON'
+  [{"cmd":"navigate","url":"..."},
+   {"cmd":"expect","selector":"body","contains":"Budae","timeout_ms":15000},
+   {"cmd":"eval","js":"return ..."}]
+  JSON
+
+One process spawn, one socket roundtrip, zero sleeps, zero extra model
+turns. Steps run in order; first failure aborts the batch, prints the
+full step report, and sets the exit code so callers can branch on $?.
+
+Exit codes: 0 ok, 1 usage, 2 bad input JSON, 3 batch failed mid-way,
+4 could not reach hwatu.
+
+Cross-navigation resilience: when a click navigates the page and a
+following step dies with "page navigated ... destroying its JS
+context", hwatu-flow waits for the new document and resumes the batch
+from the failed step (once per step), merging the step reports.
+"""
+import json
+import subprocess
+import sys
+
+NAV_RACE = "destroying its JS context"
+MAX_RESUMES = 3
+
+
+def run_batch(acts):
+    try:
+        r = subprocess.run(["hwatu", "batch", "--stdin"],
+                           input=json.dumps(acts),
+                           capture_output=True, text=True)
+    except FileNotFoundError:
+        print("hwatu-flow: hwatu binary not found on PATH", file=sys.stderr)
+        sys.exit(4)
+    if r.stderr:
+        sys.stderr.write(r.stderr)
+    if r.returncode != 0:
+        sys.stdout.write(r.stdout)
+        sys.exit(4)
+    try:
+        return json.loads(r.stdout)["batch"]
+    except Exception:
+        sys.stdout.write(r.stdout)
+        sys.exit(0)  # non-JSON daemon reply: passed through untouched
+
+
+def main():
+    if len(sys.argv) != 2:
+        print(__doc__, file=sys.stderr)
+        return 1
+    try:
+        win_id = int(sys.argv[1])
+    except ValueError:
+        print(f"hwatu-flow: window id must be an integer, got {sys.argv[1]!r}",
+              file=sys.stderr)
+        return 1
+
+    try:
+        acts = json.load(sys.stdin)
+    except Exception as e:
+        print(f"hwatu-flow: invalid JSON on stdin: {e}", file=sys.stderr)
+        return 2
+    if not isinstance(acts, list) or not acts:
+        print("hwatu-flow: expected a non-empty JSON array of actions",
+              file=sys.stderr)
+        return 2
+    for a in acts:
+        if isinstance(a, dict):
+            a.setdefault("id", win_id)
+
+    all_steps = []
+    offset = 0
+    remaining = acts
+    resumes = 0
+    while True:
+        b = run_batch(remaining)
+        steps = b.get("steps", [])
+        for s in steps:
+            if isinstance(s.get("index"), int):
+                s["index"] += offset
+        if b.get("complete", True):
+            all_steps.extend(steps)
+            print(json.dumps({"batch": {"complete": True,
+                                        "executed": len(all_steps),
+                                        "resumes": resumes,
+                                        "steps": all_steps}}))
+            return 0
+        i = b.get("failed_at", 0) or 0
+        failed = steps[i] if i < len(steps) else {}
+        err = str(failed.get("error") or "")
+        if NAV_RACE in err and resumes < MAX_RESUMES:
+            # the click navigated; wait for the new document, then
+            # resume from the step that died
+            all_steps.extend(steps[:i])
+            resumes += 1
+            subprocess.run(["hwatu", "wait-load", "--id", str(win_id)],
+                           capture_output=True, text=True)
+            offset += i
+            remaining = remaining[i:]
+            continue
+        all_steps.extend(steps)
+        print(json.dumps({"batch": {"complete": False,
+                                    "executed": len(all_steps),
+                                    "failed_at": offset + i,
+                                    "resumes": resumes,
+                                    "steps": all_steps}}))
+        print(f"hwatu-flow: batch failed at step {offset + i} "
+              f"({failed.get('action')}): {failed.get('error')}",
+              file=sys.stderr)
+        return 3
+
+
+if __name__ == "__main__":
+    sys.exit(main())

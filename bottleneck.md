@@ -223,6 +223,18 @@ browser work itself completed in 10.8 s. Even charging 6 s of model
 time per remaining turn, the task lands near 45 s, a ~40x
 improvement, dominated by exactly the two classes synth ranked first.
 
+Hardening pass (same day): hwatu-flow rewritten from bash to python
+after edge testing exposed real defects. Verified exit-code contract
+(0 ok / 1 usage / 2 bad JSON / 3 mid-batch failure / 4 no hwatu), all
+observed. Cross-site generality shown on Hacker News (6-step
+navigate/expect/eval/click flow, complete). Edge testing also found a
+genuine integration failure mode: a cross-page click destroys the JS
+context of the following step; hwatu-flow now auto-detects that race,
+waits for the new document, and resumes the batch from the failed
+step (verified: HN login flow completes with resumes:1, typed value
+lands on the new page). Budae replay re-run on the rewritten tool:
+same answer, 15.7 s, gate PROMOTE again.
+
 Next target per re-ranked plan: oversized outputs (shape at source)
 and generalizing hwatu-flow into a skill the agent reaches for by
 default.
