@@ -180,8 +180,14 @@ First real run (the Budae Jjige DoorDash session, 204 turns, 1944 s
 agent wall clock) measured: model 61.5%, explicit sleeps 29.3%
 (569 s), tool exec 9.2%. Synth ranked turn-compilation first
 (~984 s: 168 compilable turns x 5.9 s/turn) and sleep removal second
-(~456 s). `hwatu-poll` verified on a fixture: page ready at 1.3 s,
-poll returned at 1.48 s where the trace slept a blind 8-20 s.
+(~456 s). `hwatu-poll` verified on the real acceptance path: against
+the live DoorDash search page from the trace, content was ready and
+the poll returned in 4.4 s where the session slept a fixed 20 s (4.5x
+on that wait; the fixture check had shown 1.48 s vs 1.3 s readiness).
+Timeout and bad-window paths exit 1 cleanly. The gate was exercised
+in both directions on real profiles: a cheaper session PROMOTEs, a
+session with regressed wall clock REJECTs even though other metrics
+improved, and a no-change replay REJECTs for lack of improvement.
 
 Loop cadence: run a task, `profile.py --latest | synth.py`, implement
 the top candidate, replay, `verify.py gate`, promote or discard,
