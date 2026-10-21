@@ -238,3 +238,36 @@ same answer, 15.7 s, gate PROMOTE again.
 Next target per re-ranked plan: oversized outputs (shape at source)
 and generalizing hwatu-flow into a skill the agent reaches for by
 default.
+
+## Upstream fixes landed in hwatu (2026-10-21)
+
+The loop's findings were promoted from agent-side workarounds into the
+daemon itself, so every future agent benefits with zero setup:
+
+1. **`--until quiescent`** (`quiescent`|`quiet`|`hydrated`): settled,
+   then DOM mutation quiescence (300 ms quiet window, 5 s cap) via a
+   daemon-side MutationObserver. Verified on a mutation-burst fixture
+   (settled read "skeleton"; quiescent read the final menu text) and on
+   live DoorDash (released at 5.1 s with 60 store links present, where
+   settled released at 3.3 s with hydration still incomplete and the
+   original agent session slept a blind 20 s). This deletes the sleep
+   class (#3, 569 s in the baseline) at the source and subsumes
+   `hwatu-poll` for load-time waits.
+2. **`batch` accepts `open` and `close`**: a whole journey
+   (open -> wait quiescent -> eval -> ... -> close) is now ONE IPC call
+   and one agent turn. The full Budae journey ran in 4 tool calls,
+   24 s, zero sleeps, zero client-side polling. This attacks the top
+   class (#2 turn count) in the daemon rather than in wrapper scripts.
+3. **Leaf preference for `--contains`**: click/type now drop ancestor
+   matches that contain another match, so `div --contains X` hits the
+   actual card instead of the page root (verified on a nested fixture:
+   clicked the leaf `.name` div, not the wrapper).
+4. **Actionable eval error**: WebKit's opaque "Unsupported result
+   type" now explains itself (non-JSON-serializable completion value;
+   return plain data) instead of reading like a wedged page. Verified
+   the hint fires and that the context is NOT wedged afterwards: the
+   next eval succeeds, so the historical wedge was the misread error.
+
+All 339 workspace tests pass. `scripts/selfdev/hwatu-flow` keeps its
+resume logic for cross-navigation clicks; with batch-open it can now
+run id-free from the first step.
