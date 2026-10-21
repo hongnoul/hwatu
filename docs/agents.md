@@ -87,6 +87,7 @@ hwatu check localhost:3000 --eval 'document.title' --shot=/tmp/c.png
                                     # one-shot: open+wait+eval+shot+close
 hwatu wait-load                     # block until the load settles
 hwatu wait-load --until dom         # release at DOMContentLoaded (faster)
+hwatu wait-load --until quiescent   # settled + DOM stopped mutating (SPA hydration done)
 hwatu snapshot                      # text + interactables, cheaper than a shot
 hwatu expect '#status' --text ready # assert page state (polls up to 5s)
 hwatu expect '#status' --text ready --watch # stream initial state + truth flips until navigation
@@ -149,7 +150,7 @@ batch. Unix-socket behavior and `HWATU_SOCKET` remain unchanged;
 | `eval` | `id?`, `js`, `timeout_ms?` | run JS, result as JSON |
 | `navigate` | `id?`, `url`, `wait?`, `timeout_ms?` | navigate, optionally wait for the load |
 | `screenshot` | `id?`, `path?`, `full?` | PNG of the viewport (`full: true` = whole document), returns the file path |
-| `wait_load` | `id?`, `timeout_ms?` | block until loading settles |
+| `wait_load` | `id?`, `until?`, `timeout_ms?` | block until the load reaches `until` (`committed`/`dom`/`settled`/`quiescent`; `quiescent` = settled, then no DOM mutations for 300 ms, 5 s cap, so SPA hydration is done) |
 | `check` | `url` or `render` (+`base?`), `eval?`, `shot?`, `shot_path?`, `full?`, `baseline?`, `tolerance?`, `min_region_px?`, `heatmap?`, `viewports?`, `baseline_dir?`, `until?`, `keep?`, `timeout_ms?` | one-roundtrip verify pass: open headless, load the url (or render inline HTML directly, CLI: `hwatu render`), eval/shot/diff-vs-baseline, close; replies with everything at once. `viewports` (CLI: `--viewports 360x640,1920x1080`) sweeps the same pass at N sizes on the one window, replying with per-size results under `viewports: [{size, eval, shot, diff, pass_ms}]`; screenshots get a `-<WxH>` suffix and `baseline_dir` supplies per-size baselines `<dir>/<WxH>.png` |
 | `prefetch` | `url` | start loading in a headless window and return immediately; the next `check` of the same url adopts the warm window (30 s TTL, max 3) |
 | `challenge` | `id?`, `wait?`, `timeout_ms?` | detect CAPTCHA/anti-bot UI; optionally wait for manual/user resolution |

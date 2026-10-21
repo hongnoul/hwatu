@@ -1438,9 +1438,20 @@ mod tests {
         assert_eq!(actions.len(), 3);
         assert!(matches!(actions[1], Request::Click { r#ref: Some(0), .. }));
 
-        assert!(build_request(
+        // open/close are batch actions now (whole-journey flows); a
+        // window-management verb like focus still is not.
+        let Request::Batch { actions } = build_request(
             "batch_actions",
             &json!({ "actions": [{ "tool": "close", "args": { "id": 1 } }] }),
+        )
+        .unwrap() else {
+            panic!("expected Batch");
+        };
+        assert!(matches!(actions[0], Request::Close { id: 1 }));
+
+        assert!(build_request(
+            "batch_actions",
+            &json!({ "actions": [{ "tool": "focus", "args": { "id": 1 } }] }),
         )
         .unwrap_err()
         .contains("unsupported"));
