@@ -336,7 +336,21 @@ pub fn eval_with(
                     // waiting to resolve it.
                     if !reply.is_spent() && nav_watch_untriggered(&e) {
                         unwire();
-                        reply.send(Response::err(format!("eval failed: {e}")));
+                        let msg = e.to_string();
+                        // WebKit's serializer refuses values JSON can't
+                        // express (DOM nodes, functions, symbols, window)
+                        // with an opaque "Unsupported result type". Name
+                        // the fix, or an agent reads this as a wedged
+                        // page and starts re-opening windows.
+                        let hint = if msg.contains("Unsupported result type") {
+                            "; the script's completion value is not JSON-serializable \
+                             (DOM node, function, symbol, or window). Return plain \
+                             data instead, e.g. el.textContent rather than el, or \
+                             end a statement-style body with an explicit `return`"
+                        } else {
+                            ""
+                        };
+                        reply.send(Response::err(format!("eval failed: {msg}{hint}")));
                     }
                 }
             }
