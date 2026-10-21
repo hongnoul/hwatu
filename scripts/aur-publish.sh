@@ -49,6 +49,21 @@ if [ "$live_ver" = "$pkgver-$pkgrel" ]; then
 fi
 
 cd "$workdir/aur"
+
+# CI runners carry no git identity, and `git commit` aborts with
+# "Author identity unknown" without one. Fall back to the PKGBUILD's
+# Maintainer line so AUR history still credits the maintainer; a
+# developer's own config wins when present.
+if ! git config user.name >/dev/null || ! git config user.email >/dev/null; then
+  maintainer=$(sed -n 's/^# Maintainer: *\(.*\) <\(.*\)>$/\1|\2/p' PKGBUILD | head -1)
+  git config user.name "${AUR_GIT_NAME:-${maintainer%%|*}}"
+  git config user.email "${AUR_GIT_EMAIL:-${maintainer##*|}}"
+  if [ -z "$(git config user.name)" ] || [ -z "$(git config user.email)" ]; then
+    echo "error: no git identity; set AUR_GIT_NAME/AUR_GIT_EMAIL or a '# Maintainer: Name <email>' line." >&2
+    exit 1
+  fi
+fi
+
 git add PKGBUILD .SRCINFO
 if git diff --cached --quiet; then
   echo "AUR already up to date."
