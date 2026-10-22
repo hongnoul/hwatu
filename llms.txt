@@ -1,37 +1,28 @@
 # hwatu
 
-> Headless verification browser for AI coding agents: daemon-based WebKitGTK, real rendering, ~13ms median window spawn, ~35ms one-call verify pass (`hwatu check`)
+> Headless browser for agents (CLI and MCP). Runs on the user's machine.
 
-hwatu is AI-first: the primary user is a coding agent verifying web
-UIs in its inner loop, headlessly, without stealing focus. Jcode
-drives it natively as its `browser` backend; other integrations are a
-one-line JSON protocol over a Unix socket, a CLI mirroring it, and
-`hwatu mcp`, a Model Context Protocol server over stdio for Claude
-Code, Cursor, and other MCP clients. Agent-facing tools: `check`
-(open+load+eval+screenshot+diff+close in one call), `verify`
-(repo-level contract with preflight, dev server, viewport sweep,
-evidence report), pixel `diff` with match percent and significant
-regions, `snapshot`/`click`/`type`/`expect`/`console`/`net`
-automation, `motion`/`seek`/`clock` for animations as numbers, file
-upload, full-page screenshots, and safe CAPTCHA/anti-bot challenge
-hand-off via `hwatu challenge --wait` for manual user resolution.
-hwatu detects and waits for challenges; it does not provide automatic
-CAPTCHA bypass, solver API integration, token injection, or
-fingerprint stealth.
+hwatu is driven by agents through a CLI and MCP. Linux is supported today.
+macOS and Windows are targets.
 
-The human side serves the hand-off: `hwatu focus <id>` materializes an
-agent's live headless session as a normal window in the user's tiling
-WM, so a person can solve a challenge or inspect a page, then the
-agent resumes the same session. The human side is also a credible
-primary browser for tiling WMs (Hyprland, sway, niri), which makes the
-hand-off land in a window that behaves like every other window,
-while intentionally excluding tabs, sync, an extension platform, and
-a password store of its own.
+Commands: act (`goto`, `click`, `type`, `fill`, `scroll`, `upload`), observe
+(`snapshot`, `content`, `eval`, `shot`, `console`, `net`), assert (`expect`,
+`diff`, `motion`). `hwatu batch` runs a sequence in one call.
+
+Skills live in the agent harness. A skill is a `SKILL.md` that calls `hwatu`
+commands. This project has no skill library.
+
+The browser is visible only through `show`. Login walls and irreversible
+actions (pay, send, delete) return structured stops, and the agent asks the
+user. CAPTCHAs are handled by the agent with `challenge`, `shot`, `snapshot`,
+`click --trusted`, and `type`. If a challenge cannot be cleared, `challenge`
+returns a structured block and the agent can hand off through `show`. There
+are no solver services, token injection, or fingerprint spoofing.
 
 ## Links
 
-- [Repository](https://github.com/hongnoul/hwatu): source code, issues, releases
-- [Agents guide](https://github.com/hongnoul/hwatu/blob/main/docs/agents.md): automation protocol for coding agents (the primary doc)
-- [Benchmarks](https://github.com/hongnoul/hwatu/blob/main/docs/benchmarks.md): measured spawn latency, verification-loop cost, memory
-- [Roadmap](https://github.com/hongnoul/hwatu/blob/main/docs/roadmap.md): AI-first plan of record, non-goals
-- [README](https://github.com/hongnoul/hwatu/blob/main/README.md): install and usage
+- [Repository](https://github.com/hongnoul/hwatu)
+- [Vision](https://github.com/hongnoul/hwatu/blob/main/VISION.md)
+- [Agent guide](https://github.com/hongnoul/hwatu/blob/main/docs/agents.md)
+- [Benchmarks](https://github.com/hongnoul/hwatu/blob/main/docs/benchmarks.md)
+- [Roadmap](https://github.com/hongnoul/hwatu/blob/main/docs/roadmap.md)

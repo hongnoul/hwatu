@@ -16,7 +16,7 @@ body:
         - Connect an agent
         - Verify a page
         - Repeat an existing workflow
-        - Human hand-off
+        - Show (visible session)
         - Other
     validations:
       required: true
@@ -55,7 +55,7 @@ body:
     id: environment
     attributes:
       label: Environment
-      description: Include OS, compositor/session, WebKitGTK version, agent or harness, and the hwatud startup line when relevant.
+      description: Include OS, session type, WebKitGTK version, agent or harness, and the hwatud startup line when relevant.
       placeholder: Arch Linux, Wayland/Sway, WebKitGTK 6.0 ..., Claude Code via MCP
     validations:
       required: true

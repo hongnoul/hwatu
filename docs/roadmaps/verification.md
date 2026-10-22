@@ -258,3 +258,23 @@ the overlay restores success. Generated resident-watch JavaScript has unit
 coverage for all five samples and the scroll path. The first-render workflow
 in `docs/agents.md` now teaches agents to establish DOM, rendered, and runtime
 invariants before seeding a screenshot baseline.
+
+## Coverage of the earlier extension bridge
+
+Shipped in six tiers (C1 to C6) after auditing a 33-action extension bridge
+against the protocol. 21 actions already had equivalents. The additions:
+
+- C1: `list_frames`. Cross-origin frames are reported with
+  `accessible: false` because WebKitGTK has no public cross-origin script
+  entry.
+- C2: `get_content`, `fill_form`.
+- C3: `fork`, `list_forks`, `try_until`. A fork is a headless window on the
+  source profile. `try_until` gives each alternative `min(remaining, 2s)`.
+- C4: `scout`, bounded to depth 2, 10 pages, same host.
+- C5: `list_downloads`, `drop_file`, `auth_context`. `auth_context` reads
+  cookie and storage key names, not values.
+- C6: `fill_login`. Secrets go into page script only and replies carry field
+  names and counts.
+
+Deferred: a WebAuthn virtual authenticator per profile and cross-origin
+frame scripting, both pending upstream WebKitGTK APIs.

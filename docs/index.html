@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta
       name="description"
-      content="hwatu is a headless verification browser for AI coding agents: a warm WebKitGTK daemon, 35 ms one-call verify passes, live headless-to-headed hand-off into your tiling WM."
+      content="A headless browser for agents, driven through a CLI and MCP. Linux today, macOS and Windows planned."
     />
     <link rel="canonical" href="https://hongnoul.github.io/hwatu/" />
     <meta
@@ -14,7 +14,7 @@
     />
     <meta
       property="og:description"
-      content="One-call, 35 ms headless verification with live agent-to-human hand-off."
+      content="Headless browser for agents (CLI and MCP)."
     />
     <meta property="og:type" content="website" />
     <meta property="og:url" content="https://hongnoul.github.io/hwatu/" />
@@ -35,7 +35,7 @@
     />
     <meta
       name="twitter:description"
-      content="One-call, 35 ms headless verification with live agent-to-human hand-off."
+      content="Headless browser for agents (CLI and MCP)."
     />
     <meta
       name="twitter:image"
@@ -238,11 +238,9 @@
         />
         <h1>hwatu</h1>
         <p class="tagline">
-          Headless UI verification for coding agents.<br />
-          A warm WebKit daemon: 35 ms one-call verify passes,
-          pixel-diff scores an agent can climb, and windows that
-          never steal focus. When a human is needed,
-          <code>focus</code> hands off the live session.
+          A headless browser that runs on the user's machine and is driven by
+          agents through a CLI and MCP. Target platforms: Linux, macOS,
+          Windows.
         </p>
         <div class="install">
           <code id="install-cmd"
@@ -261,81 +259,25 @@
           <a href="https://github.com/hongnoul/hwatu/releases/latest"
             >Releases</a
           >
-          · MIT · Linux
-        </p>
-        <div class="stats" title="Measured on an i7-12650H, WebKitGTK 2.52, Wayland. See docs/benchmarks.md">
-          <div class="stat">
-            <span class="n">13 ms</span>
-            <span class="l">median window spawn</span>
-          </div>
-          <div class="stat">
-            <span class="n">35 ms</span>
-            <span class="l">verify pass: open→eval→screenshot→close (warm Playwright: 82 ms)</span>
-          </div>
-          <div class="stat">
-            <span class="n">~56 MB</span>
-            <span class="l">per extra window (PSS)</span>
-          </div>
-          <div class="stat">
-            <span class="n">117k</span>
-            <span class="l">adblock rules, 0 JS</span>
-          </div>
-        </div>
-        <p class="links">
-          <a
-            href="https://github.com/hongnoul/hwatu/blob/main/docs/benchmarks.md"
-            >measured, not estimated → benchmarks</a
-          >
+          · MIT · Linux today
         </p>
       </section>
 
       <section>
-        <h2>Onboarding</h2>
-        <p><strong>Install → Detect workflow → Connect agent → Verify page → Hand off to human</strong></p>
-        <pre><code>curl -fsSL https://raw.githubusercontent.com/hongnoul/hwatu/main/scripts/install.sh | bash
-hwatu setup                                      # detect; changes nothing
-hwatu doctor                                     # dependency + rendered smoke test
-hwatu setup --client claude --scope project --dry-run
-hwatu setup --client claude --scope project      # explicit opt-in
-hwatu demo                                       # headless verification tour</code></pre>
-        <ul>
-          <li><strong>Install.</strong> Download the client and daemon; check WebKitGTK.</li>
-          <li><strong>Detect.</strong> Find Claude Code, Cursor, Jcode, and generic MCP workflows.</li>
-          <li><strong>Connect.</strong> Native Jcode socket, standard MCP, or plain CLI.</li>
-          <li><strong>Verify.</strong> Open, inspect, and screenshot a real rendered page headlessly.</li>
-          <li><strong>Hand off.</strong> Promote the same live session only when human judgment is needed.</li>
-        </ul>
-        <p class="muted">
-          Bare <code>hwatu setup</code> never edits agent configuration. Every
-          mutation names its target first, supports <code>--dry-run</code>, and
-          can be reversed with <code>--undo</code>. Use
-          <code>--scope project</code> for shareable config or
-          <code>--scope user</code> for personal config.
-        </p>
-      </section>
-
-      <section>
-        <h2>Why</h2>
+        <h2>Quick start</h2>
+        <pre><code>hwatu doctor
+hwatu goto localhost:3000
+hwatu snapshot                  # page state as data
+hwatu click @e3
+hwatu type @e5 "Test User"
+hwatu expect text "Saved"
+hwatu shot /tmp/after.png
+hwatu show                      # render the live session for a person</code></pre>
         <p>
-          Browsers conflate two things: the engine (slow to start, RAM-hungry)
-          and the window (what you actually ask for). hwatu splits them, the
-          same way <code>emacsclient</code> and <code>wezterm</code> do:
-        </p>
-        <ul>
-          <li>
-            <strong><code>hwatud</code></strong> owns WebKitGTK 6, a prewarmed
-            WebView pool, and all windows.
-          </li>
-          <li>
-            <strong><code>hwatu</code></strong> is a thin client: one
-            Unix-socket roundtrip to open a window.
-          </li>
-        </ul>
-        <p>
-          Measured: <strong>13 ms median</strong> (p90 35 ms) from
-          <code>hwatu &lt;url&gt;</code> to a mapped, loading window on a warm
-          daemon; background and headless opens land at 14-16 ms. The
-          first-ever window pays a one-time engine/GPU init. Full data:
+          Full command reference:
+          <a href="https://github.com/hongnoul/hwatu/blob/main/docs/agents.md"
+            >docs/agents.md</a
+          >. Measurements:
           <a
             href="https://github.com/hongnoul/hwatu/blob/main/docs/benchmarks.md"
             >docs/benchmarks.md</a
@@ -344,205 +286,28 @@ hwatu demo                                       # headless verification tour</c
       </section>
 
       <section>
-        <h2>For coding agents</h2>
+        <h2>Skills</h2>
         <p>
-          This is the primary use case. The daemon is a headless
-          verification harness for AI coding agents: real WebKit,
-          14 ms headless windows, a 35 ms one-call
-          open→wait→eval→screenshot→close pass
-          (<code>hwatu check</code>), one JSON protocol over the Unix
-          socket. Jcode drives it natively as its <code>browser</code>
-          backend. Full guide:
-          <a href="https://github.com/hongnoul/hwatu/blob/main/docs/agents.md"
-            >docs/agents.md</a
-          >; verification plan:
-          <a href="https://github.com/hongnoul/hwatu/blob/main/docs/roadmaps/verification.md"
-            >docs/roadmaps/verification.md</a
-          >; portfolio:
-          <a href="https://github.com/hongnoul/hwatu/blob/main/docs/roadmap.md"
-            >docs/roadmap.md</a
-          >.
-        </p>
-        <pre><code>hwatu --headless localhost:3000    # live session, no window at all
-hwatu check localhost:3000 --eval 'document.title' --shot=/tmp/c.png
-                                   # one-call verify pass, ~35 ms
-hwatu eval 'document.title'        # run JS in the page, JSON out
-hwatu goto /checkout               # navigate + wait for the load
-hwatu shot /tmp/page.png           # screenshot (--full = whole document)
-hwatu scroll h2 --contains Total   # scroll into view, reports what it hit
-hwatu upload 'input[type=file]' ./fixture.png
-hwatu focus 3                      # hand the session to the human</code></pre>
-        <p class="muted">
-          Agent CLIs (jcode, Claude Code, Codex, Cursor, ...) are
-          auto-detected and default to <code>--headless</code>, so
-          verification never steals your focus. <code>focus</code> promotes
-          any headless or background window to a normal one, session
-          intact.
+          Skills live in the agent harness. A skill is a
+          <code>SKILL.md</code> that calls <code>hwatu</code> commands. This
+          project has no skill library or registry.
         </p>
       </section>
 
       <section>
-        <h2>Compared</h2>
+        <h2>Human involvement</h2>
         <p>
-          As a minimal human browser for a tiling WM (Hyprland, sway, niri,
-          river), the usual suspects trade differently. Since v0.7.0
-          hwatu's human UI is a credible primary browser: mainstream
-          rebindable keybinds, media-correct video, unified shortform
-          controls, and Chromium-curve scrolling, while still excluding
-          tabs, sync, and an extension platform. For a keyboard-maximalist
-          daily driver with history completion and password fill today,
-          qutebrowser remains the pick.
-        </p>
-        <table>
-          <tr>
-            <th></th>
-            <th>hwatu</th>
-            <th>surf</th>
-            <th>qutebrowser</th>
-            <th>luakit</th>
-          </tr>
-          <tr>
-            <td>Window spawn</td>
-            <td>13 ms median (warm daemon)</td>
-            <td>engine start per window</td>
-            <td>engine start</td>
-            <td>engine start</td>
-          </tr>
-          <tr>
-            <td>Engine</td>
-            <td>WebKitGTK 6</td>
-            <td>WebKitGTK 2</td>
-            <td>QtWebEngine</td>
-            <td>WebKitGTK 2</td>
-          </tr>
-          <tr>
-            <td>Tabs</td>
-            <td>none, WM tiles</td>
-            <td>none</td>
-            <td>built-in</td>
-            <td>built-in</td>
-          </tr>
-          <tr>
-            <td>Keyboard UI</td>
-            <td>mainstream binds + WM binds</td>
-            <td>patches</td>
-            <td>browser binds</td>
-            <td>lua config</td>
-          </tr>
-          <tr>
-            <td>Memory model</td>
-            <td>one shared engine, N views</td>
-            <td>process per window</td>
-            <td>one big process</td>
-            <td>one process</td>
-          </tr>
-        </table>
-      </section>
-
-      <section>
-        <h2>Philosophy</h2>
-        <ul>
-          <li>
-            <strong>Agent-first.</strong> The primary user opens windows over
-            a socket and reads pages as JSON. The human UI serves the
-            hand-off, and since v0.7.0 doubles as a primary tiling-WM
-            browser.
-          </li>
-          <li>
-            <strong>No tabs.</strong> A tab is a window. Your tiling WM is the
-            tab manager.
-          </li>
-          <li><strong>No chrome.</strong> The WebView is the whole window.</li>
-          <li>
-            <strong>Real rendering.</strong> Full WebKit: JS, CSS, media,
-            WebGL, as the frontend intended. No custom half-engine.
-          </li>
-          <li>
-            <strong>Spawn speed precedes everything.</strong> Every engine knob
-            is paid on the daemon's idle path, never at window open. A
-            spawn-latency benchmark gates every change.
-          </li>
-        </ul>
-      </section>
-
-      <section>
-        <h2>Usage</h2>
-        <pre><code>hwatu                      # open the launcher (autostarts hwatud)
-hwatu example.com          # open a URL (https:// implied)
-hwatu list                 # id, url, title of every window
-hwatu close 2              # close window 2
-hwatu quit                 # stop the daemon</code></pre>
-        <p>
-          <code>Ctrl+w</code> (or <code>Ctrl+q</code>) closes the focused window.
-          <code>Ctrl+Shift+j</code> / <code>Ctrl+Shift+k</code> scroll the
-          page down/up by half a viewport. The daemon and engine
-          stay warm.
-        </p>
-      </section>
-
-      <section>
-        <h2>Tuning</h2>
-        <p>
-          No config file. Engine knobs are set to their correct values in code
-          (GPU compositing always on).
-          The only surface is environment variables:
-        </p>
-        <table>
-          <tr>
-            <th>Variable</th>
-            <th>Meaning</th>
-          </tr>
-          <tr>
-            <td><code>HWATU_HOME</code></td>
-            <td>
-              Page opened by a bare <code>hwatu</code>. Defaults to the
-              built-in launcher (keybind cheat sheet + URL bar).
-            </td>
-          </tr>
-          <tr>
-            <td><code>HWATU_DISCARD_SECS</code></td>
-            <td>
-              Seconds an unfocused window keeps its live WebView before being
-              suspended to save RAM (default 120, 0 disables).
-            </td>
-          </tr>
-          <tr>
-            <td><code>HWATU_WEBKIT_FEATURES</code></td>
-            <td>
-              <code>Ident:on,Other:off</code>: flip individual WebKit runtime
-              features on odd hardware. Unknown identifiers are ignored.
-            </td>
-          </tr>
-        </table>
-        <p class="muted">
-          Standard <code>WEBKIT_*</code> and <code>GSK_RENDERER</code>
-          variables pass through untouched. Scrolling smoothness scales with
-          your distro's WebKitGTK: 2.46+ paints with Skia on the GPU.
-        </p>
-      </section>
-
-      <section>
-        <h2>Architecture</h2>
-        <pre><code>hwatu &lt;url&gt;  --unix socket--&gt;  hwatud (GTK main loop)
-                                 ├── prewarmed WebView (adopted instantly,
-                                 │   next one warmed in idle time)
-                                 ├── window registry (id -&gt; WebView)
-                                 └── WebKit: shared network process,
-                                     per-site web processes</code></pre>
-        <p>
-          Unfocused windows are suspended after a timeout: history is
-          serialized, the web process is killed, and RAM comes back. Focus
-          restores them instantly from the prewarm pool.
+          The browser is headless and becomes visible only through
+          <code>show</code>. Login walls and irreversible actions return
+          structured stops that the agent relays to the user. CAPTCHAs are
+          handled by the agent with <code>challenge</code>, <code>shot</code>,
+          <code>click --trusted</code>, and <code>type</code>.
         </p>
       </section>
 
       <footer>
         <a href="https://github.com/hongnoul/hwatu">github.com/hongnoul/hwatu</a>
         · MIT license
-        ·
-        <a href="blog/13ms-window-spawn.html"
-          >blog: why windows spawn in 13ms</a
-        >
         <br />
         Boar card by
         <a href="https://commons.wikimedia.org/wiki/File:Hanafuda_July_Tane.svg"

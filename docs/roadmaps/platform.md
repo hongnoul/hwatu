@@ -1,25 +1,23 @@
 # Shared browser platform roadmap
 
-Status: current as of 2026-08. This is the plan of record for capabilities
-shared by the AI verification product and the tiling-WM browser. Portfolio
-policy and cross-product priority live in the [roadmap index](../roadmap.md).
+Status: current as of 2026-10. This is the plan of record for platform
+capabilities behind the CLI and MCP adapters. Priorities live in the
+[roadmap](../roadmap.md).
 
 ## Outcome
 
 One warm daemon owns native web views and exposes one additive, versioned
-protocol. Verification and browser-shell features share live sessions without
-sharing product policy. A session may move between background agent work and a
-visible human window without replacement or state loss.
+protocol. A session is headless by default and `show` renders it as a visible
+window without replacement or state loss.
 
 The durable cross-platform architecture and backend exit gates remain in the
 [vision](../../VISION.md). This roadmap tracks product-facing platform work.
 
 ## Dependency rule
 
-The platform is the only upstream. When either product discovers a reusable
-capability, extract its engine-neutral contract here, add protocol and
-conformance coverage, then let both products consume it. Do not copy code
-between products and do not make verification depend on the browser shell.
+Adapters (CLI, MCP, integrations) consume the platform protocol. A reusable
+capability gets an engine-neutral contract here, with protocol and
+conformance coverage.
 
 ## Concurrency and isolation
 
@@ -52,12 +50,12 @@ between products and do not make verification depend on the browser shell.
    run without an existing Wayland/X session. Implementation details and
    regression gates are recorded under [Display-free operation](#display-free-operation).
 
-## Human hand-off
+## Hand-off through `show`
 
 10. **Generalized hand-off.** **Shipped 2026-08-08** together with
    item 11: `hwatu handoff <id> --reason <text> [--now]` — `--now`
-   materializes immediately with the reason in the bar (the
-   challenge pattern generalized to any reason).
+   calls `show` immediately and records the reason (the challenge
+   pattern generalized to any reason).
 11. **Hand-off queue.** **Shipped 2026-08-08:** queueing is the
    default (`hwatu handoff` without `--now`); `hwatu handoffs` lists
    pending entries with measured waiting_secs; `hwatu handoffs <id>`
@@ -69,7 +67,7 @@ between products and do not make verification depend on the browser shell.
    and the structured-error paths.
    Original scope for both items: `challenge` already detects
    CAPTCHAs; generalize the pattern: agent flags "needs human" with
-   a reason, the window materializes with the reason in the bar, the
+   a reason, `show` renders the window with the reason, the
    agent awaits resolution. The async half: queue instead of
    materializing, and the human drains the queue on their own
    schedule. Respects flow: an agent that needs a human at 14:02
@@ -124,7 +122,7 @@ none), supervises it orphan-free via a PDEATHSIG-holding wrapper
 (Linux clears PDEATHSIG on exec of file-caps binaries like distro
 sway), and probes /dev/dri/renderD* to fall back to software
 rendering (WEBKIT_DISABLE_DMABUF_RENDERER=1, LIBGL_ALWAYS_SOFTWARE=1,
-WLR_RENDERER=pixman) on GPU-less boxes. `focus` returns a structured
+WLR_RENDERER=pixman) on GPU-less boxes. `show` returns a structured
 "no display" error. The CI job "Display-free behavioral (G4)" runs
 `scripts/test-display-free.sh` (13 checks incl. 100% pixel parity vs
 a compositor-hosted run and orphan checks under quit/SIGKILL) on
@@ -148,14 +146,14 @@ Test plan:
 - CI: a GitHub Actions job running the behavioral suite headless.
   This item is done when that job is green on main, because that job
   IS the use case.
-- Hand-off boundary: `focus` on a display-free daemon must return a
+- Hand-off boundary: `show` on a display-free daemon must return a
   structured "no display" error, not crash.
 
 ## Zero-copy pixels
 
 Screenshot/diff currently round-trip PNG through disk (~14 ms encode
 + write + client re-read). Add a shared-memory path: `shot --shm` /
-diff-on-texture, PNG only when a human or model actually consumes
+diff-on-texture, PNG only when a person or model actually consumes
 the image. Target: sub-5 ms observed pixels, diff without any encode.
 
 Test plan:

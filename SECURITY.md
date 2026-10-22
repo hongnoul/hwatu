@@ -4,7 +4,7 @@
 
 hwatu is a local browser daemon for trusted local operators and trusted local automation. The `hwatud` daemon owns WebKitGTK browser windows and normally listens on a Unix-domain socket resolved by the `hwatu-ipc` crate under the current user's runtime directory. An optional bearer-authenticated TCP listener binds loopback only and is intended for an SSH tunnel. Neither transport is an Internet-facing API or an authorization boundary between mutually distrusting processes running as the same user.
 
-Treat any process that can connect to the hwatu socket as able to drive the browser session. By default that includes opening pages, clicking, typing, reading page state, taking screenshots, and running page JavaScript through eval-capable automation. The human can see the same live session the agent drives, including authenticated pages and cookies.
+Treat any process that can connect to the hwatu socket as able to drive the browser session. By default that includes opening pages, clicking, typing, reading page state, taking screenshots, and running page JavaScript through eval-capable automation. `show` renders the same live session the agent drives, including authenticated pages and cookies.
 
 ## Loopback TCP transport
 

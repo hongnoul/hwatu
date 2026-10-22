@@ -13,7 +13,7 @@ design. Full data and every caveat in the
 [head-to-head section](#head-to-head-hwatu-vs-playwright--headless-chromium).
 
 Every number below was measured on a real run, not estimated. Rerun
-them yourself: the spawn benchmark is `scripts/bench-spawn.sh`, the
+them yourself: the
 head-to-head is `scripts/bench-vs-playwright.mjs`, the token/context
 budget check is `scripts/bench-tokens.mjs`, and the rest are a few
 lines of shell against the release binaries.
@@ -23,27 +23,6 @@ WebKitGTK 2.52.5, hwatu built with `cargo build --release`.
 Measured 2026-07-19, remeasured 2026-07-25 after the composite-check
 work. Page under test: a local 40-card HTML fixture served by
 `python3 -m http.server` on loopback.
-
-## Window spawn latency
-
-Time from `hwatu <url>` to a mapped (or realized, for headless),
-loading window on a warm daemon. 20 runs per mode, window closed
-between runs, 250 ms gap so the prewarm pool refills on the idle path.
-
-| mode | min | median | p90 | max |
-|---|---|---|---|---|
-| focused (default) | 8 ms | 13 ms | 35 ms | 49 ms |
-| `--background` | 13 ms | 16 ms | 16 ms | 16 ms |
-| `--headless` | 12 ms | 14 ms | 15 ms | 15 ms |
-
-Notes:
-
-- Background and headless are *steadier* than focused: no compositor
-  activation request, so no WM in the timing path.
-- The very first window after daemon start pays one-time engine/GPU
-  init: 181-407 ms observed. Every window after that is in the table.
-- Budget-gated: `scripts/bench-spawn.sh` fails CI-style if the median
-  exceeds `HWATU_BENCH_MAX_MS` (default 60).
 
 ## Cost of one verification loop
 
@@ -348,7 +327,7 @@ contexts cost ~260 MB (not GBs).
 What the table does not capture, and why hwatu still exists:
 
 - **Real windows.** hwatu renders every page GPU-composited and
-  WM-mappable; headless-shell renders offscreen only. `hwatu focus`
+  WM-mappable; headless-shell renders offscreen only. `hwatu show`
   can hand any session to a human mid-run. Playwright headless has no
   equivalent at any price; headed Chromium costs far more than the
   table shows.
@@ -398,8 +377,7 @@ with `node scripts/bench-vs-playwright.mjs`.
 ## Methodology
 
 - Spawn latency is reported by the daemon itself (request receipt to
-  window map/realize) and printed by the client; the harness only
-  parses it. See `scripts/bench-spawn.sh`.
+  window map/realize) and printed by the client.
 - Loop timings are wall-clock around each CLI invocation
   (`date +%s%3N` deltas), so they include client startup, one
   Unix-socket roundtrip, and daemon work: what an agent actually pays.

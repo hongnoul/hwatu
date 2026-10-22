@@ -1,6 +1,6 @@
 # macOS WKWebView feasibility probes
 
-Raw probes behind [`docs/research-macos-headless.md`](../../../docs/research-macos-headless.md).
+Raw probes behind the macOS section of [`docs/roadmaps/native-platforms.md`](../../../docs/roadmaps/native-platforms.md).
 They are deliberately standalone: no Xcode project, no `.app` bundle, no
 signature. Each is a single `swiftc` file so the result cannot be confused
 with something that only works inside an app bundle.

@@ -2,20 +2,18 @@
 
 Bug reports, patches, and packaging work are all welcome.
 
-## Priorities
+## Scope
 
-hwatu is one shared browser platform with two products. AI verification remains
-first when shared-runtime priorities conflict. The tiling-WM browser has its own
-accepted daily-driver roadmap rather than being frozen at hand-off quality.
-Choose the relevant plan before proposing work:
+hwatu is one product: a headless browser driven by agents through a CLI and
+MCP. [VISION.md](VISION.md) defines scope and constraints. Plans:
 
-- [AI verification](docs/roadmaps/verification.md)
-- [Tiling-WM browser](docs/roadmaps/browser.md)
+- [Roadmap](docs/roadmap.md)
+- [Verification](docs/roadmaps/verification.md)
 - [Shared platform](docs/roadmaps/platform.md)
+- [Native platforms](docs/roadmaps/native-platforms.md)
 
 Reusable behavior moves into the platform through an explicit capability and
-tests. Do not make verification depend on browser-shell policy or duplicate
-runtime machinery between products.
+tests.
 
 ## Building
 
@@ -26,7 +24,7 @@ cargo clippy
 ```
 
 Run the daemon from a checkout with `target/debug/hwatud`, then drive it with
-`target/debug/hwatu <url>`.
+`target/debug/hwatu goto <url>`.
 
 ## Reporting bugs
 
@@ -44,10 +42,8 @@ reports become roadmap and regression work.
 
 ## Pull requests
 
-- Preserve the product boundary: agent-first verification, a focused tiling-WM
-  browser, and no tabs. The WM does window management. Check the
-  [roadmap index](docs/roadmap.md) and the relevant track before building a
-  feature.
+- Stay inside [VISION.md](VISION.md). Check the [roadmap](docs/roadmap.md)
+  and the relevant track before building a feature.
 - New engine knobs go in code with correct defaults, not in a config file.
 - `cargo test && cargo clippy` must pass.
 - One logical change per PR.

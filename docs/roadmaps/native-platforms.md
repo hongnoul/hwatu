@@ -48,8 +48,22 @@ Existing behavior and performance are regression constraints.
 WKWebView in a minimal host process. Per-user daemon, protected Unix socket,
 Apple-standard directories. The probes in
 [`scripts/probes/macos/`](../../scripts/probes/macos/) establish feasibility.
-Analysis lives in
-[`docs/research-macos-headless.md`](../research-macos-headless.md).
+
+Probe results (unsigned `swiftc` CLI, offscreen `WKWebView`, activation
+policy `.prohibited`):
+
+- Cold snapshot at 1024x768 logical takes 28 to 38 ms at 2x backing scale.
+  Warm snapshot takes 2 ms. Warm `evaluateJavaScript` takes under 1 ms.
+- Eight concurrent views on one `WKProcessPool` load in 555 ms total.
+- Launch to first snapshot is about 610 ms cold. A stripped environment
+  (`env -i`) works.
+- A cookie written by one process is read by another through
+  `WKWebsiteDataStore.default()`.
+- WAAPI seek renders the sought state offscreen.
+- `requestAnimationFrame` runs at 0 to 1 frames per second offscreen,
+  including with `orderFrontRegardless()` and a non-activating panel.
+- `launchctl asuser 0` failed, so a session without a logged-in Aqua user
+  is unproven.
 
 - A CLI binary with `activationPolicy = .prohibited` loads, evaluates, and
   snapshots an offscreen `WKWebView` with no dock icon and no focus steal.

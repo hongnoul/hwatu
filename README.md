@@ -1,284 +1,91 @@
-<div align="center">
-
 # hwatu
 
 [![Latest Release](https://badgen.net/github/release/hongnoul/hwatu?icon=github)](https://github.com/hongnoul/hwatu/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![CI](https://github.com/hongnoul/hwatu/actions/workflows/ci.yml/badge.svg)](https://github.com/hongnoul/hwatu/actions/workflows/ci.yml)
 
-**Headless UI verification for coding agents**
-
-<a href="https://github.com/hongnoul/hwatu/releases/download/readme-assets/demo-aiuc.mp4"><img src="https://github.com/hongnoul/hwatu/releases/download/readme-assets/demo-aiuc.webp" alt="An agent verifies aiuc.com with hwatu: one command returns pixel-match scores for four responsive viewports, then the live page pops into view for human hand-off" width="800"></a>
-
-</div>
-
-hwatu is a headless verification harness for coding agents: a warm
-WebKit daemon driven over CLI, MCP, or one JSON line per Unix-socket
-connection. Instead of "looks right to me", the agent gets **one-call
-verified page checks in ~35 ms**, **pixel-diff scores it can climb**,
-**animations as numbers**, and **headless windows that never steal
-focus**, at any parallelism. Jcode drives it natively as its `browser`
-backend. When a check needs a human (a CAPTCHA, a judgment call),
-`hwatu focus <id>` materializes the same live session as a real window.
-
-## Documents
-
-- [Agent guide](docs/agents.md): protocol, primitives, verification loops
-- [Benchmarks](docs/benchmarks.md): every number, measured, with methodology
-- [Vision](VISION.md): durable product principles, native platform strategy
-- [Human guide](docs/human.md): hwatu as a tiling-WM browser, keybinds, hand-off
-- [Roadmap](docs/roadmap.md): portfolio priorities and product boundaries
-  - [AI verification](docs/roadmaps/verification.md)
-  - [Tiling-WM browser](docs/roadmaps/browser.md)
-  - [Shared platform](docs/roadmaps/platform.md)
-  - [Native platforms](docs/roadmaps/native-platforms.md)
-- [macOS research](docs/research-macos-headless.md): measured WKWebView probes, competitor scan, and why macOS is verification-only
-- [Continuous improvement](docs/continuous-improvement.md): activation metric, feedback loop, weekly cadence
-- [Launch kit](docs/launch-kit.md): reusable copy, channels, and measurement plan
+A headless browser that runs on the user's machine and is driven by agents
+through a CLI and MCP. Target platforms: Linux, macOS, Windows.
 
 ## Install
 
-```bash
+Linux is supported today. macOS and Windows are targets and are not yet
+supported.
+
+```sh
 curl -fsSL https://raw.githubusercontent.com/hongnoul/hwatu/main/scripts/install.sh | bash
 ```
 
-One static binary plus your distro's `webkitgtk-6.0` (the installer
-checks). On Arch: `yay -S hwatu`. From source: `cargo build --release`.
-
-Then connect an agent:
+The installer places one binary and checks for `webkitgtk-6.0`. On Arch:
+`yay -S hwatu`. From source: `cargo build --release`.
 
 ```sh
-hwatu setup             # detect Claude Code, Cursor, Jcode, or MCP
+hwatu doctor            # check the install
+hwatu setup             # detect Claude Code, Cursor, Jcode, or MCP clients
 ```
 
-## Verification, not vibes
-
-- **"Pixel-perfect" is a claim. `match_percent: 97.49` is a measurement.**
-- **One tool call per page check, ~35 ms. The same pass through warm-server Playwright is 5 calls and ~9x slower.**
-- **Headless by default. No window pops, no focus stolen, you keep typing.**
-- **One static binary + your distro's webkitgtk. No Node, no 170 MB Chromium download.**
-
-`hwatu setup` detects supported coding agents without changing their
-config. Choose a client explicitly:
-
-```sh
-hwatu doctor
-hwatu setup --client claude --scope project --dry-run
-hwatu setup --client claude --scope project
-hwatu demo
-```
-
-Setup is previewable (`--dry-run`), idempotent, and reversible
-(`--undo`). Manual MCP configuration is one portable entry:
+`hwatu setup --dry-run` previews changes and `--undo` reverts them. Manual
+MCP configuration is one entry:
 
 ```json
 { "mcpServers": { "hwatu": { "command": "hwatu", "args": ["mcp"] } } }
 ```
 
-Or skip MCP: every command is a short CLI call or one newline-delimited
-JSON line over a Unix socket.
-
-Connecting hwatu makes its tools available; a project instruction tells
-the agent when to use them. Add this to `AGENTS.md`, `CLAUDE.md`, or
-Cursor rules:
-
-```markdown
-## Frontend verification
-
-Use Hwatu after frontend changes. Exercise the affected user journey and
-verify its intended visible, navigational, or persisted result with `expect`.
-A successful click or clean console is not proof of success. Check `console`
-for additional JavaScript and request failures after verifying the outcome.
-```
-
-Then make the task's proof concrete:
-
-```text
-Implement display-name editing on /settings. Use Hwatu to enter “Test User,”
-save it, verify the visible success state, reload, confirm persistence, and
-report any console errors.
-```
-
-The verification loop:
+## Quick start
 
 ```sh
-hwatu --headless localhost:3000        # its window; you never see it
-hwatu --headless staging.example.com   # the reference
-
-hwatu diff --id 2 --other 1 --heatmap /tmp/heat.png
-# {"match_percent":85.13,"regions":[{"x":0,"y":160,"w":2048,...}]}
-
-hwatu motion --id 1                    # the reference's animations, as numbers
-# easing cubic-bezier(0.25,1,0.5,1), 300ms, marquee 29.78px/s ...
-
-# ...agent edits code...
-
-hwatu diff --id 2 --other 1
-# {"match_percent":97.49}              # climbing beats guessing
+hwatu goto localhost:3000
+hwatu snapshot                      # page state as data
+hwatu click @e3
+hwatu type @e5 "Test User"
+hwatu expect text "Saved"           # assertion with polling
+hwatu shot /tmp/after.png
+hwatu show                          # render the live session for a person
 ```
 
-This loop took a clone of stripe.com's landing page from **85.1% to
-98.8% pixel match**. Reproduce it: [scripts/demo/](scripts/demo/). A
-second real-agent scenario (four responsive viewport diffs, then live
-human hand-off) with evidence manifests:
-[scripts/demo-aiuc/](scripts/demo-aiuc/).
-
-A full verification pass (open, load, eval, screenshot, close) is
-**one command, one tool call, ~35 ms median**
-([benchmarks](docs/benchmarks.md)):
+A sequence runs in one call. `batch` waits on page state instead of fixed
+delays and returns a result per step:
 
 ```sh
-hwatu check localhost:5173 --eval 'document.title' --shot=/tmp/after.png
-# {"title":"My App","eval":"My App","shot":"/tmp/after.png",
-#  "console":[...],"load_ms":13,"total_ms":35}
+hwatu batch steps.json
 ```
 
-For a repeatable repo-level contract that also owns the preflight, local dev
-server, responsive screenshots, source-staleness check, and evidence report:
+The full command set is in [docs/agents.md](docs/agents.md).
 
-```sh
-hwatu verify .hwatu/about.verify.json
-```
+## Skills
 
-The same executor is exposed to MCP clients as `verify_ui`, so agent
-harnesses do not rebuild the orchestration loop. See the
-[agent guide](docs/agents.md#verification-jobs-one-contract-for-every-harness).
+Skills live in the agent harness. A skill is a `SKILL.md` in the harness's
+skills folder that calls `hwatu` commands. This project has no skill
+library, registry, or file format. See [docs/agents.md](docs/agents.md).
 
-Generated HTML in hand and no server? `hwatu render` is the same
-one-call pass with the markup as input: no temp file, no
-`python3 -m http.server`:
+## Human involvement
 
-```sh
-echo '<h1>generated</h1>' | hwatu render --stdin --shot=/tmp/gen.png
-# {"rendered":true,"shot":"/tmp/gen.png","load_ms":5,"total_ms":28}
+The browser is headless and becomes visible only through `show`. When a
+person is needed, a command returns a structured stop and the agent relays
+it.
 
-# React to load, console, download, and window events without polling.
-hwatu watch --kinds load,console
-# {"event":"load","seq":1,"window_id":7,"data":{"state":"started",...}}
-```
+- Login walls are reported as `login_required`. The agent asks the user and
+  enters the value once. The session persists.
+- Irreversible actions (pay, place order, send, delete) return
+  `confirmation_required` until the user confirms in the current session.
+- CAPTCHAs and anti-bot challenges are handled by the agent with
+  `challenge`, `shot`, `snapshot`, `click --trusted`, and `type`. If the
+  challenge cannot be cleared, `challenge` returns a structured block and the
+  agent can hand off through `show`.
 
-MCP clients call `subscribe_events` for the same stream as
-`notifications/hwatu/event`. Full protocol and verification loops:
-[agent guide](docs/agents.md).
+## Documents
 
-Elsewhere, headless is decided at launch and a human can never see
-the session. In hwatu it is a window property, switchable live, in
-both directions: `hwatu focus <id>` promotes any headless session to
-a real window for the human, state intact.
+- [VISION.md](VISION.md)
+- [Agent guide](docs/agents.md)
+- [Benchmarks](docs/benchmarks.md)
+- [Roadmap](docs/roadmap.md)
+  - [Verification](docs/roadmaps/verification.md)
+  - [Shared platform](docs/roadmaps/platform.md)
+  - [Native platforms](docs/roadmaps/native-platforms.md)
+- [Continuous improvement](docs/continuous-improvement.md)
+- [SECURITY.md](SECURITY.md)
+- [CONTRIBUTING.md](CONTRIBUTING.md)
 
-`challenge` is detection and hand-off only, by design: no solver
-APIs, no token injection, no fingerprint games.
+## License
 
-## The hand-off destination
-
-The hand-off works because hwatu is also a real browser, built for
-tiling WMs. `hwatu <url>` opens a window like your terminal opens a
-shell (your WM is the tab bar, there is none in the window):
-mainstream keybinds (`ctrl+l`, `ctrl+f`, `ctrl+k` palette,
-rebindable), native ad blocking (~119k EasyList rules compiled into
-WebKit's content-extension engine, zero JS in the request path),
-Chromium-curve scrolling, and unified shortform controls. Every
-window shares the one warm daemon (~56 MB per extra window),
-suspends when unfocused, and crash-restores at its last URL. Honest
-gaps: no Widevine or passkeys in WebKitGTK. WM configs
-([hyprland](examples/hyprland.conf), [sway](examples/sway.config),
-[niri](examples/niri.kdl)), keybinds, and setup:
-[docs/human.md](docs/human.md).
-
-<a href="https://github.com/hongnoul/hwatu/releases/download/readme-assets/demo-shortform.mp4"><img src="https://github.com/hongnoul/hwatu/releases/download/readme-assets/demo-shortform.webp" alt="hwatu as the hand-off destination: quarter-width window spawns and Chromium-curve scrolling in a tiling WM" width="800"></a>
-
-## Features
-
-- [x] Headless / background / focused as a *per-window* property, switchable live
-- [x] Human hand-off: `hwatu focus <id>` drops the live session into your tiling WM
-- [x] Pixel-diff scoring: match percent + diff regions + heatmap (`diff`)
-- [x] Animations as numbers: duration, easing, velocity (`motion`)
-- [x] Deterministic animation frames: pin all animations at time t (`seek`)
-- [x] Page state as JSON, tokens not pixels (`snapshot`)
-- [x] Real input events with structured errors (`click` / `type` / `scroll` / `upload`)
-- [x] JS errors, console output, failed requests (`console`)
-- [x] Push event subscriptions as JSON lines or MCP notifications (`watch`)
-- [x] One-call page assertions with polling (`expect`)
-- [x] CAPTCHA / anti-bot detection with structured wait/resume (`challenge`)
-- [x] MCP server, plain CLI, and a 1-line JSON socket protocol
-- [x] A real browser as the hand-off destination: keybinds, media, ad blocking, crash restore
-
-## Why not Playwright or chrome-devtools-mcp?
-
-Three ways to give an agent a browser:
-
-| | How it runs | What it costs the agent loop |
-|---|---|---|
-| **Cold library** (Playwright, launched per task) | engine starts when the script does | fast to *call*, slow to *run*: every check pays engine startup; no state survives between tasks |
-| **Warm browser** (your Chrome + devtools-mcp) | a full human browser stays resident | resources spent on tabs, extensions, sync, UI you never render, and its windows steal *your* focus while you work |
-| **hwatu** | **"the coldest warm daemon"**: engine hot, everything else absent | 8 ms spawns, 35 ms verified checks, invisible until *you* ask to see it (`focus`), interruptible in both directions |
-
-hwatu keeps exactly what makes checks instant (engine, GPU context,
-compiled adblock, a prewarmed WebView) and nothing that serves a
-human *unless that human asked for a window*. That is why it idles
-warm without a tab bar, and why a kept-warm Playwright server driven
-the same way costs 341 ms per client to hwatu's 39
-([benchmarks](docs/benchmarks.md)).
-
-The second difference is what comes back. Playwright and
-chrome-devtools-mcp are automation APIs: they let an agent *drive* a
-browser, then hand back raw screenshots and DOM to eyeball. hwatu is
-a *verification* browser: the measurement primitives (`check`,
-`diff`, `motion`, `expect`) are built in, a window costs 13 ms, and
-headless is a window property, not a launch mode.
-
-## How hwatu compares
-
-**Legend:** ✅ Yes / built-in  ·  🟡 Partial / limited  ·  ❌ No
-
-| Capability | Playwright | chrome-devtools-mcp | hwatu |
-| --- | :---: | :---: | :---: |
-| Verify pass (load + eval + screenshot), warm in-process | 82 ms | n/a | **35 ms** |
-| Verify pass as a warm *service* (fresh client per check) | 341 ms | n/a | **39 ms** |
-| Tool calls per verify pass | 5 | 5 | **1** |
-| Pixel-diff score + regions + heatmap | 🟡 1 | ❌ | ✅ |
-| Animations as numbers, pinned mid-flight | ❌ 2 | 🟡 3 | ✅ |
-| Headless ↔ headed on a *live* session | ❌ | ❌ | ✅ |
-| Human hand-off mid-session, state intact | ❌ | ❌ | ✅ |
-| No focus stealing at N parallel agents | 🟡 4 | 🟡 4 | ✅ |
-| CAPTCHA detection + structured wait/resume | ❌ | ❌ | ✅ |
-| No Node, no per-version browser download | ❌ | ❌ | ✅ |
-
-1 `toHaveScreenshot` compares against stored goldens: pass/fail for
-test suites, not a score an agent can climb.
-
-2 Standard practice is to disable animations or fast-forward to the
-end state to avoid flakes.
-
-3 Raw CDP can query animation state, but there is no numeric
-summary of easing/velocity/keyframes.
-
-4 Fine headless; every headed window pops and takes focus.
-
-> Comparison reflects each project at the time of writing;
-> corrections are welcome. Honest caveats: Playwright still wins
-> cold start (190 vs 435 ms, paid once per boot) and memory; hwatu
-> renders WebKit not Chromium (keep a Playwright matrix in CI for
-> engine-specific bugs), and it is Linux-only today. Full
-> head-to-head data and methodology:
-> [docs/benchmarks.md](docs/benchmarks.md).
-
-**What about Claude in Chrome?** Different category. Claude in
-Chrome is one agent product driving *your* Chrome through an
-extension, sharing your profile, tabs, and focus, callable by nothing
-else. hwatu is a client-agnostic daemon any agent calls over CLI/MCP,
-with its own warm WebKit engine, headless by default, and
-verification primitives built in. Use Claude in Chrome to let Claude
-browse alongside you; use hwatu when agents need cheap, repeated,
-measurable page checks.
-
-## Feedback
-
-A successful check, a failed install, a missing keybind, and a site
-that broke are all useful signals. Share a two-minute
-[use report](https://github.com/hongnoul/hwatu/issues/new?template=use-report.yml)
-or [report a bug](https://github.com/hongnoul/hwatu/issues/new?template=bug-report.yml).
-
----
-
-MIT licensed. Linux. WebKitGTK 6.
+MIT. See [LICENSE](LICENSE).
