@@ -31,6 +31,7 @@ backend. When a check needs a human (a CAPTCHA, a judgment call),
   - [AI verification](docs/roadmaps/verification.md)
   - [Tiling-WM browser](docs/roadmaps/browser.md)
   - [Shared platform](docs/roadmaps/platform.md)
+  - [Native platforms](docs/roadmaps/native-platforms.md)
 - [macOS research](docs/research-macos-headless.md): measured WKWebView probes, competitor scan, and why macOS is verification-only
 - [Continuous improvement](docs/continuous-improvement.md): activation metric, feedback loop, weekly cadence
 - [Launch kit](docs/launch-kit.md): reusable copy, channels, and measurement plan
