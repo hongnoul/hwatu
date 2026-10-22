@@ -24,5 +24,3 @@ are no solver services, token injection, or fingerprint spoofing.
 - [Repository](https://github.com/hongnoul/hwatu)
 - [Vision](https://github.com/hongnoul/hwatu/blob/main/VISION.md)
 - [Agent guide](https://github.com/hongnoul/hwatu/blob/main/docs/agents.md)
-- [Benchmarks](https://github.com/hongnoul/hwatu/blob/main/docs/benchmarks.md)
-- [Roadmap](https://github.com/hongnoul/hwatu/blob/main/docs/roadmap.md)
