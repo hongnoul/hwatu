@@ -1,5 +1,4 @@
 # hwatu
-
 > Headless browser for agents (CLI and MCP). Runs on the user's machine.
 
 hwatu is driven by agents through a CLI and MCP. Linux is supported today.
