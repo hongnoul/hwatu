@@ -2891,9 +2891,8 @@ fn trusted_input_mode_error(mode: OpenMode) -> Option<&'static str> {
     match mode {
         OpenMode::Normal => None,
         OpenMode::Background | OpenMode::Headless => Some(
-            "trusted input is unavailable for background/headless windows because native \
-             compositor events would promote and focus the window; use standard headless \
-             automation or explicitly open a normal window",
+            "trusted input on this engine is delivered through the compositor and needs a \
+             shown window: call `hwatu show <id>` first, or use a standard (untrusted) click",
         ),
     }
 }
@@ -3563,7 +3562,7 @@ mod tests {
         assert_eq!(trusted_input_mode_error(OpenMode::Normal), None);
         for mode in [OpenMode::Background, OpenMode::Headless] {
             let message = trusted_input_mode_error(mode).expect("mode must be refused");
-            assert!(message.contains("would promote and focus the window"));
+            assert!(message.contains("hwatu show"));
         }
     }
 

@@ -10,7 +10,7 @@
 #   2. check / render / eval / shot all work display-free.
 #   3. Shot pixels match a compositor-hosted run of the same fixture
 #      (diff score >= 99%).
-#   4. `hwatu focus <id>` returns the structured "no display" error,
+#   4. `hwatu show <id>` returns the structured "no display" error,
 #      not a crash (daemon still answers afterwards).
 #   4b. Viewport-sized shots are EXACT under the child compositor
 #      (issue #7): the compositor's chrome ate a constant number of

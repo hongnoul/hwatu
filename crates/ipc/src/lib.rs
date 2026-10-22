@@ -869,10 +869,8 @@ pub enum Request {
         #[serde(default)]
         window: Option<u64>,
     },
-    /// Query (or clear) the global visit history (roadmap H9). With a
-    /// query, returns frecency-ranked completions; empty query returns
-    /// the most relevant recent pages. `clear` wipes history and
-    /// reports the removed row count.
+    /// Removed. Kept on the wire so old clients receive an error that
+    /// names the removal instead of an unknown-variant parse failure.
     History {
         #[serde(default)]
         query: String,
@@ -881,11 +879,10 @@ pub enum Request {
         #[serde(default)]
         clear: bool,
     },
-    /// Clear stored site data (roadmap H16): cookies, local/session
-    /// storage, IndexedDB, caches. With `host`, only entries whose
-    /// registrable domain matches; without, everything. Also drops
-    /// matching per-site decisions (permissions, zoom, dark mode) and,
-    /// on a full clear, visit history.
+    /// Clear stored site data: cookies, local/session storage,
+    /// IndexedDB, caches. With `host`, only entries whose registrable
+    /// domain matches; without, everything. Also drops matching
+    /// permission decisions.
     ClearSiteData {
         #[serde(default)]
         host: Option<String>,
@@ -912,11 +909,8 @@ pub enum Request {
         #[serde(default)]
         take: Option<u64>,
     },
-    /// Fuzzy jump (roadmap H29): match `query` against open windows
-    /// (url + title) first, then visit history. Focuses the best
-    /// window match; with `open` (default true), a history-only match
-    /// opens a new window on it. Replies with what it did. The
-    /// "Spotlight for the web" verb — bind `hwatu jump` in the WM.
+    /// Removed. Kept on the wire so old clients receive an error that
+    /// names the removal.
     Jump {
         query: String,
         /// Open a window for history-only matches (default true).

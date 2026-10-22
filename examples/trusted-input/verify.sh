@@ -36,7 +36,7 @@ pids+=("$!")
 pids+=("$!")
 sleep 0.4
 
-HWATU_AGENT_MODE=background "$HWATU" "$BASE" >/dev/null
+win=$("$HWATU" "$BASE" | grep -o 'window [0-9]*' | cut -d' ' -f2)
 "$HWATU" wait-load --until dom --timeout-ms 5000 >/dev/null
 
 "$HWATU" click '#top-button' >/dev/null
@@ -61,6 +61,8 @@ fi
 
 echo "ok: old JS selector path cannot reach cross-origin iframe contents"
 
+# Trusted input goes through the compositor, so the window must be shown.
+"$HWATU" show "$win" >/dev/null
 if "$HWATU" click --trusted '#top-button' >"$RUN_DIR/trusted-click.out" 2>"$RUN_DIR/trusted-click.err"; then
   top_trusted=$("$HWATU" eval 'return document.body.dataset.topTrusted' | tr -d '"')
   if [[ "$top_trusted" != "true" ]]; then
