@@ -476,7 +476,19 @@ func handle(_ req: JSON) -> JSON {
     guard let cmd = jstr(req, "cmd") else { return errResponse("missing cmd") }
     switch cmd {
     case "ping":
-        return okResponse(["value": ["build": "mac-wkwebview", "version": "0.7.1-mac", "platform": "macos"]])
+        let webkit = Bundle(identifier: "com.apple.WebKit")?.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
+        return okResponse(["value": [
+            "build": "mac-wkwebview",
+            "version": "0.7.1-mac",
+            "platform": "macos",
+            "engine": ["name": "wkwebview", "version": webkit],
+            "capabilities": [
+                "show": true,
+                "trusted_input": false,
+                "structured_stops": [],
+                "transport": ["unix"],
+            ],
+        ]])
 
     case "quit":
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { exit(0) }
@@ -502,7 +514,7 @@ func handle(_ req: JSON) -> JSON {
             done(daemon.close(UInt64(id)) ? okResponse() : errResponse("no window \(id)"))
         }
 
-    case "focus":
+    case "show", "focus":
         return onMain { done in
             guard let id = jint(req, "id"), let w = daemon.windows[UInt64(id)] else {
                 done(errResponse("no such window")); return
@@ -514,7 +526,7 @@ func handle(_ req: JSON) -> JSON {
             done(okResponse())
         }
 
-    case "unfocus":
+    case "hide", "unfocus":
         return onMain { done in
             guard let id = jint(req, "id"), let w = daemon.windows[UInt64(id)] else {
                 done(errResponse("no such window")); return
@@ -820,7 +832,7 @@ func handle(_ req: JSON) -> JSON {
         }
 
     default:
-        return errResponse("command \(cmd) is not supported by the macOS daemon yet (hwatud-mac); supported: ping, open, list, close, focus, unfocus, navigate, eval, wait_load, screenshot, resize, get_content, snapshot, click, type, press, fill_form, scroll, console, quit")
+        return errResponse("command \(cmd) is not supported by the macOS daemon yet (hwatud-mac); supported: ping, open, list, close, show, hide, navigate, eval, wait_load, screenshot, resize, get_content, snapshot, click, type, press, fill_form, scroll, console, quit")
     }
 }
 

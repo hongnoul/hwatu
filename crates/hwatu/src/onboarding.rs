@@ -66,13 +66,24 @@ fn doctor() -> i32 {
     // 3. Daemon ping (spawns the daemon if needed, like normal use).
     let daemon_ok = match send(&Request::Ping) {
         Ok(Response::Ok { value, .. }) => {
-            let build = value
-                .as_ref()
-                .and_then(|v| v.get("build"))
-                .and_then(|b| b.as_str())
-                .unwrap_or("?")
-                .to_string();
-            check("daemon", Ok(format!("ping ok (build {build})")));
+            let field = |k: &str| {
+                value
+                    .as_ref()
+                    .and_then(|v| v.pointer(k))
+                    .and_then(|b| b.as_str())
+                    .unwrap_or("?")
+                    .to_string()
+            };
+            check(
+                "daemon",
+                Ok(format!(
+                    "ping ok (build {}, platform {}, engine {} {})",
+                    field("/build"),
+                    field("/platform"),
+                    field("/engine/name"),
+                    field("/engine/version"),
+                )),
+            );
             true
         }
         Ok(Response::Err { message, .. }) => {

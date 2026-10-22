@@ -1029,6 +1029,23 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, transport: TransportKind, reply: 
         Request::Ping => Response::value(serde_json::json!({
             "build": env!("HWATU_GIT_HASH"),
             "version": env!("CARGO_PKG_VERSION"),
+            "platform": std::env::consts::OS,
+            "engine": {
+                "name": "webkitgtk",
+                "version": format!(
+                    "{}.{}.{}",
+                    webkit6::functions::major_version(),
+                    webkit6::functions::minor_version(),
+                    webkit6::functions::micro_version(),
+                ),
+            },
+            "display_free": crate::compositor::display_free(),
+            "capabilities": {
+                "show": !crate::compositor::display_free(),
+                "trusted_input": true,
+                "structured_stops": ["irreversible_action", "login_required", "challenge"],
+                "transport": ["unix", "tcp"],
+            },
         })),
         Request::Console { id, clear, limit } => automation::console(daemon, id, clear, limit),
         Request::Net { id, clear, limit } => automation::net(daemon, id, clear, limit),
