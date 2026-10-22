@@ -14,9 +14,6 @@ use serde_json::{json, Value};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::os::fd::AsRawFd;
-use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::process::CommandExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -450,10 +447,10 @@ fn validate_inline_spec(value: &Value, cwd: &Path) -> Result<(PathBuf, Vec<PathB
 }
 
 fn inline_artifacts_dir(name: &str) -> PathBuf {
-    let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join(format!("hwatu-{}", std::process::id())));
-    runtime.join("hwatu").join("verify-inline").join(name)
+    crate::platform::runtime_dir()
+        .join("hwatu")
+        .join("verify-inline")
+        .join(name)
 }
 
 fn serialize_mcp_report(report: &Value) -> Result<String, String> {
@@ -507,7 +504,8 @@ fn execute(spec: VerifySpec) -> Result<Value, String> {
     }
 
     let _lease = Lease::acquire(&spec)?;
-    let _signals = CancellationSignals::install()?;
+    CANCELLATION_REQUESTED.store(false, Ordering::SeqCst);
+    let _signals = crate::platform::InterruptGuard::install(mark_cancelled)?;
     let started = Instant::now();
     let spec_fingerprint = spec_fingerprint(&spec);
     let source_before = source_fingerprint(&spec)?;
@@ -786,14 +784,15 @@ fn run_command(command: &CommandSpec, cwd: &Path, log_path: &Path) -> Result<Val
     let stderr = log
         .try_clone()
         .map_err(|e| format!("clone command log: {e}"))?;
-    let mut child = Command::new(&command.argv[0])
-        .args(&command.argv[1..])
-        .current_dir(cwd)
-        .process_group(0)
-        .stdout(Stdio::from(log))
-        .stderr(Stdio::from(stderr))
-        .spawn()
-        .map_err(|e| format!("start {:?}: {e}", command.argv))?;
+    let mut child = crate::platform::spawn_group_leader(
+        Command::new(&command.argv[0])
+            .args(&command.argv[1..])
+            .current_dir(cwd),
+    )
+    .stdout(Stdio::from(log))
+    .stderr(Stdio::from(stderr))
+    .spawn()
+    .map_err(|e| format!("start {:?}: {e}", command.argv))?;
     let deadline = started + Duration::from_millis(command.timeout_ms);
     let status = loop {
         if cancellation_requested() {
@@ -852,14 +851,15 @@ impl ServerGuard {
         let stderr = log
             .try_clone()
             .map_err(|e| format!("clone server log: {e}"))?;
-        let mut child = Command::new(&command.argv[0])
-            .args(&command.argv[1..])
-            .current_dir(&spec.cwd)
-            .process_group(0)
-            .stdout(Stdio::from(log))
-            .stderr(Stdio::from(stderr))
-            .spawn()
-            .map_err(|e| format!("start server {:?}: {e}", command.argv))?;
+        let mut child = crate::platform::spawn_group_leader(
+            Command::new(&command.argv[0])
+                .args(&command.argv[1..])
+                .current_dir(&spec.cwd),
+        )
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(stderr))
+        .spawn()
+        .map_err(|e| format!("start server {:?}: {e}", command.argv))?;
         let deadline = started + Duration::from_millis(spec.ready_timeout_ms);
         loop {
             if cancellation_requested() {
@@ -919,92 +919,13 @@ impl Drop for ServerGuard {
 }
 
 fn terminate_process_group(child: &mut Child) {
-    // Every owned command is its own process-group leader, so package runners
+    // Every owned command leads its own process group, so package runners
     // (`npm`, `bun`, etc.) cannot leave their server or script children behind.
-    let group = child.id();
-    signal_process_group(group, SIGTERM);
-    for _ in 0..20 {
-        // Reap the group leader before probing the process group. An exited but
-        // unreaped leader is still visible to kill(2), which otherwise burns the
-        // entire 500 ms grace period even when there are no surviving children.
-        let leader_exited = child.try_wait().ok().flatten().is_some();
-        let alive = signal_process_group(group, 0);
-        if !alive {
-            if !leader_exited {
-                let _ = child.wait();
-            }
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(25));
-    }
-    signal_process_group(group, SIGKILL);
-    let _ = child.kill();
-    let _ = child.wait();
+    crate::platform::terminate_tree(child);
 }
 
-const SIGKILL: i32 = 9;
-const SIGINT: i32 = 2;
-const SIGTERM: i32 = 15;
-const SIG_ERR: usize = usize::MAX;
-
-unsafe extern "C" {
-    fn kill(pid: i32, signal: i32) -> i32;
-    fn signal(signal: i32, handler: usize) -> usize;
-    fn siginterrupt(signal: i32, flag: i32) -> i32;
-}
-
-fn signal_process_group(group: u32, signal: i32) -> bool {
-    let Ok(group) = i32::try_from(group) else {
-        return false;
-    };
-    // Negative PIDs address the whole POSIX process group.
-    unsafe { kill(-group, signal) == 0 }
-}
-
-unsafe extern "C" fn mark_cancelled(_signal: i32) {
+fn mark_cancelled() {
     CANCELLATION_REQUESTED.store(true, Ordering::SeqCst);
-}
-
-struct CancellationSignals {
-    previous_int: usize,
-    previous_term: usize,
-}
-
-impl CancellationSignals {
-    fn install() -> Result<Self, String> {
-        CANCELLATION_REQUESTED.store(false, Ordering::SeqCst);
-        let handler = mark_cancelled as *const () as usize;
-        let previous_int = unsafe { signal(SIGINT, handler) };
-        if previous_int == SIG_ERR {
-            return Err("install SIGINT cleanup handler failed".into());
-        }
-        let previous_term = unsafe { signal(SIGTERM, handler) };
-        if previous_term == SIG_ERR {
-            unsafe {
-                signal(SIGINT, previous_int);
-            }
-            return Err("install SIGTERM cleanup handler failed".into());
-        }
-        // Interrupt a blocking daemon read so stack unwinding promptly drops
-        // ServerGuard and terminates the owned process group.
-        unsafe {
-            siginterrupt(SIGINT, 1);
-            siginterrupt(SIGTERM, 1);
-        }
-        Ok(Self {
-            previous_int,
-            previous_term,
-        })
-    }
-}
-
-impl Drop for CancellationSignals {
-    fn drop(&mut self) {
-        unsafe {
-            signal(SIGINT, self.previous_int);
-            signal(SIGTERM, self.previous_term);
-        }
-    }
 }
 
 pub(crate) fn cancellation_requested() -> bool {
@@ -1066,11 +987,9 @@ fn source_fingerprint(spec: &VerifySpec) -> Result<String, String> {
 }
 
 fn read_inline_source(root: &Path, path: &Path) -> Result<Vec<u8>, String> {
-    // Open(2) flag values are per-kernel-ABI AND per-arch; use libc, never hardcode.
-    let mut file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK | libc::O_NOFOLLOW)
-        .open(path)
+    // Refuse a final symlink and FIFOs, then confirm the opened file is still
+    // under `root`.
+    let mut file = crate::platform::open_no_follow(path)
         .map_err(|e| format!("open inline source file {}: {e}", path.display()))?;
     let metadata = file
         .metadata()
@@ -1081,8 +1000,7 @@ fn read_inline_source(root: &Path, path: &Path) -> Result<Vec<u8>, String> {
             path.display()
         ));
     }
-    let fd_path = PathBuf::from(format!("/proc/self/fd/{}", file.as_raw_fd()));
-    let opened_path = fs::canonicalize(&fd_path)
+    let opened_path = crate::platform::opened_path(&file, path)
         .map_err(|e| format!("resolve opened inline source {}: {e}", path.display()))?;
     if !opened_path.starts_with(root) {
         return Err(format!(
@@ -1159,11 +1077,7 @@ struct Lease {
 
 impl Lease {
     fn acquire(spec: &VerifySpec) -> Result<Self, String> {
-        let runtime = std::env::var_os("XDG_RUNTIME_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(std::env::temp_dir)
-            .join("hwatu")
-            .join("verify");
+        let runtime = crate::platform::runtime_dir().join("hwatu").join("verify");
         fs::create_dir_all(&runtime)
             .map_err(|e| format!("create verification lease dir {}: {e}", runtime.display()))?;
         let key = fnv(&format!(
@@ -1459,6 +1373,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn inline_mcp_sources_cannot_escape_through_symlinks() {
         use std::os::unix::fs::symlink;
 
@@ -1482,6 +1397,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn inline_source_swap_is_rejected_before_reading() {
         use std::os::unix::fs::symlink;
 
@@ -1507,6 +1423,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn inline_sources_must_be_regular_files() {
         use std::os::unix::net::UnixListener;
 
@@ -1555,10 +1472,9 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn clean_process_group_shutdown_does_not_wait_the_full_grace_period() {
-        let mut child = Command::new("sleep")
-            .arg("30")
-            .process_group(0)
+        let mut child = crate::platform::spawn_group_leader(Command::new("sleep").arg("30"))
             .spawn()
             .unwrap();
         let started = Instant::now();
@@ -1570,6 +1486,6 @@ mod tests {
             "clean shutdown took {:?}",
             started.elapsed()
         );
-        assert!(!signal_process_group(child.id(), 0));
+        assert!(!crate::platform::group_alive(child.id()));
     }
 }

@@ -164,10 +164,27 @@ pub fn read_frame<R: BufRead>(reader: &mut R, max_bytes: usize) -> io::Result<Op
 
 /// Where a client reaches the daemon. TCP authorities remain unresolved until
 /// connect time so clients can try every address returned for a hostname.
+/// `Pipe` is a Windows named pipe path such as `\\.\pipe\hwatu-alice`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Endpoint {
     Unix(PathBuf),
+    Pipe(String),
     Tcp(String),
+}
+
+/// Default per-user named pipe on Windows. The daemon creates it with an ACL
+/// that admits only the current user.
+pub fn pipe_name() -> String {
+    if let Ok(name) = std::env::var("HWATU_PIPE") {
+        if !name.trim().is_empty() {
+            return name;
+        }
+    }
+    let user = std::env::var("USERNAME")
+        .ok()
+        .filter(|u| !u.is_empty())
+        .unwrap_or_else(|| "default".to_string());
+    format!(r"\\.\pipe\hwatu-{user}")
 }
 
 /// Resolve the configured endpoint. `HWATU_ENDPOINT` takes precedence over
@@ -182,7 +199,11 @@ pub fn endpoint() -> Result<Endpoint, String> {
     {
         Ok(Endpoint::Unix(socket_path()))
     }
-    #[cfg(not(unix))]
+    #[cfg(windows)]
+    {
+        Ok(Endpoint::Pipe(pipe_name()))
+    }
+    #[cfg(not(any(unix, windows)))]
     {
         Err("HWATU_ENDPOINT must be set on this platform".to_string())
     }
@@ -203,6 +224,20 @@ pub fn parse_endpoint(value: &str) -> Result<Endpoint, String> {
             return Err("unix endpoint path cannot be empty".to_string());
         }
         return Ok(Endpoint::Unix(PathBuf::from(path)));
+    }
+    if let Some(name) = value.strip_prefix("pipe://") {
+        if name.is_empty() {
+            return Err("pipe endpoint name cannot be empty".to_string());
+        }
+        let full = if name.starts_with(r"\\") {
+            name.to_string()
+        } else {
+            format!(r"\\.\pipe\{name}")
+        };
+        return Ok(Endpoint::Pipe(full));
+    }
+    if value.starts_with(r"\\.\pipe\") {
+        return Ok(Endpoint::Pipe(value.to_string()));
     }
     if value.contains("://") {
         return Err(format!("unsupported endpoint scheme in {value:?}"));
@@ -1784,6 +1819,20 @@ mod tests {
             parse_endpoint("/tmp/hwatu.sock"),
             Ok(Endpoint::Unix(PathBuf::from("/tmp/hwatu.sock")))
         );
+    }
+
+    #[test]
+    fn endpoint_parser_accepts_windows_named_pipes() {
+        assert_eq!(
+            parse_endpoint(r"pipe://hwatu-alice"),
+            Ok(Endpoint::Pipe(r"\\.\pipe\hwatu-alice".into()))
+        );
+        assert_eq!(
+            parse_endpoint(r"\\.\pipe\hwatu-alice"),
+            Ok(Endpoint::Pipe(r"\\.\pipe\hwatu-alice".into()))
+        );
+        assert!(parse_endpoint("pipe://").is_err());
+        assert!(pipe_name().starts_with(r"\\.\pipe\"));
     }
 
     #[test]

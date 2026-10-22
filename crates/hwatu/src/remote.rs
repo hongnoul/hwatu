@@ -405,6 +405,7 @@ fn client_artifact_root() -> Result<PathBuf, String> {
             }
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            #[cfg_attr(not(unix), allow(unused_mut))]
             let mut builder = std::fs::DirBuilder::new();
             #[cfg(unix)]
             builder.mode(0o700);

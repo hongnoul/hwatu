@@ -137,7 +137,7 @@ fn update() -> Result<(), String> {
     );
 
     // Restart hint only if a daemon is actually running old code.
-    if std::os::unix::net::UnixStream::connect(hwatu_ipc::socket_path()).is_ok() {
+    if crate::daemon_reachable() {
         println!("the running daemon still has the old version.");
         println!("run `hwatu quit` (closes all windows), then `hwatu` to restart on {tag}.");
     }

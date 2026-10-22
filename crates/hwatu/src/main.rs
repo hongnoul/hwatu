@@ -9,6 +9,7 @@
 mod clone;
 mod mcp;
 mod onboarding;
+mod platform;
 mod remote;
 mod update;
 mod verify_job;
@@ -380,15 +381,7 @@ fn parse_open_mode(value: &str) -> Option<OpenMode> {
 /// daemon uses for adblock state). Absent/invalid values fall through
 /// to the built-in headless default.
 fn config_agent_mode() -> Option<OpenMode> {
-    let base = std::env::var("XDG_CONFIG_HOME")
-        .ok()
-        .filter(|v| !v.is_empty())
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            std::env::var("HOME")
-                .ok()
-                .map(|h| std::path::PathBuf::from(h).join(".config"))
-        })?;
+    let base = platform::config_root();
     let raw = std::fs::read_to_string(base.join("hwatu").join("config.json")).ok()?;
     let json: serde_json::Value = serde_json::from_str(&raw).ok()?;
     json.get("agent_mode")
@@ -1717,6 +1710,9 @@ fn expect_event_is_terminal_navigation(line: &str) -> bool {
 pub(crate) enum Connection {
     #[cfg(unix)]
     Unix(UnixStream),
+    /// Windows named pipe, opened as a file in byte mode.
+    #[cfg(windows)]
+    Pipe(std::fs::File),
     Tcp(TcpStream),
 }
 
@@ -1731,6 +1727,8 @@ impl Read for Connection {
         match self {
             #[cfg(unix)]
             Self::Unix(stream) => stream.read(buffer),
+            #[cfg(windows)]
+            Self::Pipe(pipe) => pipe.read(buffer),
             Self::Tcp(stream) => stream.read(buffer),
         }
     }
@@ -1741,6 +1739,8 @@ impl Write for Connection {
         match self {
             #[cfg(unix)]
             Self::Unix(stream) => stream.write(buffer),
+            #[cfg(windows)]
+            Self::Pipe(pipe) => pipe.write(buffer),
             Self::Tcp(stream) => stream.write(buffer),
         }
     }
@@ -1749,6 +1749,8 @@ impl Write for Connection {
         match self {
             #[cfg(unix)]
             Self::Unix(stream) => stream.flush(),
+            #[cfg(windows)]
+            Self::Pipe(pipe) => pipe.flush(),
             Self::Tcp(stream) => stream.flush(),
         }
     }
@@ -1803,6 +1805,7 @@ pub(crate) fn connect_or_spawn() -> std::io::Result<BufReader<Connection>> {
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error))?
     {
         hwatu_ipc::Endpoint::Unix(path) => connect_or_spawn_unix(path),
+        hwatu_ipc::Endpoint::Pipe(name) => connect_or_spawn_pipe(&name),
         hwatu_ipc::Endpoint::Tcp(authority) => connect_tcp(&authority),
     }
 }
@@ -1815,12 +1818,7 @@ fn connect_or_spawn_unix(path: std::path::PathBuf) -> std::io::Result<BufReader<
 
     // No local daemon: spawn hwatud (sibling binary or PATH) and poll. A TCP
     // endpoint never takes this path because its daemon may be on another host.
-    let daemon = std::env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(|dir| dir.join("hwatud")))
-        .filter(|path| path.exists())
-        .unwrap_or_else(|| "hwatud".into());
-    Command::new(daemon)
+    Command::new(daemon_binary())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()?;
@@ -1846,6 +1844,71 @@ fn connect_or_spawn_unix(_path: std::path::PathBuf) -> std::io::Result<BufReader
         std::io::ErrorKind::Unsupported,
         "Unix socket endpoints are unavailable on this platform",
     ))
+}
+
+/// Path of the sibling daemon binary, or the bare name for a PATH lookup.
+fn daemon_binary() -> std::path::PathBuf {
+    let name = if cfg!(windows) {
+        "hwatud.exe"
+    } else {
+        "hwatud"
+    };
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(|dir| dir.join(name)))
+        .filter(|path| path.exists())
+        .unwrap_or_else(|| name.into())
+}
+
+#[cfg(windows)]
+fn open_pipe(name: &str) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(name)
+}
+
+#[cfg(windows)]
+fn connect_or_spawn_pipe(name: &str) -> std::io::Result<BufReader<Connection>> {
+    if let Ok(pipe) = open_pipe(name) {
+        return Ok(BufReader::new(Connection::Pipe(pipe)));
+    }
+    crate::platform::spawn_group_leader(&mut Command::new(daemon_binary()))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Ok(pipe) = open_pipe(name) {
+            return Ok(BufReader::new(Connection::Pipe(pipe)));
+        }
+        if Instant::now() > deadline {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "daemon did not come up within 10s",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(15));
+    }
+}
+
+#[cfg(not(windows))]
+fn connect_or_spawn_pipe(_name: &str) -> std::io::Result<BufReader<Connection>> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "named pipe endpoints are only available on Windows",
+    ))
+}
+
+/// True when a local daemon answers on the default endpoint.
+pub(crate) fn daemon_reachable() -> bool {
+    match hwatu_ipc::endpoint() {
+        #[cfg(unix)]
+        Ok(hwatu_ipc::Endpoint::Unix(path)) => UnixStream::connect(path).is_ok(),
+        #[cfg(windows)]
+        Ok(hwatu_ipc::Endpoint::Pipe(name)) => open_pipe(&name).is_ok(),
+        _ => false,
+    }
 }
 
 fn connect_tcp(authority: &str) -> std::io::Result<BufReader<Connection>> {
