@@ -1958,6 +1958,12 @@ mod tests {
         assert!(!is_version_flag(None));
     }
 
+    /// An absolute path on every OS, for parse tests that must not be
+    /// rewritten against the current directory.
+    fn abs(name: &str) -> String {
+        std::env::temp_dir().join(name).to_string_lossy().into_owned()
+    }
+
     /// Env-independent parse with the production default.
     fn parse(args: &[String]) -> Result<Request, String> {
         let mut request = parse_with_default_mode(args, OpenMode::Headless)?;
@@ -1984,7 +1990,7 @@ mod tests {
             "example.com",
             "--eval",
             "return document.title",
-            "--shot=/tmp/x.png",
+            &format!("--shot={}", abs("x.png")),
             "--until",
             "dom",
         ]))
@@ -1994,7 +2000,7 @@ mod tests {
         assert_eq!(url.as_deref(), Some("example.com"));
         assert_eq!(eval.as_deref(), Some("return document.title"));
         assert!(shot);
-        assert_eq!(shot_path.as_deref(), Some("/tmp/x.png"));
+        assert_eq!(shot_path.as_deref(), Some(&abs("x.png")));
         assert_eq!(until, hwatu_ipc::LoadStage::Dom);
         assert!(!keep);
     }
@@ -2090,28 +2096,28 @@ mod tests {
             "check",
             "localhost:3000",
             "--baseline",
-            "/tmp/base.png",
+            &abs("base.png"),
             "--tolerance",
             "12",
             "--min-region",
             "500",
             "--heatmap",
-            "/tmp/heat.png",
+            &abs("heat.png"),
         ]))
         else {
             panic!("expected Check");
         };
-        assert_eq!(baseline.as_deref(), Some("/tmp/base.png"));
+        assert_eq!(baseline.as_deref(), Some(&abs("base.png")));
         assert_eq!(tolerance, Some(12));
         assert_eq!(min_region_px, Some(500));
-        assert_eq!(heatmap.as_deref(), Some("/tmp/heat.png"));
+        assert_eq!(heatmap.as_deref(), Some(&abs("heat.png")));
 
         // Without the flag the field stays None (daemon default).
         let Ok(Request::Check { min_region_px, .. }) = parse(&args(&[
             "check",
             "localhost:3000",
             "--baseline",
-            "/tmp/b.png",
+            &abs("b.png"),
         ])) else {
             panic!("expected Check");
         };
@@ -2283,7 +2289,7 @@ mod tests {
             "--viewports",
             "360x640,768x1024,1920x1080",
             "--baseline-dir",
-            "/tmp/base",
+            &abs("base"),
         ]))
         else {
             panic!("expected Check");
@@ -2296,7 +2302,7 @@ mod tests {
                 hwatu_ipc::Viewport { w: 1920, h: 1080 },
             ]
         );
-        assert_eq!(baseline_dir.as_deref(), Some("/tmp/base"));
+        assert_eq!(baseline_dir.as_deref(), Some(&abs("base")));
 
         // `--viewports=` form works too.
         let Ok(Request::Check { viewports, .. }) =
@@ -2315,16 +2321,16 @@ mod tests {
         }
         // Flag coherence: baseline-dir needs viewports; --baseline
         // conflicts with a sweep's per-size baselines.
-        assert!(parse(&args(&["check", "x.test", "--baseline-dir", "/tmp/b"])).is_err());
+        assert!(parse(&args(&["check", "x.test", "--baseline-dir", &abs("b")])).is_err());
         assert!(parse(&args(&[
             "check",
             "x.test",
             "--viewports",
             "360x640",
             "--baseline",
-            "/tmp/b.png",
+            &abs("b.png"),
             "--baseline-dir",
-            "/tmp/b",
+            &abs("b"),
         ]))
         .is_err());
 
@@ -2567,12 +2573,12 @@ mod tests {
     #[test]
     fn shot_full_flag() {
         let Ok(Request::Screenshot { full, path, .. }) =
-            parse(&args(&["shot", "--full", "/tmp/x.png"]))
+            parse(&args(&["shot", "--full", &abs("x.png")]))
         else {
             panic!("expected Screenshot");
         };
         assert!(full);
-        assert_eq!(path.as_deref(), Some("/tmp/x.png"));
+        assert_eq!(path.as_deref(), Some(&abs("x.png")));
         let Ok(Request::Screenshot { full, .. }) = parse(&args(&["shot"])) else {
             panic!("expected Screenshot");
         };

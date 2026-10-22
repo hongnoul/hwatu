@@ -1039,7 +1039,7 @@ return { url: location.href, frames,
 }
 
 /// Agent-facing password/TOTP fill (coverage C6). Same backends and
-/// page JS as the human keybind (`passfill.rs`), but addressable over
+/// page JS as `passfill.rs`, but addressable over
 /// IPC and honest in its reply. Secrets go page-ward only.
 pub fn fill_login(
     daemon: &Rc<Daemon>,

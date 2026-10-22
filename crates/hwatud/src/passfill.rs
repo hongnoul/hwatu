@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Justin Hong
-//! Password-manager fill (roadmap H11): first-class fill from `pass`
+//! Password-manager fill : first-class fill from `pass`
 //! and Bitwarden's `bw` CLI. hwatu integrates, never stores — no
 //! password store of our own, ever (roadmap non-goal).
 //!
@@ -21,7 +21,7 @@
 //! - **bitwarden**: `bw get item <host>` with an unlocked vault
 //!   (BW_SESSION set in the daemon's environment).
 //!
-//! Passwords never touch logs or the bar; failures name the reason
+//! Passwords never touch logs or events; failures name the reason
 //! ("no entry for `<host>`", "vault locked"), never the secret.
 
 use std::path::PathBuf;

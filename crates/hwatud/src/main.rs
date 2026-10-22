@@ -66,7 +66,7 @@ pub struct Daemon {
     /// Built-in content blocker (on by default).
     pub adblock: adblock::Adblock,
     /// Per-site permission decisions, persistent on disk
-    /// unless the daemon runs an ephemeral profile (roadmap H5).
+    /// unless the daemon runs an ephemeral profile.
     pub site_store: sitedata::Store,
     /// Pending human hand-offs (platform items 10-11): window id ->
     /// (reason, queued-at). Agents queue via `hwatu handoff`; the
@@ -282,7 +282,6 @@ impl Daemon {
         *n += 1;
         id
     }
-
 }
 
 /// Point the default network session's cookie jar at a SQLite file in
@@ -370,7 +369,7 @@ fn open_sandbox_for_media() {
     }
 }
 
-/// Spell check (roadmap H6): WebKitGTK's Enchant backend is compiled
+/// Spell check: WebKitGTK's Enchant backend is compiled
 /// in but disabled by default. Turn it on with the session locale's
 /// language. `"spell_check": false` in config.json disables;
 /// `"spell_check_languages": ["en_US", "de_DE"]` overrides the

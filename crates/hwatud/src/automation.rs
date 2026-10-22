@@ -1366,7 +1366,9 @@ fn sweep_pass(sweep: Rc<Sweep>, i: usize) {
                     Box::new(move |resp| {
                         entry.borrow_mut()["eval"] = match resp {
                             Response::Ok { value, .. } => value.unwrap_or(serde_json::Value::Null),
-                            Response::Err { message, .. } => serde_json::json!({ "error": message }),
+                            Response::Err { message, .. } => {
+                                serde_json::json!({ "error": message })
+                            }
                         };
                         advance();
                     }),
@@ -1570,10 +1572,10 @@ fn acquire_pooled_window(
         };
         return Ok((win, view));
     }
-    // Fresh windows open at about:blank, never the launcher: the
+    // Fresh windows open at about:blank, never a start page: the
     // caller's load replaces it immediately, and the stale-blank
     // machinery (`note_load_engaged`, the stage wiring) already knows
-    // how to ignore a superseded about:blank load. A launcher load
+    // how to ignore a superseded about:blank load. A start-page load
     // here would clear `nav_pending` and release waits early.
     let info = BrowserWindow::open(
         daemon,

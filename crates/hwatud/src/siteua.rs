@@ -5,9 +5,8 @@
 //! get the sidebar-heavy desktop site, while a mobile UA gets the
 //! touch-first PWA that Meta ships in place of a native app on
 //! Windows/ChromeOS — full-bleed reels, vertical feed, no desktop
-//! chrome. In a tiling-WM setup where a browser window is sized like
-//! a phone anyway, the mobile UI plus wheel snap-paging (see
-//! `smoothwheel`) is the closest a web view gets to the native app.
+//! chrome. With a window sized like a phone, the mobile UI plus wheel
+//! snap-paging (see `smoothwheel`) is the closest a web view gets to the native app.
 //!
 //! Mechanism: WebKitGTK 6 exposes no is-main-frame flag on navigation
 //! policy decisions, and `LoadEvent::Started` fires only after the

@@ -82,7 +82,7 @@ impl Modifiers {
 
 /// Engine-neutral key identity: a Unicode character where one exists,
 /// otherwise a named key. Deliberately not a full scancode model; hwatu
-/// only needs enough identity for keybinding lookup and injected input.
+/// only needs enough identity for key lookup and injected input.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum KeyIdent {
     /// A key that produces this character (case-significant).
@@ -95,7 +95,7 @@ pub enum KeyIdent {
 }
 
 impl KeyIdent {
-    /// Engine-neutral parse of a key token as used in keybinding specs
+    /// Engine-neutral parse of a key token as used in key specs
     /// ("a", "Escape", "F5"). Mirrors `gdk::Key::from_name` semantics
     /// closely enough for hwatu's binding tables.
     pub fn from_gdk(key: gtk::gdk::Key) -> Self {

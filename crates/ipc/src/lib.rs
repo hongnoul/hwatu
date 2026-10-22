@@ -285,7 +285,7 @@ pub enum Request {
     /// so this returns as soon as the window is mapped.
     Open {
         url: Option<String>,
-        /// Wayland app_id / X11 WM_CLASS for tiling-WM window rules.
+        /// Wayland app_id / X11 WM_CLASS for compositor window rules.
         #[serde(default)]
         app_id: Option<String>,
         /// How the window is shown; see [`OpenMode`]. Absent on the
@@ -892,7 +892,7 @@ pub enum Request {
     /// queueing: the entry waits in the hand-off queue until a human
     /// drains it (respects flow — an agent that needs a human at
     /// 14:02 should not steal focus at 14:02). With `now`, the window
-    /// materializes immediately with the reason in the bar (the old
+    /// materializes immediately with the reason as a notice (the old
     /// challenge-style behavior, for when the agent is blocked).
     Handoff {
         id: u64,

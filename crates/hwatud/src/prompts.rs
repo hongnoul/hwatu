@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Justin Hong
-//! Interactive prompts: permission requests and TLS failures, answered
-//! with a y/n keypress on the bar. One pending prompt at a time per
+//! Prompts: permission requests and TLS failures. Each is answered
+//! automatically by policy and reported as a `prompt` event (see
+//! `window.rs` `push_prompt`). One pending prompt at a time per
 //! window; later requests queue behind it.
 //!
 //! Permission decisions are remembered per (host, kind) in the daemon's
@@ -64,8 +65,8 @@ impl Prompts {
         }
     }
 
-    /// Queue a prompt. Returns the question to show if the bar should
-    /// open now (i.e. this prompt is at the front), or None if it was
+    /// Queue a prompt. Returns the question to report if the prompt
+    /// is active now (i.e. this prompt is at the front), or None if it was
     /// auto-answered from memory or is waiting behind another.
     pub fn push(&self, prompt: Prompt) -> Option<String> {
         if let Some((host, kind)) = prompt.memory_key() {

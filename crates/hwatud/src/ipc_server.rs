@@ -494,7 +494,7 @@ fn rate_admit() -> bool {
     })
 }
 
-/// Clear stored site data (roadmap H16). WebKit's clear() is
+/// Clear stored site data WebKit's clear() is
 /// type-based and whole-store; per-host removal fetches matching
 /// WebsiteData records first. Site-store decisions and (on full
 /// clears) history go with it: "clear everything about this site"
@@ -1045,9 +1045,9 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, transport: TransportKind, reply: 
         })),
         Request::Console { id, clear, limit } => automation::console(daemon, id, clear, limit),
         Request::Net { id, clear, limit } => automation::net(daemon, id, clear, limit),
-        Request::Jump { .. } | Request::History { .. } => Response::err(
-            "history and jump were removed: the browser keeps no browsing history",
-        ),
+        Request::Jump { .. } | Request::History { .. } => {
+            Response::err("history and jump were removed: the browser keeps no browsing history")
+        }
         Request::Handoff { id, reason, now } => {
             let Some(win) = daemon.windows.borrow().get(&id).cloned() else {
                 reply(Response::err(format!("no window {id}")));
@@ -1063,7 +1063,7 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, transport: TransportKind, reply: 
                     return;
                 }
                 win.present();
-                win.flash_bar(&format!("agent needs you: {reason}"), 30);
+                win.notice(&format!("agent needs you: {reason}"), 30);
                 daemon.events.emit(
                     "handoff",
                     Some(id),
@@ -1153,7 +1153,7 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, transport: TransportKind, reply: 
                     };
                     let waited = unix_now().saturating_sub(entry.queued_at);
                     win.present();
-                    win.flash_bar(&format!("handoff: {}", entry.reason), 30);
+                    win.notice(&format!("handoff: {}", entry.reason), 30);
                     // Queued-at/answered-at logged: the cost of waiting
                     // on a human is a measured number, not a vibe.
                     println!(
@@ -1640,7 +1640,10 @@ mod tests {
 
     #[test]
     fn non_urls_are_not_turned_into_searches() {
-        assert_eq!(normalize_url("rust borrow checker".into()), "rust borrow checker");
+        assert_eq!(
+            normalize_url("rust borrow checker".into()),
+            "rust borrow checker"
+        );
         assert_eq!(normalize_url("vim".into()), "vim");
         assert_eq!(
             normalize_url("example.com/a?b=1".into()),

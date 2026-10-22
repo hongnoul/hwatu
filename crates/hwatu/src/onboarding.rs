@@ -103,7 +103,7 @@ fn doctor() -> i32 {
         check("render", Err("skipped: daemon unreachable".into()));
     }
 
-    // 5. Hardware video decode (roadmap H3). Informational: software
+    // 5. Hardware video decode. Informational: software
     // decode works, it just costs battery and shortform smoothness,
     // so a missing plugin must not fail the doctor.
     match hw_decode_probe() {

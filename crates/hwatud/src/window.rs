@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Justin Hong
 //! Browser window: one WebView per toplevel, zero chrome.
-//! The tiling WM is the tab bar.
 //!
 //! RAM strategy: when a window stays unfocused past a timeout, its
 //! WebView is *discarded*: navigation history is serialized into a
@@ -144,9 +143,9 @@ const DEFAULT_WINDOW_WIDTH: i32 = 1024;
 const DEFAULT_WINDOW_HEIGHT: i32 = 768;
 
 /// Request the preferred fraction of the current monitor's width for a newly
-/// mapped window. Tiling WMs use this as the initial size hint when deciding
-/// how to place a new toplevel, while floating WMs still get a useful
-/// desktop-sized window instead of an arbitrary fixed width. The built-in
+/// mapped window. Compositors may use this as the initial size hint when
+/// placing a new toplevel; others still get a useful desktop-sized window
+/// instead of an arbitrary fixed width. The built-in
 /// default is one half; users can override it with `"preferred_width"` in
 /// `~/.config/hwatu/config.json`.
 fn default_window_width() -> i32 {
@@ -604,16 +603,15 @@ impl BrowserWindow {
         profile: Option<String>,
     ) -> WindowInfo {
         // On Wayland the compositor decides who gets focus, and most
-        // tilers focus new windows. A background window therefore gets
-        // a predictable default app_id so one WM rule can opt it out
-        // (niri: `match app-id="hwatu-background"` + `open-focused
-        // false`; Hyprland: `windowrule = noinitialfocus, class:...`).
+        // compositors focus new windows. A background window therefore
+        // gets a predictable default app_id so one compositor rule can
+        // opt it out.
         //
-        // Semantic app-ids (roadmap H30): with no explicit app_id, a
-        // profiled window gets `hwatu.<profile>` and a URL matching an
+        // Semantic app-ids: with no explicit app_id, a profiled window
+        // gets `hwatu.<profile>` and a URL matching an
         // `"app_ids": {"<host-suffix>": "<id>"}` config rule gets that
-        // id — so niri window rules do auto-placement, floating, and
-        // workspace pinning without hwatu growing its own rule engine.
+        // id, so compositor rules can target windows without hwatu
+        // growing its own rule engine.
         let app_id = app_id
             .or_else(|| {
                 profile
@@ -781,7 +779,7 @@ impl BrowserWindow {
             .title("hwatu")
             .build();
 
-        // Tiling WMs key window rules off app_id / WM_CLASS. GTK derives
+        // Compositors key window rules off app_id / WM_CLASS. GTK derives
         // the default from the application id; a per-window override
         // lets rules target windows individually (`hwatu --app-id mail
         // gmail.com` + `windowrule = workspace 3, class:mail`).
@@ -1018,7 +1016,7 @@ impl BrowserWindow {
             });
         }
         crate::downloads::wire_session(&self.daemon, &webview);
-        // File uploads (roadmap H1): <input type=file> emits
+        // File uploads: <input type=file> emits
         // run-file-chooser; unhandled, WebKit's default silently
         // cancels and every upload flow is dead. Open a GTK file
         // dialog honoring the input's MIME filter and multiple flag.
@@ -1103,15 +1101,15 @@ impl BrowserWindow {
                 true // handled; do not fall back to default deny-now
             });
         }
-        // TLS failures: explain in the bar, y adds a per-host
-        // exception for this session and reloads.
+        // TLS failures: show the reason and queue a TLS prompt; an
+        // accepted prompt adds a per-host exception for this session.
         {
             let this = self.clone();
             webview.connect_load_failed_with_tls_errors(move |_, failing_uri, cert, flags| {
                 this.show_recovery_overlay(
                     "TLS error",
                     &format!(
-                        "{} ({})\nPress y in the bar to proceed for this session, or n/Esc to stop.",
+                        "{} ({}): TLS certificate rejected",
                         prompts::host_of(failing_uri),
                         prompts::tls_reason(flags)
                     ),
@@ -1123,7 +1121,7 @@ impl BrowserWindow {
                     certificate: cert.clone(),
                     reason: prompts::tls_reason(flags).to_string(),
                 });
-                true // stop the default error page; the bar owns this
+                true // stop the default error page; the prompt owns this
             });
         }
         // Non-TLS load failures: replace mystery gray with a visible
@@ -1145,10 +1143,10 @@ impl BrowserWindow {
                 // load with FrameLoadInterruptedByPolicyChange. That
                 // is not a failure - the bytes are arriving via the
                 // download machinery - so a "Page failed to load"
-                // overlay would be a lie. Flash the bar instead; the
+                // overlay would be a lie. Emit a notice instead; the
                 // download wiring reports the saved path when done.
                 if error.matches(webkit6::PolicyError::FrameLoadInterruptedByPolicyChange) {
-                    this.flash_bar("downloading…", 4);
+                    this.notice("downloading…", 4);
                     return true;
                 }
                 this.daemon.events.emit(
@@ -1172,7 +1170,7 @@ impl BrowserWindow {
         }
         // Crash containment: a dead web process (segfault, kernel OOM
         // kill) otherwise leaves a silent white window. Surface it in
-        // the bar with a reload offer instead.
+        // a recovery overlay instead.
         {
             let this = self.clone();
             webview.connect_web_process_terminated(move |wv, reason| {
@@ -1279,7 +1277,12 @@ impl BrowserWindow {
                     return false;
                 }
                 decision.ignore();
-                Self::open(&this.daemon, Some(uri.to_string()), None, OpenMode::Headless);
+                Self::open(
+                    &this.daemon,
+                    Some(uri.to_string()),
+                    None,
+                    OpenMode::Headless,
+                );
                 return true;
             }
             if decision_type != webkit6::PolicyDecisionType::Response {
@@ -1764,11 +1767,9 @@ impl BrowserWindow {
         }
     }
 
-    /// Passive bar message (downloads etc.). No-op if the bar is busy
-    /// with an interactive prompt.
     /// Surface a transient notice for this window. Headless daemon:
     /// the notice is emitted as a `notice` event for subscribed agents.
-    pub fn flash_bar(&self, message: &str, _secs: u64) {
+    pub fn notice(&self, message: &str, _secs: u64) {
         self.daemon.events.emit(
             "notice",
             Some(self.id),
@@ -1923,10 +1924,7 @@ impl BrowserWindow {
                 Some(self.id),
                 serde_json::json!({ "question": question }),
             );
-            let allow = matches!(
-                std::env::var("HWATU_TEST_CONFIRM").as_deref(),
-                Ok("allow")
-            );
+            let allow = matches!(std::env::var("HWATU_TEST_CONFIRM").as_deref(), Ok("allow"));
             let this = self.clone();
             glib::timeout_add_local_once(std::time::Duration::from_millis(50), move || {
                 this.answer_confirm("prompt", allow);
@@ -1945,10 +1943,7 @@ impl BrowserWindow {
                 Some(self.id),
                 serde_json::json!({ "question": question }),
             );
-            let allow = matches!(
-                std::env::var("HWATU_TEST_CONFIRM").as_deref(),
-                Ok("allow")
-            );
+            let allow = matches!(std::env::var("HWATU_TEST_CONFIRM").as_deref(), Ok("allow"));
             let this = self.clone();
             glib::timeout_add_local_once(std::time::Duration::from_millis(50), move || {
                 this.answer_confirm("prompt", allow);

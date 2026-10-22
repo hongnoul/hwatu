@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Justin Hong
 //! Downloads: no dialogs, no manager. Every download goes straight to
-//! the download directory; the bar flashes progress and completion.
+//! the download directory; progress and completion are emitted as `notice` events.
 //!
 //! Directory resolution (first hit wins):
 //!   1. `HWATU_DOWNLOAD_DIR`
@@ -243,7 +243,7 @@ fn owner_window_id(daemon: &Rc<Daemon>, download: &webkit6::Download) -> Option<
         .map(|w| w.id)
 }
 
-/// Flash a message on the bar of the window that started the download,
+/// Emit a notice for the window that started the download,
 /// falling back to any live window (the origin may already be closed).
 fn flash_on_owner(daemon: &Rc<Daemon>, download: &webkit6::Download, message: &str, secs: u64) {
     let origin = download.web_view();
@@ -256,7 +256,7 @@ fn flash_on_owner(daemon: &Rc<Daemon>, download: &webkit6::Download, message: &s
         })
         .or_else(|| windows.values().next());
     if let Some(win) = target {
-        win.flash_bar(message, secs);
+        win.notice(message, secs);
     } else {
         println!("hwatud: {message}");
     }
