@@ -118,15 +118,11 @@ count="$("$bin/hwatu" list --json | python3 -c 'import json,sys; print(len(json.
 check "render/check alternation keeps <= 2 pooled windows (got $count)" \
     test "$count" -le 2
 
-# ---- 6. session restore excludes rendered windows --------------------
+# ---- 6. no session file is written ------------------------------------
 "$bin/hwatu" render --stdin --keep <<<'<p>kept</p>' >/dev/null
-sleep 3 # debounced session save
-if compgen -G "$XDG_STATE_HOME/hwatu/session*.json" >/dev/null; then
-    check "session file has no rendered windows" \
-        bash -c '! grep -q "hwatu://render" "$XDG_STATE_HOME"/hwatu/session*.json'
-else
-    ok "session file has no rendered windows (no file written)"
-fi
+sleep 3
+check "no session file is written" \
+    bash -c '! compgen -G "$XDG_STATE_HOME/hwatu/session*.json" >/dev/null'
 
 # ---- 7. size: 1 MB document through the socket -----------------------
 python3 -c 'print("<!DOCTYPE html><title>big</title>" + "<p>x</p>" * 150000)' > "$fixdir/big.html"

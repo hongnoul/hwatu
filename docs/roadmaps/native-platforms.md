@@ -96,9 +96,10 @@ artifacts with clear WebView2-runtime diagnostics.
   `isTrusted` events without moving the user's cursor.
 - Hidden, not minimized: minimized hosts get timer throttling. Prove this in a
   spike before broad parity work.
-- Known client blockers today: `crates/hwatu` imports
-  `std::os::unix::net::UnixStream` and `libc` unconditionally, and
-  `hwatu_ipc::endpoint()` has no default endpoint off Unix.
+- Status: `crates/hwatu` and `hwatu-ipc` build and pass clippy for
+  `x86_64-pc-windows-msvc`. The default endpoint is the named pipe
+  `\\.\pipe\hwatu-<user>`. No WebView2 host exists yet, so nothing
+  listens on it.
 
 ## Known hard problems
 

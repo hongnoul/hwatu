@@ -6,7 +6,7 @@ loop is deliberately small enough to run every week.
 ## The outcome
 
 The activation event is a **first successful verification**: a new user
-installs hwatu and gets a valid result from `hwatu doctor`, `hwatu demo`, or
+installs hwatu and gets a valid result from `hwatu doctor` or
 `hwatu check <url>` through the CLI, MCP, or native socket.
 
 For each onboarding, record only this aggregate funnel unless the user
