@@ -10,14 +10,14 @@ browser contains `hwatu` commands.
 
 ## Properties
 
-- Window spawn takes 13 to 16 ms from a warm daemon
-  ([benchmarks](benchmarks.md)).
-- N windows share one WebKit network process. One binary plus the distro's
-  webkitgtk. No Node, no browser download.
-- Rendering is full WebKit: layout, CSS, WebGL, media.
+- On Linux, opening a window takes 13 to 16 ms from a warm daemon
+  ([benchmarks](benchmarks.md)). Other platforms are not yet measured.
+- N windows share one engine network process. One binary plus the OS web
+  engine. No Node, no browser download.
+- Rendering is the OS engine: WebKitGTK on Linux, WKWebView on macOS.
 - Windows are headless. They are never mapped unless `show` is requested.
-- The protocol is one newline-delimited JSON request per Unix-socket
-  connection.
+- The protocol is newline-delimited JSON over a Unix socket (Linux, macOS),
+  a named pipe (Windows), or authenticated loopback TCP.
 
 ## Commands by kind
 
@@ -649,14 +649,14 @@ Add a block like this to `AGENTS.md` or `CLAUDE.md`:
   A successful click is not proof.
 - `hwatu console` returns errors and failed requests. A clean console is
   supplementary evidence.
-- `hwatu shot out.png` takes a screenshot. `hwatu show` lets the user see the
-  session.
+- `hwatu shot out.png` takes a screenshot. `hwatu show <id>` lets the user
+  see the session.
+- A click on pay, place order, send, or delete returns a structured stop.
+  Ask the user, then retry with `--confirm`.
 - Docs: https://github.com/hongnoul/hwatu/blob/main/docs/agents.md
 ```
 
-## Comparison
+## Engine scope
 
-Playwright is faster on raw milliseconds when warm
-([data](benchmarks.md)). hwatu renders WebKit and users mostly run
-Chromium, so keep a CI matrix for engine-specific bugs. Resident memory is
-higher than headless-shell because windows are GPU-composited surfaces.
+Pixels and behavior come from the OS engine. Pages that behave differently
+in Chromium need a separate Chromium check.

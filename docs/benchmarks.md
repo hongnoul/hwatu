@@ -1,28 +1,24 @@
 # Benchmarks
 
-**The headline: hwatu ships warm.** A full verification pass (open a
-page, wait for the load, read the DOM, screenshot, clean up) is one
-command and **35-39 ms** through hwatu, vs **82 ms** through a warm
-in-process Playwright connection, on the same machine, page, and
-clock. A DOM-only check is **21 ms vs 49 ms**. And when Playwright is
-used the way hwatu is used, a fresh client process talking to a
-kept-warm browser server, the shape every shell-driven agent actually
-has, its pass costs **341 ms**: hwatu's architecture is ~9x faster
-at being a warm service, because being a warm service is the whole
-design. Full data and every caveat in the
-[head-to-head section](#head-to-head-hwatu-vs-playwright--headless-chromium).
+All numbers are Linux (WebKitGTK) measurements. macOS and Windows are not
+yet measured and these numbers do not apply to them.
 
-Every number below was measured on a real run, not estimated. Rerun
-them yourself: the
-head-to-head is `scripts/bench-vs-playwright.mjs`, the token/context
-budget check is `scripts/bench-tokens.mjs`, and the rest are a few
-lines of shell against the release binaries.
+Summary: a full verification pass (open a page, wait for the load, read the
+DOM, screenshot, clean up) is one command and 35 to 39 ms, against 82 ms for
+a warm in-process Playwright connection on the same machine, page, and
+clock. A DOM-only check is 21 ms against 49 ms. A fresh Playwright client
+process against a kept-warm browser server takes 341 ms. Data and caveats
+are in the [head-to-head section](#head-to-head-hwatu-vs-playwright--headless-chromium).
 
-**Test rig:** i7-12650H laptop, 15 GiB RAM, Wayland (niri),
-WebKitGTK 2.52.5, hwatu built with `cargo build --release`.
-Measured 2026-07-19, remeasured 2026-07-25 after the composite-check
-work. Page under test: a local 40-card HTML fixture served by
-`python3 -m http.server` on loopback.
+Every number below was measured. The head-to-head is
+`scripts/bench-vs-playwright.mjs`, the token budget check is
+`scripts/bench-tokens.mjs`, and the rest are shell against the release
+binaries.
+
+Test rig: i7-12650H laptop, 15 GiB RAM, Wayland (niri), WebKitGTK 2.52.5,
+`cargo build --release`. Measured 2026-07-19, remeasured 2026-07-25. Page
+under test: a local 40-card HTML fixture served by `python3 -m http.server`
+on loopback.
 
 ## Cost of one verification loop
 
@@ -369,10 +365,13 @@ with `node scripts/bench-vs-playwright.mjs`.
 
 ## Binary footprint
 
+Measured 2026-10-22, `cargo build --release`, aarch64-unknown-linux-gnu,
+unstripped:
+
 | binary | size |
 |---|---|
-| `hwatu` (client, no GTK linkage) | 624 KB |
-| `hwatud` (daemon) | 1.1 MB |
+| `hwatu` (client, no GTK linkage) | 2.0 MB |
+| `hwatud` (daemon) | 2.7 MB |
 
 ## Methodology
 
