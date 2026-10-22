@@ -1303,6 +1303,14 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
 
 #[cfg(test)]
 mod tests {
+    /// An absolute path on every OS.
+    fn abs(name: &str) -> String {
+        std::env::temp_dir()
+            .join(name)
+            .to_string_lossy()
+            .into_owned()
+    }
+
     use super::*;
 
     /// The MCP check tool takes `viewports` as the CLI-style size
@@ -1316,7 +1324,7 @@ mod tests {
             &json!({
                 "url": "localhost:3000",
                 "viewports": "360x640,1920x1080",
-                "baseline_dir": "/tmp/base",
+                "baseline_dir": abs("base"),
             }),
         )
         .unwrap();
@@ -1332,10 +1340,10 @@ mod tests {
             viewports,
             vec![Viewport { w: 360, h: 640 }, Viewport { w: 1920, h: 1080 }]
         );
-        assert_eq!(baseline_dir.as_deref(), Some("/tmp/base"));
+        assert_eq!(baseline_dir.as_deref(), Some(abs("base").as_str()));
 
         assert!(build_request("check", &json!({ "url": "x", "viewports": "banana" })).is_err());
-        assert!(build_request("check", &json!({ "url": "x", "baseline_dir": "/tmp/b" })).is_err());
+        assert!(build_request("check", &json!({ "url": "x", "baseline_dir": abs("b") })).is_err());
 
         let Request::Check { viewports, .. } =
             build_request("check", &json!({ "url": "x" })).unwrap()

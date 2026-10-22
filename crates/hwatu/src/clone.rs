@@ -1839,7 +1839,7 @@ mod tests {
         let args: Vec<String> = [
             "https://example.com/x",
             "--out",
-            "/tmp/o",
+            "out-dir",
             "--viewport",
             "800x600",
             "--tolerance",
@@ -1853,7 +1853,7 @@ mod tests {
         .map(|s| s.to_string())
         .collect();
         let o = Opts::parse(&args).unwrap();
-        assert_eq!(o.out, PathBuf::from("/tmp/o"));
+        assert_eq!(o.out, PathBuf::from("out-dir"));
         assert_eq!(o.viewport, (800, 600));
         assert_eq!(o.tolerance, Some(12));
         assert!(!o.verify);

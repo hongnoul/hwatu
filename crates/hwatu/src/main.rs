@@ -1961,7 +1961,10 @@ mod tests {
     /// An absolute path on every OS, for parse tests that must not be
     /// rewritten against the current directory.
     fn abs(name: &str) -> String {
-        std::env::temp_dir().join(name).to_string_lossy().into_owned()
+        std::env::temp_dir()
+            .join(name)
+            .to_string_lossy()
+            .into_owned()
     }
 
     /// Env-independent parse with the production default.
@@ -2000,7 +2003,7 @@ mod tests {
         assert_eq!(url.as_deref(), Some("example.com"));
         assert_eq!(eval.as_deref(), Some("return document.title"));
         assert!(shot);
-        assert_eq!(shot_path.as_deref(), Some(&abs("x.png")));
+        assert_eq!(shot_path.as_deref(), Some(abs("x.png").as_str()));
         assert_eq!(until, hwatu_ipc::LoadStage::Dom);
         assert!(!keep);
     }
@@ -2107,10 +2110,10 @@ mod tests {
         else {
             panic!("expected Check");
         };
-        assert_eq!(baseline.as_deref(), Some(&abs("base.png")));
+        assert_eq!(baseline.as_deref(), Some(abs("base.png").as_str()));
         assert_eq!(tolerance, Some(12));
         assert_eq!(min_region_px, Some(500));
-        assert_eq!(heatmap.as_deref(), Some(&abs("heat.png")));
+        assert_eq!(heatmap.as_deref(), Some(abs("heat.png").as_str()));
 
         // Without the flag the field stays None (daemon default).
         let Ok(Request::Check { min_region_px, .. }) = parse(&args(&[
@@ -2302,7 +2305,7 @@ mod tests {
                 hwatu_ipc::Viewport { w: 1920, h: 1080 },
             ]
         );
-        assert_eq!(baseline_dir.as_deref(), Some(&abs("base")));
+        assert_eq!(baseline_dir.as_deref(), Some(abs("base").as_str()));
 
         // `--viewports=` form works too.
         let Ok(Request::Check { viewports, .. }) =
@@ -2578,7 +2581,7 @@ mod tests {
             panic!("expected Screenshot");
         };
         assert!(full);
-        assert_eq!(path.as_deref(), Some(&abs("x.png")));
+        assert_eq!(path.as_deref(), Some(abs("x.png").as_str()));
         let Ok(Request::Screenshot { full, .. }) = parse(&args(&["shot"])) else {
             panic!("expected Screenshot");
         };

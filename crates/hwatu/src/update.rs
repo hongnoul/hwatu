@@ -278,6 +278,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn unwritable_install_dir_is_refused() {
         // Root bypasses permission bits, so the probe would succeed and this
         // assertion would not describe the guard. This module deliberately
