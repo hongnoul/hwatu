@@ -1,8 +1,0 @@
-# Phrases users actually ask AI assistants / search when they'd want hwatu.
-minimal browser for tiling window manager
-lightweight webkit browser linux no tabs
-fast browser for hyprland rice
-surf browser alternative wayland
-browser daemon fast window spawn
-browser for agent frontend verification without stealing focus
-open localhost preview from coding agent linux
