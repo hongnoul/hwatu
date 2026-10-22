@@ -1179,19 +1179,6 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
         }
         Some("console") => Ok(Request::Console { id, clear, limit }),
         Some("net") => Ok(Request::Net { id, clear, limit }),
-        Some("history") => {
-            // `hwatu history [query...] [--limit N] [--clear]`
-            let query = rest[1..]
-                .iter()
-                .map(|s| s.as_str())
-                .collect::<Vec<_>>()
-                .join(" ");
-            Ok(Request::History {
-                query,
-                limit,
-                clear,
-            })
-        }
         Some("clear-site-data") => Ok(Request::ClearSiteData {
             host: rest.get(1).map(|s| s.to_string()),
         }),
@@ -1214,17 +1201,6 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
         Some("handoffs") => Ok(Request::Handoffs {
             take: rest.get(1).and_then(|s| s.parse().ok()),
         }),
-        Some("jump") => {
-            let query = rest[1..]
-                .iter()
-                .map(|s| s.as_str())
-                .collect::<Vec<_>>()
-                .join(" ");
-            if query.is_empty() {
-                return Err("usage: hwatu jump <query>".into());
-            }
-            Ok(Request::Jump { query, open: true })
-        }
         Some("content") | Some("get-content") => {
             let format = match format_arg.as_deref() {
                 Some(v) => hwatu_ipc::ContentFormat::parse(v)
@@ -1415,10 +1391,8 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--profile <name|auto>] [url] 
     | upload [--id <id>] <selector> <path> \
 | scroll [--id <id>] [<selector> [nth]] [--contains <text>] [--to-y <px>] [--by <pages>] \
 | snapshot [--id <id>] [--diff] [--rect] [--budget <chars>] \
-| history [<query>] [--limit <n>] [--clear] \
 | clear-site-data [<host>] \
 | handoff <id> --reason <text> [--now] | handoffs [<id>] \
-| jump <query> \
 | content [<selector>] [--format (text|html|title|links)] [--max-chars <n>] [--id <id>] \
 | fill --field <selector>=<value> [--field '<sel>:checked=true' ...] [--submit] [--id <id>] \
 | downloads [--limit <n>] \

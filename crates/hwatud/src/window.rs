@@ -10,7 +10,6 @@
 //! On focus, a prewarmed WebView is adopted and the state restored, so
 //! resume feels instant.
 
-use crate::launcher;
 use crate::prompts::{self, Prompt, Prompts};
 use crate::Daemon;
 use gtk::prelude::*;
@@ -51,15 +50,6 @@ fn headless_size() -> (i32, i32) {
         })
         .filter(|&(w, h)| w > 0 && h > 0)
         .unwrap_or((1920, 1080))
-}
-
-/// Page a bare `hwatu` opens, if the user configured one with
-/// HWATU_HOME (any URL, or `about:blank`). Unset means the built-in
-/// launcher page with the URL bar pre-opened.
-fn home_page() -> Option<String> {
-    std::env::var("HWATU_HOME")
-        .ok()
-        .filter(|v| !v.trim().is_empty())
 }
 
 /// WebKit cancels the in-flight main-frame request when another navigation
@@ -467,31 +457,6 @@ fn parse_feature_overrides(raw: &str) -> Vec<(String, bool)> {
         .collect()
 }
 
-/// Push a closing window onto the reopen stack (ctrl+shift+t), capped
-/// at 10 like mainstream browsers keep reachable by key. Headless
-/// windows belong to an agent's verification run, and blank/launcher
-/// pages are not worth resurrecting; none are recorded.
-fn remember_recently_closed(stack: &RefCell<Vec<crate::session::SessionEntry>>, info: WindowInfo) {
-    if info.mode == OpenMode::Headless
-        || info.url.is_empty()
-        || info.url == "about:blank"
-        || crate::launcher::is_launcher(&info.url)
-    {
-        return;
-    }
-    let mut closed = stack.borrow_mut();
-    closed.push(crate::session::SessionEntry {
-        url: info.url,
-        title: info.title,
-        app_id: info.app_id,
-        mode: info.mode,
-    });
-    let overflow = closed.len().saturating_sub(10);
-    if overflow > 0 {
-        closed.drain(..overflow);
-    }
-}
-
 /// Set the Wayland xdg_toplevel app_id for one window, overriding the
 /// GTK-derived application id. No-op on X11 (WM_CLASS stays global to
 /// the GTK app; per-window class on X11 is not worth the unsafe Xlib).
@@ -674,24 +639,11 @@ impl BrowserWindow {
                 .filter(|p| !p.is_empty())
                 .map(String::from),
         );
-        // No URL and no configured home page: show the launcher (the
-        // keybind cheat sheet) with the URL bar already open, so a
-        // bare `hwatu` is "type where you want to go".
-        let target = match url.or_else(home_page) {
-            Some(url) => {
-                this.mark_nav_pending(&url);
-                this.remember_url(&url);
-                webview.load_uri(&url);
-                url
-            }
-            None => {
-                let uri = launcher::deal_uri(daemon.take_deal());
-                this.mark_nav_pending(&uri);
-                this.remember_url(&uri);
-                webview.load_uri(&uri);
-                uri
-            }
-        };
+        // No URL: about:blank.
+        let target = url.unwrap_or_else(|| "about:blank".to_string());
+        this.mark_nav_pending(&target);
+        this.remember_url(&target);
+        webview.load_uri(&target);
         this.show();
         WindowInfo {
             id: this.id,
@@ -966,9 +918,6 @@ impl BrowserWindow {
                     return glib::Propagation::Proceed;
                 };
                 this.cancel_discard_timer();
-                // Remember the page for ctrl+shift+t before the window
-                // leaves the registry.
-                remember_recently_closed(&daemon.recently_closed, this.info());
                 // The GTK toplevel dying does not kill the web process:
                 // WebKit caches it for reuse, and a cached process keeps
                 // running its page — an autoplaying video's audio audibly
@@ -983,7 +932,6 @@ impl BrowserWindow {
                     }
                 }
                 daemon.windows.borrow_mut().remove(&id);
-                daemon.schedule_session_save();
                 daemon
                     .events
                     .emit("window", Some(id), serde_json::json!({ "state": "closed" }));
@@ -992,7 +940,6 @@ impl BrowserWindow {
         }
 
         daemon.windows.borrow_mut().insert(id, this.clone());
-        daemon.schedule_session_save();
         this
     }
 
@@ -1006,12 +953,6 @@ impl BrowserWindow {
             let title = wv.title().unwrap_or_default();
             if !title.is_empty() {
                 this.last_title.replace(title.to_string());
-                // History completion shows titles (roadmap H9).
-                if this.mode.get() != OpenMode::Headless {
-                    if let Some(url) = wv.uri() {
-                        this.daemon.history.record_title(&url, &title);
-                    }
-                }
             }
             win.set_title(Some(if title.is_empty() {
                 "hwatu"
@@ -1019,14 +960,10 @@ impl BrowserWindow {
                 title.as_str()
             }));
         });
-        // Every navigation refreshes the crash-recovery snapshot
-        // (debounced in the daemon).
         {
-            let daemon = self.daemon.clone();
             let this = self.clone();
             webview.connect_uri_notify(move |wv| {
                 this.remember_webview_url(wv);
-                daemon.schedule_session_save();
             });
         }
         // A gray WebKit surface during a slow or wedged load used to look
@@ -1071,29 +1008,6 @@ impl BrowserWindow {
                     // baseline: the next `snapshot --diff` starts over.
                     this.snapshot_baseline.replace(None);
                     this.clear_recovery_overlay();
-                    // Per-site zoom (roadmap H5): apply the remembered
-                    // level for the new document's host. Explicitly
-                    // reset to 1.0 otherwise, or a zoom picked up on
-                    // one site follows the window to the next.
-                    let host = prompts::host_of(&wv.uri().unwrap_or_default());
-                    let level = this.daemon.site_store.zoom(&host).unwrap_or(1.0);
-                    if (wv.zoom_level() - level).abs() > 0.001 {
-                        wv.set_zoom_level(level);
-                    }
-                    // Global history (roadmap H9): record user
-                    // navigations. Headless windows belong to agent
-                    // verification runs; internal pages and blanks
-                    // are not completions anyone wants.
-                    if this.mode.get() != OpenMode::Headless {
-                        if let Some(url) = wv.uri() {
-                            if !url.is_empty()
-                                && url != "about:blank"
-                                && !launcher::is_launcher(&url)
-                            {
-                                this.daemon.history.record_visit(&url);
-                            }
-                        }
-                    }
                     this.emit_load(wv, "committed");
                 }
                 webkit6::LoadEvent::Finished => {
@@ -2055,56 +1969,8 @@ impl BrowserWindow {
 mod tests {
     use super::{
         external_uri_scheme, is_ctrl_click_link, load_was_cancelled, parse_feature_overrides,
-        remember_recently_closed, termination_info,
+        termination_info,
     };
-
-    /// The reopen stack (ctrl+shift+t) records user windows newest
-    /// last, skips headless/blank/launcher pages, and caps at 10 so
-    /// the key can't dredge up the whole session's history.
-    #[test]
-    fn reopen_stack_records_user_windows_and_caps() {
-        use hwatu_ipc::{OpenMode, WindowInfo};
-        let info = |url: &str, mode| WindowInfo {
-            id: 1,
-            url: url.into(),
-            title: "t".into(),
-            focused: false,
-            suspended: false,
-            app_id: None,
-            mode,
-            web_process_terminated: None,
-        };
-        let stack = std::cell::RefCell::new(Vec::new());
-        // Recorded: a normal page, and a background window too (the
-        // reopen key should bring back agent-opened pages the user
-        // closed by hand).
-        remember_recently_closed(&stack, info("https://a.example/", OpenMode::Normal));
-        remember_recently_closed(&stack, info("https://b.example/", OpenMode::Background));
-        // Skipped: headless, blank, launcher.
-        remember_recently_closed(&stack, info("https://c.example/", OpenMode::Headless));
-        remember_recently_closed(&stack, info("", OpenMode::Normal));
-        remember_recently_closed(&stack, info("about:blank", OpenMode::Normal));
-        remember_recently_closed(&stack, info(crate::launcher::URI, OpenMode::Normal));
-        {
-            let closed = stack.borrow();
-            assert_eq!(closed.len(), 2);
-            // Newest last: pop() must return the most recent close.
-            assert_eq!(closed[0].url, "https://a.example/");
-            assert_eq!(closed[1].url, "https://b.example/");
-        }
-        // Cap at 10, evicting oldest first: 2 seeds + 12 pushes = 14,
-        // so a/b and n0/n1 fall off and n2 is the oldest survivor.
-        for i in 0..12 {
-            remember_recently_closed(
-                &stack,
-                info(&format!("https://n{i}.example/"), OpenMode::Normal),
-            );
-        }
-        let closed = stack.borrow();
-        assert_eq!(closed.len(), 10);
-        assert_eq!(closed[0].url, "https://n2.example/");
-        assert_eq!(closed[9].url, "https://n11.example/");
-    }
 
     #[test]
     fn baseline_enables_the_complete_opfs_feature_bundle() {
@@ -2272,7 +2138,6 @@ mod tests {
         assert_eq!(external_uri_scheme("https://zoom.us/join"), None);
         assert_eq!(external_uri_scheme("HTTP://example.com"), None);
         assert_eq!(external_uri_scheme("javascript:alert(1)"), None);
-        assert_eq!(external_uri_scheme("hwatu://launcher"), None);
         assert_eq!(external_uri_scheme("not a uri"), None);
         assert_eq!(external_uri_scheme("1invalid:value"), None);
     }

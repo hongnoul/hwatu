@@ -513,11 +513,7 @@ fn clear_site_data(daemon: &Rc<Daemon>, host: Option<String>, reply: automation:
     let types = webkit6::WebsiteDataTypes::all();
     // hwatu-side memory first (synchronous, always succeeds).
     let decisions = daemon.site_store.clear_permissions(host.as_deref());
-    let history = if host.is_none() {
-        daemon.history.clear()
-    } else {
-        0
-    };
+    let history = 0;
 
     // WebKit's clear/remove callbacks demand Send, but Reply is a
     // main-thread closure. The callbacks do run on this same GLib
@@ -1049,91 +1045,9 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, transport: TransportKind, reply: 
         })),
         Request::Console { id, clear, limit } => automation::console(daemon, id, clear, limit),
         Request::Net { id, clear, limit } => automation::net(daemon, id, clear, limit),
-        Request::Jump { query, open } => {
-            // Fuzzy jump (roadmap H29): open windows first, then
-            // history. Window scoring reuses the history matcher's
-            // spirit: substring on url/title, host-prefix boost.
-            let q = query.to_lowercase();
-            let best_window = {
-                let windows = daemon.windows.borrow();
-                let mut best: Option<(u64, i32)> = None;
-                for w in windows.values() {
-                    let info = w.info();
-                    // Headless windows belong to agents; jumping into
-                    // one would materialize an agent's workspace.
-                    if info.mode == hwatu_ipc::OpenMode::Headless {
-                        continue;
-                    }
-                    let url = info.url.to_lowercase();
-                    let title = info.title.to_lowercase();
-                    let host = url
-                        .strip_prefix("https://")
-                        .or_else(|| url.strip_prefix("http://"))
-                        .unwrap_or(&url)
-                        .trim_start_matches("www.");
-                    let score = if host.starts_with(&q) {
-                        3
-                    } else if url.contains(&q) || title.contains(&q) {
-                        1
-                    } else {
-                        continue;
-                    };
-                    if best.is_none_or(|(_, s)| score > s) {
-                        best = Some((info.id, score));
-                    }
-                }
-                best
-            };
-            if let Some((id, _)) = best_window {
-                if crate::compositor::display_free() {
-                    reply(Response::err(
-                        "no display: hwatud is running display-free; cannot focus".to_string(),
-                    ));
-                    return;
-                }
-                let win = daemon.windows.borrow().get(&id).cloned();
-                if let Some(win) = win {
-                    win.present();
-                    daemon.last_target.replace(Some(id));
-                    reply(Response::value(serde_json::json!({
-                        "jump": "focused",
-                        "id": id,
-                    })));
-                    return;
-                }
-            }
-            // No live window: fall back to history.
-            let hits = daemon.history.complete(&query, 1);
-            match hits.into_iter().next() {
-                Some(hit) if open => {
-                    let info = BrowserWindow::open(
-                        daemon,
-                        Some(hit.url.clone()),
-                        None,
-                        hwatu_ipc::OpenMode::Normal,
-                    );
-                    daemon.last_target.replace(Some(info.id));
-                    reply(Response::value(serde_json::json!({
-                        "jump": "opened",
-                        "id": info.id,
-                        "url": hit.url,
-                    })));
-                }
-                Some(hit) => {
-                    reply(Response::value(serde_json::json!({
-                        "jump": "match",
-                        "url": hit.url,
-                        "title": hit.title,
-                    })));
-                }
-                None => {
-                    reply(Response::err(format!(
-                        "no window or history match for {query:?}"
-                    )));
-                }
-            }
-            return;
-        }
+        Request::Jump { .. } | Request::History { .. } => Response::err(
+            "history and jump were removed: the browser keeps no browsing history",
+        ),
         Request::Handoff { id, reason, now } => {
             let Some(win) = daemon.windows.borrow().get(&id).cloned() else {
                 reply(Response::err(format!("no window {id}")));
@@ -1263,31 +1177,6 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, transport: TransportKind, reply: 
             }
             return;
         }
-        Request::History {
-            query,
-            limit,
-            clear,
-        } => {
-            if clear {
-                let removed = daemon.history.clear();
-                Response::value(serde_json::json!({ "cleared": removed }))
-            } else {
-                let hits = daemon
-                    .history
-                    .complete(&query, limit.unwrap_or(20).min(100));
-                let entries: Vec<_> = hits
-                    .into_iter()
-                    .map(|h| {
-                        serde_json::json!({
-                            "url": h.url,
-                            "title": h.title,
-                            "score": h.score,
-                        })
-                    })
-                    .collect();
-                Response::value(serde_json::json!({ "history": entries }))
-            }
-        }
         Request::Open {
             url,
             app_id,
@@ -1394,21 +1283,7 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, transport: TransportKind, reply: 
         Request::Quit => {
             // Reply first, then exit from an idle callback so the response
             // actually reaches the client before the process dies.
-            let daemon = daemon.clone();
             glib::timeout_add_local_once(std::time::Duration::from_millis(50), move || {
-                // Clean quit: default is no resurrection next start.
-                // `"restore_session": true` (roadmap H19) opts into
-                // restoring even after intentional exits — the WM-
-                // workspace crowd treats the browser session as
-                // durable state, not a per-run artifact.
-                let restore_on_quit = crate::window::config_value("restore_session")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                if restore_on_quit {
-                    daemon.save_session_now();
-                } else {
-                    crate::session::clear();
-                }
                 let _ = std::fs::remove_file(hwatu_ipc::socket_path());
                 std::process::exit(0);
             });
@@ -1585,23 +1460,22 @@ fn finish_batch(
 /// bare hosts get `https://` (`http://` for
 /// loopback: `localhost`, `*.localhost`, `127.*`, `[::1]`, since local
 /// dev servers rarely speak TLS), and anything that doesn't look like
-/// a URL becomes a web search with the configured engine (see
-/// [`crate::search`]). Shared with the in-window URL bar so both
-/// entry points resolve input identically.
+/// a URL is returned as-is so the engine reports a load error. No
+/// input is turned into a web search.
 pub fn normalize_url(input: String) -> String {
     let input = input.trim().to_string();
-    if input.contains("://") || input.starts_with("about:") {
+    if input.contains("://") || input.starts_with("about:") || input.starts_with("data:") {
         input
     } else if let Ok(path) = std::fs::canonicalize(&input) {
         glib::filename_to_uri(path, None)
             .map(String::from)
-            .unwrap_or_else(|_| crate::search::url_for(&input))
+            .unwrap_or(input)
     } else if is_loopback_host(&input) {
         format!("http://{input}")
     } else if looks_like_host(&input) {
         format!("https://{input}")
     } else {
-        crate::search::url_for(&input)
+        input
     }
 }
 
@@ -1765,33 +1639,12 @@ mod tests {
     }
 
     #[test]
-    fn queries_become_searches() {
-        // The engine is user-configured, so assert against the search
-        // module rather than a hardcoded engine URL.
-        assert_eq!(
-            normalize_url("rust borrow checker".into()),
-            crate::search::url_for("rust borrow checker")
-        );
-        assert_eq!(normalize_url("vim".into()), crate::search::url_for("vim"));
-        assert_eq!(
-            normalize_url("  what is 2+2?  ".into()),
-            crate::search::url_for("what is 2+2?")
-        );
-        // Any whitespace means search, even with a dot: real URLs
-        // never contain raw spaces.
-        assert_eq!(
-            normalize_url("example.com login page".into()),
-            crate::search::url_for("example.com login page")
-        );
-        // Dotted single tokens stay URLs, path and all.
+    fn non_urls_are_not_turned_into_searches() {
+        assert_eq!(normalize_url("rust borrow checker".into()), "rust borrow checker");
+        assert_eq!(normalize_url("vim".into()), "vim");
         assert_eq!(
             normalize_url("example.com/a?b=1".into()),
             "https://example.com/a?b=1"
-        );
-        // Trailing/leading dots are not hosts.
-        assert_eq!(
-            normalize_url("what.".into()),
-            crate::search::url_for("what.")
         );
     }
 

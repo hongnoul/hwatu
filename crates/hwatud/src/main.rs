@@ -19,9 +19,7 @@ mod downloads;
 mod engine;
 mod events;
 mod focusshield;
-mod history;
 mod ipc_server;
-mod launcher;
 mod mediashim;
 mod net;
 mod observe;
@@ -29,8 +27,6 @@ mod opfs;
 mod passfill;
 mod private_files;
 mod prompts;
-mod search;
-mod session;
 mod sitedata;
 mod siteua;
 mod snapbudget;
@@ -43,7 +39,6 @@ mod window;
 
 use gtk::prelude::*;
 use gtk::{gio, glib};
-use hwatu_ipc::OpenMode;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -70,12 +65,9 @@ pub struct Daemon {
     pub prewarmed: RefCell<Option<webkit6::WebView>>,
     /// Built-in content blocker (on by default).
     pub adblock: adblock::Adblock,
-    /// Per-site decisions (permissions, zoom), persistent on disk
+    /// Per-site permission decisions, persistent on disk
     /// unless the daemon runs an ephemeral profile (roadmap H5).
     pub site_store: sitedata::Store,
-    /// Global visit history for URL completion (roadmap H9).
-    /// In-memory under ephemeral profiles.
-    pub history: history::Store,
     /// Pending human hand-offs (platform items 10-11): window id ->
     /// (reason, queued-at). Agents queue via `hwatu handoff`; the
     /// human drains via `hwatu handoffs` on their own schedule.
@@ -89,11 +81,6 @@ pub struct Daemon {
     /// and none is focused, so an agent that opened or drove a window
     /// can keep addressing it without repeating `id`.
     pub last_target: RefCell<Option<u64>>,
-    /// Recently closed user windows, newest last, capped small.
-    /// `ctrl+shift+t` (Action::ReopenClosed) pops from here. Headless
-    /// windows (agent verification runs) and blank/launcher pages are
-    /// never recorded.
-    pub recently_closed: RefCell<Vec<session::SessionEntry>>,
     /// Idle headless windows kept for reuse by `hwatu check`, so
     /// back-to-back checks navigate a warm window instead of paying
     /// window construction + prewarm-refill per check. Entries carry
@@ -109,13 +96,8 @@ pub struct Daemon {
     /// `check` of the same URL claims the window instead of paying
     /// the navigation. Tokens work like [`Self::check_pool`]'s.
     pub prefetch_pool: RefCell<Vec<(String, u64, u64)>>,
-    /// Debounce timer for crash-resilience session snapshots.
-    session_save_timer: RefCell<Option<glib::SourceId>>,
     /// Push-IPC subscribers (`subscribe` on a held-open connection).
     pub events: events::Broker,
-    /// Next hanafuda card to deal on a launcher window (see
-    /// [`launcher::deal_uri`]). Wraps modulo the deck size.
-    pub next_deal: RefCell<usize>,
     /// Operator security policy selected at daemon startup.
     pub security: SecurityConfig,
     /// Isolated network session used by every WebView when the daemon is
@@ -195,16 +177,12 @@ impl Daemon {
             prewarmed: RefCell::new(None),
             adblock: adblock::Adblock::default(),
             site_store: sitedata::SiteStore::load(!security.ephemeral_profile),
-            history: history::History::load(!security.ephemeral_profile),
             handoffs: RefCell::new(Vec::new()),
             downloads: downloads::Registry::default(),
             last_target: RefCell::new(None),
-            recently_closed: RefCell::new(Vec::new()),
             check_pool: RefCell::new(Vec::new()),
             prefetch_pool: RefCell::new(Vec::new()),
-            session_save_timer: RefCell::new(None),
             events: events::Broker::default(),
-            next_deal: RefCell::new(0),
             security,
             network_session,
             profiles: RefCell::new(HashMap::new()),
@@ -261,15 +239,6 @@ impl Daemon {
         session
     }
 
-    /// Deal the next hanafuda card index and advance the counter,
-    /// wrapping after the whole deck.
-    pub fn take_deal(&self) -> usize {
-        let mut n = self.next_deal.borrow_mut();
-        let deal = *n;
-        *n = (deal + 1) % launcher::DECK_SIZE;
-        deal
-    }
-
     /// Take the warm WebView (or build one) and immediately warm the next.
     pub fn take_webview(self: &Rc<Self>) -> webkit6::WebView {
         let view = self.prewarmed.borrow_mut().take().unwrap_or_else(|| {
@@ -314,47 +283,6 @@ impl Daemon {
         id
     }
 
-    /// Snapshot the window set for crash recovery, debounced (2 s) so
-    /// bursty navigation doesn't thrash the disk. The trailing save
-    /// always runs, so the file converges on the true state.
-    pub fn schedule_session_save(self: &Rc<Self>) {
-        if self.security.ephemeral_profile {
-            return;
-        }
-        if self.session_save_timer.borrow().is_some() {
-            return;
-        }
-        let daemon = self.clone();
-        let source = glib::timeout_add_local_once(std::time::Duration::from_secs(2), move || {
-            daemon.session_save_timer.replace(None);
-            daemon.save_session_now();
-        });
-        self.session_save_timer.replace(Some(source));
-    }
-
-    pub fn save_session_now(&self) {
-        if self.security.ephemeral_profile {
-            return;
-        }
-        let entries: Vec<session::SessionEntry> = {
-            let windows = self.windows.borrow();
-            let mut infos: Vec<_> = windows.values().map(|w| w.info()).collect();
-            infos.sort_by_key(|w| w.id);
-            infos
-                .into_iter()
-                // Headless windows belong to an agent's verification
-                // run, not the user's session; do not resurrect them.
-                .filter(|w| !w.url.is_empty() && w.mode != OpenMode::Headless)
-                .map(|w| session::SessionEntry {
-                    url: w.url,
-                    title: w.title,
-                    app_id: w.app_id,
-                    mode: w.mode,
-                })
-                .collect()
-        };
-        session::save(&entries);
-    }
 }
 
 /// Point the default network session's cookie jar at a SQLite file in
@@ -607,40 +535,14 @@ fn main() -> glib::ExitCode {
         open_sandbox_for_media();
         // Spell check (H6): Enchant backend on, locale-derived language.
         enable_spell_checking();
-        // Internal pages (hwatu://launcher) before any WebView exists.
-        launcher::register_scheme();
         adblock::Adblock::init(&daemon);
         daemon.schedule_prewarm();
         if let Err(e) = ipc_server::start(daemon.clone()) {
             eprintln!("hwatud: failed to start IPC server: {e}");
             std::process::exit(1);
         }
-        // Crash resilience: a leftover session file means the previous
-        // daemon died uncleanly (clean quits delete it); reopen its
-        // windows. After the socket is up so spawn timing stays honest.
-        let leftovers = if daemon.security.ephemeral_profile {
-            Vec::new()
-        } else {
-            session::take()
-        };
-        if !leftovers.is_empty() {
-            println!(
-                "hwatud: restoring {} window(s) from a previous session",
-                leftovers.len()
-            );
-            for entry in leftovers {
-                // Reopen in the saved mode: a background window (agent
-                // verification, WM-rule-hidden) must not come back as a
-                // focused Normal window after a crash.
-                BrowserWindow::open(&daemon, Some(entry.url), entry.app_id, entry.mode);
-            }
-        }
-        // SIGTERM/SIGINT/SIGHUP (logout, `kill` during an update,
-        // Ctrl+C in a terminal): the default action kills the process
-        // between debounced saves, losing any window opened or
-        // navigated in the last 2 s. Flush the snapshot synchronously
-        // and exit; the file is left behind on purpose so the next
-        // start restores the windows (only `hwatu quit` clears it).
+        // SIGTERM/SIGINT/SIGHUP: quit the GTK application cleanly so the
+        // child compositor and web processes are torn down.
         for signum in [
             libc_signals::SIGTERM,
             libc_signals::SIGINT,
@@ -648,7 +550,6 @@ fn main() -> glib::ExitCode {
         ] {
             let daemon = daemon.clone();
             glib::unix_signal_add_local(signum, move || {
-                daemon.save_session_now();
                 daemon.app.quit();
                 glib::ControlFlow::Break
             });
