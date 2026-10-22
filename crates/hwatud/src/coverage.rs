@@ -400,6 +400,7 @@ try {
 try { out.session_storage_count = sessionStorage.length; } catch (_) { out.session_storage_count = 0; }
 out.likely_authenticated = out.cookie_count > 0
   && (out.cookie_names || []).some(n => /sess|token|auth|sid|login|jwt|csrf/i.test(n));
+out.login_wall = __LOGIN_WALL__;
 return out;"#;
     let win = match resolve(daemon, id) {
         Ok(win) => win,
@@ -426,6 +427,19 @@ return out;"#;
                             .map(serde_json::Value::from)
                             .unwrap_or(serde_json::Value::Null),
                     );
+                    // Structured stop: a visible login wall becomes
+                    // `login_required` so the agent asks the user.
+                    let wall = map.remove("login_wall").filter(|v| !v.is_null());
+                    let url = map
+                        .get("url")
+                        .and_then(|u| u.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    map.insert(
+                        "login_required".into(),
+                        wall.map(|w| crate::stops::login_required(&w, &url))
+                            .unwrap_or(serde_json::Value::Null),
+                    );
                 }
                 Response::Ok {
                     value: Some(value),
@@ -443,7 +457,7 @@ return out;"#;
     eval_with(
         daemon,
         Some(win.id),
-        JS.to_string(),
+        JS.replace("__LOGIN_WALL__", crate::stops::LOGIN_WALL_JS.trim()),
         None,
         NavPolicy::Error,
         reply,
@@ -621,7 +635,7 @@ fn try_until_step(state: Rc<TryUntilState>) {
                 "result": value,
             })));
         }
-        Response::Err { message } => {
+        Response::Err { message, .. } => {
             state2.errors.borrow_mut().push(serde_json::json!({
                 "alternative": index,
                 "action": kind,
@@ -648,6 +662,7 @@ fn dispatch_alternative(
             contains,
             r#ref,
             trusted,
+            confirm,
             ..
         } => automation::click(
             daemon,
@@ -657,6 +672,7 @@ fn dispatch_alternative(
             contains,
             r#ref,
             trusted,
+            confirm,
             Some(timeout_ms),
             reply,
         ),
@@ -933,7 +949,7 @@ return {{ url: location.href, title: document.title,
                         .borrow_mut()
                         .push(serde_json::json!({ "url": url, "error": "empty harvest" }));
                 }
-                Response::Err { message } => {
+                Response::Err { message, .. } => {
                     state
                         .pages
                         .borrow_mut()

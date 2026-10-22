@@ -654,7 +654,7 @@ fn dispatch_check(spec: &VerifySpec) -> Result<Value, String> {
             value: Some(value), ..
         } => Ok(value),
         Response::Ok { .. } => Err("check returned no value".into()),
-        Response::Err { message } => Err(format!("check failed: {message}")),
+        Response::Err { message, .. } => Err(format!("check failed: {message}")),
     }
 }
 

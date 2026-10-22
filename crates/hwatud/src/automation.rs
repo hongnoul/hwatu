@@ -542,11 +542,13 @@ pub fn wait_load(
     });
 }
 
-/// Detect CAPTCHA / anti-bot challenge UI, and optionally wait for the
-/// human/user to clear it. This is intentionally detection-only: it does
-/// not call solver services, inject answer tokens, or alter browser
-/// fingerprints. The returned JSON is for agent orchestration: pause,
-/// present the window if needed, and resume after a manual solve.
+/// Detect CAPTCHA / anti-bot challenge UI, and optionally wait for it to
+/// clear. Agents solve challenges with the standard commands (`shot`,
+/// `snapshot`, `click --trusted`, `type`); this command reports what is on
+/// the page. With `wait`, a challenge still present at the deadline returns
+/// a structured `challenge` stop so the agent can hand off through `show`.
+/// It never calls solver services, injects answer tokens, or alters
+/// browser fingerprints.
 pub fn challenge(
     daemon: &Rc<Daemon>,
     id: Option<u64>,
@@ -559,6 +561,21 @@ pub fn challenge(
         challenge_wait_js(ms)
     } else {
         challenge_detect_js()
+    };
+    let reply: Reply = if wait {
+        Box::new(move |resp| match &resp {
+            Response::Ok {
+                value: Some(value), ..
+            } if value.get("status").and_then(|s| s.as_str()) == Some("manual_required") => {
+                reply(Response::stop(
+                    "challenge still present; the agent could not clear it",
+                    crate::stops::challenge_blocked(value),
+                ))
+            }
+            _ => reply(resp),
+        })
+    } else {
+        reply
     };
     eval_with(daemon, id, js, timeout_ms, NavPolicy::Success, reply);
 }
@@ -577,7 +594,7 @@ current.elapsed_ms = hwatuNow() - started;
 if (current.status === 'challenge') {{
   current.status = 'manual_required';
   current.manual_required = true;
-  current.details = `challenge still present after ${{current.elapsed_ms}} ms; solve it in the browser, then retry or wait again`;
+  current.details = `challenge still present after ${{current.elapsed_ms}} ms`;
 }} else {{
   current.status = 'cleared';
   current.manual_required = false;
@@ -1113,7 +1130,7 @@ pub fn check(
                 Box::new(move |resp| {
                     result.borrow_mut()["eval"] = match resp {
                         Response::Ok { value, .. } => value.unwrap_or(serde_json::Value::Null),
-                        Response::Err { message } => serde_json::json!({ "error": message }),
+                        Response::Err { message, .. } => serde_json::json!({ "error": message }),
                     };
                     finish();
                 }),
@@ -1139,7 +1156,7 @@ pub fn check(
                         } => {
                             result.borrow_mut()["shot_data"] = serde_json::json!(data);
                         }
-                        Response::Err { message } => {
+                        Response::Err { message, .. } => {
                             result.borrow_mut()["shot"] = serde_json::json!({ "error": message });
                         }
                         _ => {}
@@ -1310,7 +1327,7 @@ fn sweep_pass(sweep: Rc<Sweep>, i: usize) {
             }
             let label = vp.label();
             let entry = Rc::new(RefCell::new(serde_json::json!({ "size": label })));
-            if let Response::Err { message } = resp {
+            if let Response::Err { message, .. } = resp {
                 entry.borrow_mut()["error"] =
                     serde_json::json!(format!("resize to {label} failed: {message}"));
                 sweep.entries.borrow_mut().push(entry.borrow().clone());
@@ -1349,7 +1366,7 @@ fn sweep_pass(sweep: Rc<Sweep>, i: usize) {
                     Box::new(move |resp| {
                         entry.borrow_mut()["eval"] = match resp {
                             Response::Ok { value, .. } => value.unwrap_or(serde_json::Value::Null),
-                            Response::Err { message } => serde_json::json!({ "error": message }),
+                            Response::Err { message, .. } => serde_json::json!({ "error": message }),
                         };
                         advance();
                     }),
@@ -1376,7 +1393,7 @@ fn sweep_pass(sweep: Rc<Sweep>, i: usize) {
                             } => {
                                 entry.borrow_mut()["shot_data"] = serde_json::json!(data);
                             }
-                            Response::Err { message } => {
+                            Response::Err { message, .. } => {
                                 entry.borrow_mut()["shot"] =
                                     serde_json::json!({ "error": message });
                             }
@@ -3032,8 +3049,67 @@ fn trusted_input_run(
 /// Click an element with a real pointer-event sequence at the
 /// element's center (pages listening on pointerdown/mousedown see the
 /// same shape as a human click). Reports what was hit.
+///
+/// Unless `confirm` is set, the target is first classified by
+/// [`crate::stops::IRREVERSIBLE_JS`]; a payment, send, or delete control
+/// returns a structured `irreversible_action` stop and is not clicked.
 #[allow(clippy::too_many_arguments)]
 pub fn click(
+    daemon: &Rc<Daemon>,
+    id: Option<u64>,
+    selector: Option<String>,
+    nth: Option<u32>,
+    contains: Option<String>,
+    ref_idx: Option<u32>,
+    trusted: bool,
+    confirm: bool,
+    timeout_ms: Option<u64>,
+    reply: Reply,
+) {
+    if confirm {
+        return click_unguarded(
+            daemon, id, selector, nth, contains, ref_idx, trusted, timeout_ms, reply,
+        );
+    }
+    let prelude = match target_prelude(selector.as_deref(), nth, contains.as_deref(), ref_idx) {
+        Ok(p) => p,
+        Err(resp) => return OnceReply::new(reply).send(*resp),
+    };
+    let probe = format!(
+        "{prelude}\nreturn {{ irreversible: {classifier} }};",
+        classifier = crate::stops::IRREVERSIBLE_JS.trim()
+    );
+    let daemon2 = daemon.clone();
+    eval_with(
+        daemon,
+        id,
+        probe,
+        timeout_ms,
+        NavPolicy::Error,
+        Box::new(move |resp| {
+            let hit = match &resp {
+                Response::Ok {
+                    value: Some(value), ..
+                } => value.get("irreversible").filter(|v| !v.is_null()).cloned(),
+                // A probe failure (no match, bad ref) is reported by the
+                // click itself with its usual message.
+                _ => None,
+            };
+            match hit {
+                Some(hit) => {
+                    let (message, stop) = crate::stops::irreversible_action(&hit);
+                    reply(Response::stop(message, stop));
+                }
+                None => click_unguarded(
+                    &daemon2, id, selector, nth, contains, ref_idx, trusted, timeout_ms, reply,
+                ),
+            }
+        }),
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn click_unguarded(
     daemon: &Rc<Daemon>,
     id: Option<u64>,
     selector: Option<String>,
@@ -3577,10 +3653,17 @@ mod tests {
         let js = challenge_wait_js(2500);
         assert!(js.contains("const timeoutMs = 2500"));
         assert!(js.contains("manual_required"));
-        assert!(js.contains("solve it in the browser"));
+        assert!(js.contains("challenge still present"));
         assert!(!js.contains("2captcha"));
         assert!(!js.contains("anti-captcha"));
         assert!(!js.contains("capsolver"));
+        let stop = crate::stops::challenge_blocked(&serde_json::json!({
+            "status": "manual_required",
+            "challenge_type": "turnstile",
+            "url": "https://x",
+        }));
+        assert_eq!(stop["reason"], "challenge");
+        assert_eq!(stop["retry"]["command"], "show");
     }
 
     #[test]

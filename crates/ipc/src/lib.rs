@@ -588,6 +588,11 @@ pub enum Request {
         /// Use trusted native input instead of JS-dispatched events.
         #[serde(default, skip_serializing_if = "is_false")]
         trusted: bool,
+        /// The user confirmed this click in the current session. Without
+        /// it, a click on an irreversible control (pay, place order, buy,
+        /// send, delete) stops with `stop.reason = "irreversible_action"`.
+        #[serde(default, skip_serializing_if = "is_false")]
+        confirm: bool,
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
@@ -1613,6 +1618,11 @@ pub enum Response {
     },
     Err {
         message: String,
+        /// Structured stop: the reason the browser stopped and what the
+        /// agent must obtain from the user before retrying. Reasons:
+        /// `irreversible_action`, `login_required`, `challenge`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stop: Option<serde_json::Value>,
     },
 }
 
@@ -1672,6 +1682,21 @@ impl Response {
     pub fn err(message: impl Into<String>) -> Self {
         Response::Err {
             message: message.into(),
+            stop: None,
+        }
+    }
+    /// An error that carries a structured stop reason.
+    pub fn stop(message: impl Into<String>, stop: serde_json::Value) -> Self {
+        Response::Err {
+            message: message.into(),
+            stop: Some(stop),
+        }
+    }
+    /// Human-readable error text including the structured stop, if any.
+    pub fn error_text(message: &str, stop: &Option<serde_json::Value>) -> String {
+        match stop {
+            Some(stop) => format!("{message}\nstop: {stop}"),
+            None => message.to_string(),
         }
     }
 }
@@ -2439,6 +2464,7 @@ mod tests {
                     contains: Some("Save".into()),
                     r#ref: None,
                     trusted: false,
+                    confirm: false,
                     timeout_ms: None,
                 },
                 Request::Expect {

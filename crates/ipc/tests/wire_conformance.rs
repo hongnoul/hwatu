@@ -137,7 +137,7 @@ fn structured_errors_match_the_wire() {
     let fixture = include_str!("fixtures/responses/error.json");
     assert_golden_roundtrip::<Response>(fixture);
 
-    let Response::Err { message } =
+    let Response::Err { message, .. } =
         serde_json::from_str(fixture).expect("structured error response must parse")
     else {
         panic!("error fixture parsed as a successful response");

@@ -75,7 +75,7 @@ fn doctor() -> i32 {
             check("daemon", Ok(format!("ping ok (build {build})")));
             true
         }
-        Ok(Response::Err { message }) => {
+        Ok(Response::Err { message, .. }) => {
             check("daemon", Err(format!("ping refused: {message}")));
             false
         }
@@ -231,7 +231,7 @@ fn smoke_test() -> Result<String, String> {
             window: Some(w), ..
         }) => w.id,
         Ok(Response::Ok { .. }) => return Err("open returned no window".into()),
-        Ok(Response::Err { message }) => return Err(format!("open failed: {message}")),
+        Ok(Response::Err { message, .. }) => return Err(format!("open failed: {message}")),
         Err(e) => return Err(format!("open failed: {e}")),
     };
     let shot = std::env::temp_dir().join(format!("hwatu-doctor-{}.png", std::process::id()));
@@ -248,7 +248,7 @@ fn smoke_test() -> Result<String, String> {
         }) {
             Ok(Response::Ok { value: Some(v), .. }) if v.as_str() == Some("hwatu-doctor") => Ok(()),
             Ok(Response::Ok { value, .. }) => Err(format!("unexpected eval result: {value:?}")),
-            Ok(Response::Err { message }) => Err(format!("eval failed: {message}")),
+            Ok(Response::Err { message, .. }) => Err(format!("eval failed: {message}")),
             Err(e) => Err(format!("eval failed: {e}")),
         }?;
         match send(&Request::Screenshot {
@@ -264,7 +264,7 @@ fn smoke_test() -> Result<String, String> {
                 Ok(_) => Err("screenshot was empty".into()),
                 Err(e) => Err(format!("screenshot was not written: {e}")),
             },
-            Ok(Response::Err { message }) => Err(format!("screenshot failed: {message}")),
+            Ok(Response::Err { message, .. }) => Err(format!("screenshot failed: {message}")),
             other => Err(format!("screenshot failed: {other:?}")),
         }
     })();

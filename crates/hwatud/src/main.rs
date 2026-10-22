@@ -35,6 +35,7 @@ mod sitedata;
 mod siteua;
 mod snapbudget;
 mod snapdiff;
+mod stops;
 mod trusted_input;
 mod verify;
 mod vocab;

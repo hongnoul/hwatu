@@ -157,7 +157,7 @@ fn call(req: &Request) -> Result<Response, String> {
 fn call_ok(req: &Request) -> Result<Response, String> {
     match call(req)? {
         r @ Response::Ok { .. } => Ok(r),
-        Response::Err { message } => Err(message),
+        Response::Err { message, .. } => Err(message),
     }
 }
 
@@ -168,7 +168,7 @@ fn eval(id: u64, js: &str, timeout_ms: u64) -> Result<serde_json::Value, String>
         timeout_ms: Some(timeout_ms),
     })? {
         Response::Ok { value, .. } => Ok(value.unwrap_or(serde_json::Value::Null)),
-        Response::Err { message } => Err(message),
+        Response::Err { message, .. } => Err(message),
     }
 }
 
@@ -443,7 +443,7 @@ fn observe_motion(live: u64) -> (Vec<serde_json::Value>, Option<String>) {
     match resp {
         Ok(Response::Ok { value: Some(v), .. }) => (unreplicated_motion_entries(&v), None),
         Ok(Response::Ok { .. }) => (vec![], Some("motion observe returned no data".into())),
-        Ok(Response::Err { message }) => (vec![], Some(message)),
+        Ok(Response::Err { message, .. }) => (vec![], Some(message)),
         Err(message) => (vec![], Some(message)),
     }
 }

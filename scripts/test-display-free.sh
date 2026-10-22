@@ -174,15 +174,41 @@ match="$(grep -o '"match_percent":[0-9.]*' <<<"$out" | cut -d: -f2)"
 check "display-free pixels match hosted run (>= 99%, got ${match:-none})" \
     awk "BEGIN { exit !(${match:-0} >= 99) }"
 
-# 4. focus returns the structured no-display error, daemon survives
+# 4. show returns the structured no-display error, daemon survives
 id="$(hw render --stdin --keep <<<"$fixture" | grep -o '"id":[0-9]*' | cut -d: -f2)"
-if err="$(hw focus "${id:-1}" 2>&1)"; then
-    bad "focus fails display-free"
+if err="$(hw show "${id:-1}" 2>&1)"; then
+    bad "show fails display-free"
 else
-    check "focus error names the missing display" grep -q "no display" <<<"$err"
+    check "show error names the missing display" grep -q "no display" <<<"$err"
 fi
 out="$(hw ping)"
-check "daemon still answers after the focus error" grep -q '"build"' <<<"$out"
+check "daemon still answers after the show error" grep -q '"build"' <<<"$out"
+
+# 4a. structured stops: an irreversible control is not clicked without
+# confirm; an ordinary control is; confirm performs the click; a login
+# wall is reported by auth-context.
+stops_page='<!DOCTYPE html><meta charset="utf-8"><title>stops</title>
+<body><button id="add" onclick="document.title=&quot;added&quot;">Add to cart</button>
+<button id="pay" onclick="document.title=&quot;paid&quot;">Place Order</button>
+<form action="/login"><input type="password" name="pw"></form></body>'
+sid="$(hw render --stdin --keep <<<"$stops_page" | grep -o '"id":[0-9]*' | cut -d: -f2)"
+out="$(hw click --id "$sid" '#add' 2>&1)"
+check "ordinary click is performed" grep -q '"clicked"' <<<"$out"
+if err="$(hw click --id "$sid" '#pay' 2>&1)"; then
+    bad "unconfirmed click on Place Order stops"
+else
+    check "unconfirmed Place Order returns irreversible_action stop" \
+        grep -q '"reason":"irreversible_action"' <<<"$err"
+fi
+out="$(hw eval --id "$sid" 'return document.title')"
+check "stopped click did not run the page handler" grep -q '"added"' <<<"$out"
+out="$(hw click --id "$sid" --confirm '#pay' 2>&1)"
+check "confirmed click is performed" grep -q '"clicked"' <<<"$out"
+out="$(hw eval --id "$sid" 'return document.title')"
+check "confirmed click ran the page handler" grep -q '"paid"' <<<"$out"
+out="$(hw auth-context --id "$sid" 2>&1)"
+check "auth-context reports login_required" grep -q '"reason":"login_required"' <<<"$out"
+hw close "$sid" >/dev/null 2>&1 || true
 
 # 4b. exact viewport sizing under the child compositor (issue #7).
 # The pre-fix bug was height-only and size-dependent, so sample a few

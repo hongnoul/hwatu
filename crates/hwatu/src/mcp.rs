@@ -132,7 +132,7 @@ fn handle_tool_call(params: &Value) -> Result<String, String> {
     crate::normalize_request_paths(&mut request);
     let response = transact(&request)?;
     match response {
-        Response::Err { message } => Err(message),
+        Response::Err { message, stop } => Err(Response::error_text(&message, &stop)),
         ok => serde_json::to_string(&ok).map_err(|e| e.to_string()),
     }
 }
@@ -408,6 +408,7 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
                 contains: opt_str(args, "contains"),
                 r#ref,
                 trusted: opt_bool(args, "trusted").unwrap_or(false),
+                confirm: opt_bool(args, "confirm").unwrap_or(false),
                 timeout_ms,
             })
         }
@@ -845,6 +846,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
                 "contains": prop("string", "Keep only matches whose text contains this."),
                 "ref": prop("integer", "Interactable index from the last snapshot."),
                 "trusted": prop("boolean", "Request native trusted input synthesis instead of JS events."),
+                "confirm": prop("boolean", "The user confirmed this click in the current session. Without it, a click on a payment, send, or delete control returns stop.reason = irreversible_action and is not performed."),
             }),
             &[],
         ),

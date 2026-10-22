@@ -912,10 +912,11 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, transport: TransportKind, reply: 
             contains,
             r#ref,
             trusted,
+            confirm,
             timeout_ms,
         } => {
             return automation::click(
-                daemon, id, selector, nth, contains, r#ref, trusted, timeout_ms, reply,
+                daemon, id, selector, nth, contains, r#ref, trusted, confirm, timeout_ms, reply,
             );
         }
         Request::Type {
@@ -1498,7 +1499,7 @@ fn dispatch_batch_step(
         transport,
         Box::new(move |response| {
             let error = match &response {
-                Response::Err { message } => Some(message.clone()),
+                Response::Err { message, .. } => Some(message.clone()),
                 Response::Ok { .. } => None,
             };
             let failed = error.is_some();
@@ -1820,6 +1821,7 @@ mod tests {
                 contains: None,
                 r#ref: None,
                 trusted: false,
+                confirm: false,
                 timeout_ms: None,
             },
             Request::Type {

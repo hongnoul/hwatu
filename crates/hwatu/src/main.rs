@@ -200,8 +200,8 @@ fn main() {
                 println!("{p}");
             }
         }
-        Response::Err { message } => {
-            eprintln!("hwatu: {message}");
+        Response::Err { message, stop } => {
+            eprintln!("hwatu: {}", Response::error_text(&message, &stop));
             // "unknown variant" means the running daemon predates this
             // CLI's protocol: the classic stale-daemon failure after an
             // upgrade. Name the fix instead of leaving agents guessing.
@@ -350,6 +350,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
     let mut expect_watch = false;
     let mut mode = default_mode;
     let mut trusted = false;
+    let mut confirm = false;
     let mut format_arg: Option<String> = None;
     let mut max_chars: Option<usize> = None;
     let mut fields: Vec<hwatu_ipc::FormField> = Vec::new();
@@ -397,6 +398,8 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             wait = true;
         } else if arg == "--trusted" {
             trusted = true;
+        } else if arg == "--confirm" {
+            confirm = true;
         } else if arg == "--full" {
             full = true;
         } else if arg == "--nth" {
@@ -1081,7 +1084,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             let selector = rest.get(1).map(|s| s.to_string());
             if selector.is_none() && r#ref.is_none() {
                 return Err(
-                    "usage: hwatu click [--id <id>] [--trusted] <selector> [--nth <n>] [--contains <text>] \
+                    "usage: hwatu click [--id <id>] [--trusted] [--confirm] <selector> [--nth <n>] [--contains <text>] \
                      | --ref <n>"
                         .into(),
                 );
@@ -1093,6 +1096,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 contains,
                 r#ref,
                 trusted,
+                confirm,
                 timeout_ms,
             })
         }
@@ -1577,7 +1581,7 @@ fn expect_watch(request: Request) -> i32 {
     }
     match read_response(&mut install) {
         Ok(Response::Ok { .. }) => {}
-        Ok(Response::Err { message }) => {
+        Ok(Response::Err { message, .. }) => {
             eprintln!("hwatu: {message}");
             return 1;
         }
