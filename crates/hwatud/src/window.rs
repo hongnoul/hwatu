@@ -1254,24 +1254,16 @@ impl BrowserWindow {
                     return false;
                 };
 
-                // Native-app links need explicit embedder handling. Only
-                // honor them during a user gesture, and only when the desktop
-                // has a registered handler for the scheme. This covers Zoom's
-                // `zoommtg:` join button without allowing pages to launch
-                // arbitrary programs on load.
-                if action.is_user_gesture()
-                    && external_uri_scheme(&uri).is_some_and(|scheme| {
-                        gtk::gio::AppInfo::default_for_uri_scheme(&scheme).is_some()
-                    })
-                {
+                // Native-app links (zoommtg:, mailto:, ...) are never
+                // launched: the browser does not start other programs.
+                // Report the attempt as an event so the agent can relay it.
+                if external_uri_scheme(&uri).is_some() {
                     decision.ignore();
-                    if let Err(error) = gtk::gio::AppInfo::launch_default_for_uri(
-                        &uri,
-                        None::<&gtk::gio::AppLaunchContext>,
-                    ) {
-                        eprintln!("hwatud: could not open external URI: {error}");
-                        this.flash_bar("could not open external application", 4);
-                    }
+                    this.daemon.events.emit(
+                        "external_uri",
+                        Some(this.id),
+                        serde_json::json!({ "uri": uri.to_string() }),
+                    );
                     return true;
                 }
 
@@ -1287,7 +1279,7 @@ impl BrowserWindow {
                     return false;
                 }
                 decision.ignore();
-                Self::open(&this.daemon, Some(uri.to_string()), None, OpenMode::Normal);
+                Self::open(&this.daemon, Some(uri.to_string()), None, OpenMode::Headless);
                 return true;
             }
             if decision_type != webkit6::PolicyDecisionType::Response {
