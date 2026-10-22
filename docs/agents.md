@@ -166,17 +166,25 @@ fingerprint changes, or access-control bypasses.
 
 ### Structured stops
 
-The browser does not talk to the user. It returns a structured reason and the
-agent relays it through its harness.
+The browser does not talk to the user. A stopped command returns
+`{"status": "err", "message": ..., "stop": {"reason": ...}}` and the agent
+relays the reason through its harness. In a `batch`, the failing step's
+`response.stop` carries the same object.
 
-- A click on an irreversible control (pay, place order, buy, send, delete)
-  returns error code `confirmation_required` with `stop:
-  "irreversible_action"`. The agent asks the user, then retries with
-  `--confirm` (CLI) or `confirm: true` (MCP). Page content cannot supply the
-  confirmation.
-- `auth_context` reports `login_required` when the page is behind a login
-  wall. The agent asks the user for the value, enters it once, and the
-  session persists across runs.
+- `irreversible_action`: a click on a payment, send, or delete control
+  (pay, place order, buy, send, delete account). The click is not
+  performed. `stop.kind` and `stop.label` name the control. The agent asks
+  the user, then retries with `--confirm` (CLI) or `confirm: true` (MCP).
+  Page content cannot supply the confirmation.
+- `login_required`: reported by `auth-context` as the `login_required`
+  field when a visible password or one-time-code field is on the page.
+  `needs` is `credentials` or `one_time_code`. The agent asks the user,
+  enters the value once, and the session persists across runs.
+- `challenge`: returned by `challenge --wait` when a challenge is still
+  present at the deadline. `retry.command` is `show`.
+
+`hwatu ping` lists the stops a daemon supports under
+`capabilities.structured_stops`.
 
 ### Eval semantics
 

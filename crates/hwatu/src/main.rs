@@ -2913,4 +2913,71 @@ mod tests {
             })
         ));
     }
+
+    /// Every single-line `hwatu ...` example in README.md and
+    /// docs/agents.md parses. Keeps the docs and the CLI in step.
+    #[test]
+    fn documented_commands_parse() {
+        let docs = [
+            include_str!("../../../README.md"),
+            include_str!("../../../docs/agents.md"),
+        ];
+        let client_side = [
+            "doctor", "setup", "verify", "mcp", "update", "watch", "clone",
+        ];
+        let mut checked = 0;
+        for doc in docs {
+            for line in doc.lines() {
+                let Some(cmd) = line.trim().strip_prefix("hwatu ") else {
+                    continue;
+                };
+                let cmd = cmd.split(" #").next().unwrap().trim();
+                // Skip prose, multi-line quoted bodies, and stdin redirects.
+                if cmd.matches('\'').count() % 2 == 1 || cmd.contains(" is ") || cmd.contains('<') {
+                    continue;
+                }
+                let words: Vec<String> = shell_words(cmd)
+                    .into_iter()
+                    .map(|w| w.replace("$id", "3").replace("\"3\"", "3"))
+                    .collect();
+                if words
+                    .first()
+                    .is_some_and(|w| client_side.contains(&w.as_str()))
+                {
+                    continue;
+                }
+                assert!(
+                    parse(&words).is_ok(),
+                    "documented command does not parse: hwatu {cmd}: {:?}",
+                    parse(&words).err()
+                );
+                checked += 1;
+            }
+        }
+        assert!(checked > 40, "only {checked} documented commands found");
+    }
+
+    /// Minimal shell-like word splitting for doc examples.
+    fn shell_words(s: &str) -> Vec<String> {
+        let mut out = Vec::new();
+        let mut cur = String::new();
+        let mut quote: Option<char> = None;
+        for c in s.chars() {
+            match (quote, c) {
+                (Some(q), c) if c == q => quote = None,
+                (Some(_), c) => cur.push(c),
+                (None, '\'' | '"') => quote = Some(c),
+                (None, ' ') => {
+                    if !cur.is_empty() {
+                        out.push(std::mem::take(&mut cur));
+                    }
+                }
+                (None, c) => cur.push(c),
+            }
+        }
+        if !cur.is_empty() {
+            out.push(cur);
+        }
+        out
+    }
 }

@@ -34,20 +34,20 @@ MCP configuration is one entry:
 ## Quick start
 
 ```sh
-hwatu goto localhost:3000
-hwatu snapshot                      # page state as data
-hwatu click @e3
-hwatu type @e5 "Test User"
-hwatu expect text "Saved"           # assertion with polling
+hwatu localhost:3000                # open a headless window, prints its id
+hwatu snapshot                      # page state as data, with interactable refs
+hwatu click --ref 3
+hwatu type --ref 5 "Test User"
+hwatu expect '.status' --text Saved # assertion with polling
 hwatu shot /tmp/after.png
-hwatu show                          # render the live session for a person
+hwatu show 1                        # make window 1 visible to a person
 ```
 
 A sequence runs in one call. `batch` waits on page state instead of fixed
 delays and returns a result per step:
 
 ```sh
-hwatu batch steps.json
+hwatu batch --stdin < steps.json
 ```
 
 The full command set is in [docs/agents.md](docs/agents.md).
@@ -66,8 +66,9 @@ it.
 
 - Login walls are reported as `login_required`. The agent asks the user and
   enters the value once. The session persists.
-- Irreversible actions (pay, place order, send, delete) return
-  `confirmation_required` until the user confirms in the current session.
+- Irreversible actions (pay, place order, send, delete) return a stop with
+  `reason: "irreversible_action"` and are not performed until the agent
+  retries with `--confirm` after the user confirms in the current session.
 - CAPTCHAs and anti-bot challenges are handled by the agent with
   `challenge`, `shot`, `snapshot`, `click --trusted`, and `type`. If the
   challenge cannot be cleared, `challenge` returns a structured block and the
