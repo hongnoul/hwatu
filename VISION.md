@@ -8,7 +8,7 @@ execution plan is
 ## One sentence
 
 Hwatu gives every agent its own invisible, real browser on the user's
-machine, driven by portable skills, on Linux, macOS, and Windows alike.
+machine, driven by ordinary agent skills, on Linux, macOS, and Windows alike.
 
 ## Problem
 
@@ -22,54 +22,51 @@ Agents need the web, and today's options make them pay for it.
 - **Cloud browser services** move the session off the user's machine, meter
   every page, and sell spoofed fingerprints as identity.
 
-## The model: one browser, one skill format
+## The model: Hwatu is the browser, skills stay in the harness
 
-Hwatu has two parts.
+Hwatu ships one thing: a headless native browser per OS, driven by one set of
+commands.
 
-1. **The browser.** A warm, headless, native engine per OS behind one
-   versioned protocol.
-2. **Skills.** Portable recipes the agent runs against that browser.
+Skills are not Hwatu's. They are the plain-text skill files every agent
+harness already supports (for example a `SKILL.md` in the harness's skills
+folder), stored, discovered, and loaded by the harness the way it loads any
+other skill. Hwatu has no skill library, registry, format, or storage. A
+skill that uses Hwatu is just a skill whose steps call `hwatu` commands.
 
 Checking a UI and ordering dinner are the same activity: open pages, act on
-them, observe the result. Hwatu does not split them into two products or two
-syntaxes. Every job is a skill, and every skill is built from one step
-vocabulary.
+them, observe the result. So there is one command vocabulary for both, not a
+verification API and a separate automation API.
 
-| Step kind | Examples | Used for |
+| Kind | Commands | Used for |
 | --- | --- | --- |
-| act | `navigate`, `click`, `type`, `fill`, `scroll`, `upload` | driving the page |
+| act | `goto`, `click`, `type`, `fill`, `scroll`, `upload` | driving the page |
 | observe | `snapshot`, `content`, `eval`, `shot`, `console`, `net` | reading the page as data |
 | assert | `expect`, `diff`, `motion` | proving an outcome with a measurement |
-| human | `ask`, `confirm`, `show` | the only places a person is involved |
+| human | `show`, plus structured stops | the only places a person is involved |
 
-A UI check is a skill that ends in `assert` steps and returns evidence. A
-DoorDash order is a skill that ends in a `confirm` step and stops for a
-human yes. Same format, same runner, same report.
+A UI-check skill ends in `assert` commands and reports evidence. A DoorDash
+skill ends at checkout and stops for a human yes. Both are ordinary skill
+files, written in prose with `hwatu` commands inline. Prose carries judgment.
+Commands carry everything mechanical. A run of mechanical commands can go in
+one `hwatu batch` call that waits on the page instead of sleeping and returns
+a per-step report.
 
-A skill is a single file: a short description of intent for the agent, plus
-step blocks in the shared vocabulary. The runner executes steps in one call,
-waits on the page instead of sleeping, and returns a per-step report. When a
-step fails, the agent reads the report, adapts with the same vocabulary, and
-resumes. Prose carries judgment. Steps carry everything mechanical.
+### Where the human comes in
 
-Today's `hwatu verify` specs and `hwatu batch` arrays are early forms of
-this format and converge into it.
+Hwatu never talks to the human. It stops with a structured reason, and the
+agent relays it through its own harness.
 
-### Human steps
-
-The human appears only through three explicit steps.
-
-- **`ask`** requests what only a person can give: a credential, a one-time
-  code, a choice. Credentials pass through to the page once. The session
-  persists, so the agent asks once per site, not once per run.
-- **`confirm`** gates anything irreversible: paying, sending, deleting. It
-  needs a fresh yes in the current session. A page can never satisfy it.
-- **`show`** renders the live session on request, as a screenshot, a diff,
+- **Login or one-time code.** Hwatu reports the wall. The agent asks the
+  human, then passes the value through to the page once. The session
+  persists, so the human is asked once per site, not once per run.
+- **Irreversible action.** Paying, sending, and deleting need a fresh yes in
+  the current session. A page can never supply it.
+- **`show`.** On request, the live session renders as a screenshot, a diff,
   or a visible view of the real page, then returns to headless with nothing
   lost. Seeing is pull, never push.
 
-A challenge that cannot become an `ask`, such as a CAPTCHA, ends the run with
-a structured block. The session stays intact for the human.
+A challenge the human cannot answer as text, such as a CAPTCHA, ends the run
+with a structured block. The session stays intact for the human.
 
 ## Outcome
 
@@ -84,35 +81,26 @@ needs an `if macOS` branch, Hwatu has a bug.
 
 ## Constitution
 
-- **Headless is the invariant.** Every step works without a visible window.
-  Visibility exists only through `show`.
-- **Skills are the interface.** The CLI, MCP, and every integration are
-  adapters over one versioned protocol in `hwatu-ipc`, and skills target that
-  protocol, never an OS or an engine.
+- **Headless is the invariant.** Visibility exists only through `show`.
+- **Commands are the interface.** The CLI, MCP, and every integration are
+  adapters over one versioned protocol in `hwatu-ipc`. Skills call those
+  commands, never an OS or an engine.
 - **Measurements, not impressions.** Observations and assertions return
-  data: scores, diffs, timings, structured errors. "Looks right" is not a
-  result.
-- **Credentials pass through.** Hwatu keeps no password store of its own. It
-  may read from a manager the user already runs. It never logs or retains a
-  secret.
-- **Irreversible means `confirm`.** No skill, page, or default can skip it.
-- **Warm by default.** Engine and views stay warm between runs.
+  data: scores, diffs, timings, structured errors.
+- **Credentials pass through.** Hwatu keeps no password store of its own.
 - **Local-first.** Everything runs on the user's machine. No relay sees the
   session. No metering shapes behavior.
 - **Native engines.** WebKitGTK on Linux, WKWebView on macOS, WebView2 on
   Windows. No bundled Chromium.
-- **Honest parity.** Engines differ. Hwatu guarantees step semantics and
-  reports per-engine capabilities. A step an engine cannot perform fails with
-  a stable error. It never silently succeeds or changes meaning by platform.
 
 ## Architecture boundary
 
-Everything a skill can observe is portable. Native code exists only to host
+Everything a command can observe is portable. Native code exists only to host
 an invisible view, deliver trusted input to it, and capture its pixels.
 
 | Portable, written once | Native, one per OS |
 | --- | --- |
-| protocol, capability model, skill runner | UI loop and process lifecycle |
+| protocol, capability model, batch execution | UI loop and process lifecycle |
 | CLI and MCP adapters | transport: Unix socket or named pipe |
 | page scripts: snapshot ranking, element matching, content extraction | view hosting, trusted input |
 | diffing, assertions, reports | pixel capture, engine events |
@@ -125,25 +113,28 @@ compiles and tests on all three CI runners without native SDKs.
 
 A platform is supported only when a clean OS image can install Hwatu, pass
 `hwatu doctor`, pass the shared conformance fixtures, and run an unmodified
-reference skill end to end. That skill is an authenticated, multi-step task
-stopped at `confirm`. Until then, README and release metadata do not claim
-the platform.
+reference skill end to end from a stock agent harness. That skill is an
+authenticated, multi-step task that stops before the irreversible step.
+Until then, README and release metadata do not claim the platform.
 
 ## Not doing
 
 - A browser for humans: no tabs, bar, keybinds, themes, or reader mode.
+- A skill library, registry, file format, or store. Skills live wherever the
+  user's agent harness keeps them.
 - A bundled Electron, CEF, or private Chromium.
 - An extension inside the user's daily browser.
 - Stored credentials.
 - Fingerprint spoofing, CAPTCHA solving, or bypassing access controls.
 - A cloud relay between agent and page.
-- Per-OS skills, CLIs, or MCP tools.
-- A second syntax for verification versus automation.
+- Per-OS commands, CLIs, or MCP tools.
+- Separate vocabularies for verification and automation.
 - Pixel-identical rendering across engines.
 
 ## Decision test
 
-A change belongs in Hwatu if it makes skills run more reliably, on more
-machines, with fewer human steps, without weakening the constitution. If it
-needs a visible window, keeps a secret, makes a skill OS-aware, or adds a
-second way to express the same job, it is not progress.
+A change belongs in Hwatu if it makes skills that call `hwatu` run more
+reliably, on more machines, with fewer human stops, without weakening the
+constitution. If it needs a visible window, keeps a secret, makes a skill
+OS-aware, adds a second way to express the same job, or pulls skill storage
+into Hwatu, it is not progress.
