@@ -301,6 +301,27 @@ func jsonValue(from any: Any?) -> Any {
 /// answers the completion value of the last statement. Daemon-side
 /// syntax errors answer `eval failed: SyntaxError: <message>` without
 /// ever reaching the page. User code executes exactly once, in the page.
+/// Dispatch a pointer-event click at the target's center. Called after the
+/// irreversible-action check, or directly when the request carries confirm.
+func clickNow(_ w: Window, _ args: String, _ req: JSON, _ done: @escaping (JSON) -> Void) {
+    let js = """
+    \(findElementJS)
+    \(args)
+    const { el, matches } = __hwatuFind(__sel, __nth, __contains, __ref);
+    el.scrollIntoView({block: 'center'});
+    const r = el.getBoundingClientRect();
+    const opts = {bubbles: true, cancelable: true, view: window, clientX: r.x + r.width/2, clientY: r.y + r.height/2, button: 0};
+    el.dispatchEvent(new PointerEvent('pointerdown', opts));
+    el.dispatchEvent(new MouseEvent('mousedown', opts));
+    if (el.focus) el.focus();
+    el.dispatchEvent(new PointerEvent('pointerup', opts));
+    el.dispatchEvent(new MouseEvent('mouseup', opts));
+    el.dispatchEvent(new MouseEvent('click', opts));
+    return { matches, tag: el.tagName.toLowerCase(), text: ((el.innerText || el.value || '')+'').trim().slice(0, 120) };
+    """
+    runJS(w, js, timeoutMs: jint(req, "timeout_ms") ?? 15000, done: done)
+}
+
 func runJS(_ w: Window, _ js: String, timeoutMs: Int, done: @escaping (JSON) -> Void) {
     let source: String
     switch planEvalSource(js) {
@@ -485,7 +506,7 @@ func handle(_ req: JSON) -> JSON {
             "capabilities": [
                 "show": true,
                 "trusted_input": false,
-                "structured_stops": [],
+                "structured_stops": ["irreversible_action"],
                 "transport": ["unix"],
             ],
         ]])
@@ -688,23 +709,31 @@ func handle(_ req: JSON) -> JSON {
         return onMain { done in
             guard let w = daemon.resolve(jint(req, "id")) else { done(errResponse("no window open")); return }
             let args = targetArgsJS(req)
-            let js = """
-            \(findElementJS)
-            \(args)
-            const { el, matches } = __hwatuFind(__sel, __nth, __contains, __ref);
-            el.scrollIntoView({block: 'center'});
-            const r = el.getBoundingClientRect();
-            const opts = {bubbles: true, cancelable: true, view: window, clientX: r.x + r.width/2, clientY: r.y + r.height/2, button: 0};
-            el.dispatchEvent(new PointerEvent('pointerdown', opts));
-            el.dispatchEvent(new MouseEvent('mousedown', opts));
-            if (el.focus) el.focus();
-            el.dispatchEvent(new PointerEvent('pointerup', opts));
-            el.dispatchEvent(new MouseEvent('mouseup', opts));
-            el.dispatchEvent(new MouseEvent('click', opts));
-            if ((el.type === 'checkbox' || el.type === 'radio') && typeof el.click === 'function') { /* click event above toggles via default action */ }
-            return { matches, tag: el.tagName.toLowerCase(), text: ((el.innerText || el.value || '')+'').trim().slice(0, 120) };
-            """
-            runJS(w, js, timeoutMs: jint(req, "timeout_ms") ?? 15000, done: done)
+            // Structured stop: unless confirmed, classify the target with the
+            // shared page-scripts/irreversible.js before clicking.
+            if !jbool(req, "confirm") {
+                let probe = """
+                \(findElementJS)
+                \(args)
+                const { el } = __hwatuFind(__sel, __nth, __contains, __ref);
+                return { irreversible: \(irreversibleJS) };
+                """
+                runJS(w, probe, timeoutMs: jint(req, "timeout_ms") ?? 15000) { r in
+                    if let v = r["value"] as? JSON, let hit = v["irreversible"] as? JSON {
+                        let kind = hit["kind"] as? String ?? "irreversible"
+                        let label = hit["label"] as? String ?? ""
+                        done([
+                            "status": "err",
+                            "message": "confirmation required: \(kind) control \"\(label)\"; ask the user, then retry with confirm",
+                            "stop": ["reason": "irreversible_action", "kind": kind, "label": label, "retry": ["confirm": true]],
+                        ])
+                        return
+                    }
+                    clickNow(w, args, req, done)
+                }
+                return
+            }
+            clickNow(w, args, req, done)
         }
 
     case "type":

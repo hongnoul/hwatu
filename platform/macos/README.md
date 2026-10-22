@@ -7,16 +7,21 @@ speaking the same newline-delimited-JSON protocol on the same socket path.
 ## Build and install
 
 ```sh
-swiftc -O -o hwatud-mac Sources/main.swift -framework AppKit -framework WebKit -framework JavaScriptCore
+swiftc -O -o hwatud-mac Sources/main.swift Sources/PageScripts.swift -framework AppKit -framework WebKit -framework JavaScriptCore
 cp hwatud-mac ~/.local/bin/hwatud   # the CLI spawns `hwatud` from PATH
 ```
 
 ## Supported requests
 
-ping, open, list, close, focus, unfocus, navigate, eval, wait_load,
+ping, open, list, close, show, hide, navigate, eval, wait_load,
 screenshot, resize, get_content, snapshot, click, type, press, fill_form,
 scroll, console, quit. Unsupported commands answer a clean error naming
-the command.
+the command. `focus` and `unfocus` are accepted aliases of `show` and `hide`.
+
+`click` applies the `irreversible_action` structured stop using the shared
+`page-scripts/irreversible.js`. `Sources/PageScripts.swift` is generated
+from it by `scripts/gen-page-scripts.sh`; a Rust test fails when the copy is
+stale. macOS is not yet a supported platform (see VISION.md).
 
 ## Headless notes
 

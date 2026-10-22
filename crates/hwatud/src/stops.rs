@@ -4,8 +4,8 @@
 //! reason instead of acting. The agent relays the reason to the user through
 //! its harness and retries with the user's answer.
 //!
-//! The classifiers are plain page JavaScript so every engine backend runs
-//! the same code.
+//! The classifiers live in `page-scripts/` as plain page JavaScript so every
+//! engine backend (this daemon and `platform/macos`) runs the same code.
 
 use serde_json::{json, Value};
 
@@ -14,33 +14,7 @@ use serde_json::{json, Value};
 ///
 /// Matches the visible label, `value`, `aria-label`, `title`, and the
 /// enclosing form's `action`. Kinds: `payment`, `send`, `delete`.
-pub const IRREVERSIBLE_JS: &str = r#"
-(function (el) {
-  const control = el.closest('button, a, input, [role="button"], [role="menuitem"], [role="link"]') || el;
-  const parts = [
-    control.innerText || control.textContent || '',
-    control.value || '',
-    control.getAttribute('aria-label') || '',
-    control.getAttribute('title') || '',
-  ];
-  const label = parts.join(' ').replace(/\s+/g, ' ').trim().slice(0, 160);
-  const text = label.toLowerCase();
-  const form = control.form || control.closest('form');
-  const action = ((form && form.getAttribute('action')) || '').toLowerCase();
-  const rules = [
-    ['payment', /\b(place (your )?order|pay( now)?|complete (purchase|order|payment)|confirm (purchase|order|payment)|buy now|submit order|checkout and pay|purchase|subscribe now|start (my )?subscription|donate)\b/],
-    ['send', /\b(send( now| message| email| money| payment)?|post( now)?|publish|submit application|transfer)\b/],
-    ['delete', /\b(delete|remove (account|permanently)|permanently delete|erase|close account|cancel (my )?(account|subscription))\b/],
-  ];
-  for (const [kind, re] of rules) {
-    if (re.test(text)) return { label, kind };
-  }
-  if (/\/(checkout|payment|purchase|order)\b.*\b(submit|place|confirm|complete)/.test(action)) {
-    return { label, kind: 'payment' };
-  }
-  return null;
-})(el)
-"#;
+pub const IRREVERSIBLE_JS: &str = include_str!("../../../page-scripts/irreversible.js");
 
 /// The structured stop for an unconfirmed click on an irreversible control.
 pub fn irreversible_action(hit: &Value) -> (String, Value) {
@@ -64,24 +38,7 @@ pub fn irreversible_action(hit: &Value) -> (String, Value) {
 
 /// Page-side classifier for a login wall. Returns `null` or
 /// `{password_fields, otp_fields, signals}`.
-pub const LOGIN_WALL_JS: &str = r#"
-(function () {
-  const visible = e => {
-    const r = e.getBoundingClientRect();
-    const s = getComputedStyle(e);
-    return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
-  };
-  const pw = [...document.querySelectorAll('input[type="password"]')].filter(visible).length;
-  const otp = [...document.querySelectorAll('input[autocomplete="one-time-code"], input[name*="otp" i], input[name*="code" i][inputmode="numeric"]')].filter(visible).length;
-  const text = (document.title + ' ' + (document.body ? document.body.innerText.slice(0, 4000) : '')).toLowerCase();
-  const signals = [];
-  if (/\b(sign in|log in|login)\b/.test(text)) signals.push('sign_in_text');
-  if (/\b(verification code|one-time code|enter the code)\b/.test(text)) signals.push('code_text');
-  if (/\/(login|signin|sign-in|auth|sso)\b/i.test(location.pathname)) signals.push('login_path');
-  if (pw === 0 && otp === 0 && !signals.includes('login_path')) return null;
-  return { password_fields: pw, otp_fields: otp, signals };
-})()
-"#;
+pub const LOGIN_WALL_JS: &str = include_str!("../../../page-scripts/login-wall.js");
 
 /// The structured stop for a detected login wall.
 pub fn login_required(hit: &Value, url: &str) -> Value {
@@ -145,5 +102,21 @@ mod tests {
             assert!(t.starts_with("(function"));
             assert!(t.ends_with(')'));
         }
+    }
+
+    /// The macOS daemon embeds a generated copy of the classifier. Run
+    /// scripts/gen-page-scripts.sh when this fails.
+    #[test]
+    fn macos_daemon_copy_matches_shared_script() {
+        let swift = include_str!("../../../platform/macos/Sources/PageScripts.swift");
+        let body = swift
+            .split_once("let irreversibleJS = #\"\"\"\n")
+            .and_then(|(_, rest)| rest.rsplit_once("\"\"\"#"))
+            .map(|(body, _)| body)
+            .expect("PageScripts.swift has the generated shape");
+        assert_eq!(
+            body, IRREVERSIBLE_JS,
+            "platform/macos/Sources/PageScripts.swift is stale; run scripts/gen-page-scripts.sh"
+        );
     }
 }
