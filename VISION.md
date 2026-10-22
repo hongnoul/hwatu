@@ -57,8 +57,11 @@ structured reason. The agent relays the reason through its harness.
   visible window. The session returns to headless afterward without state
   loss. The browser never becomes visible unless requested.
 
-A challenge that cannot be answered as text, such as a CAPTCHA, ends the run
-with a structured block. The session is kept.
+CAPTCHAs and anti-bot challenges are handled with the standard commands.
+`challenge` detects them, `shot` and `snapshot` read them, and `click
+--trusted` and `type` answer them in the real engine. If the agent cannot
+clear a challenge, `challenge` returns a structured block, the session is
+kept, and the agent can hand off to the user through `show`.
 
 ## Outcome
 
@@ -120,7 +123,8 @@ criteria. Cross-compilation alone does not count.
 - Bundled Electron, CEF, or Chromium.
 - An extension in the user's browser.
 - Stored credentials.
-- Fingerprint spoofing, CAPTCHA solving, or bypassing access controls.
+- Fingerprint spoofing, third-party CAPTCHA solver services, injected
+  challenge tokens, or bypassing access controls.
 - A cloud relay between agent and page.
 - Per-OS commands, CLIs, or MCP tools.
 - Separate command sets for verification and automation.
