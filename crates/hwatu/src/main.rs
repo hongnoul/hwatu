@@ -221,7 +221,7 @@ fn main() {
 /// Return whether the first argument is handled locally instead of being
 /// interpreted as a URL by the browser client.
 fn is_onboarding_command(command: Option<&str>) -> bool {
-    matches!(command, Some("doctor") | Some("setup") | Some("demo"))
+    matches!(command, Some("doctor") | Some("setup"))
 }
 
 /// `hwatu --version` must print the version, not "unknown flag" (and
@@ -295,98 +295,10 @@ fn parse_form_field(spec: &str) -> Result<hwatu_ipc::FormField, String> {
     })
 }
 
-/// Coding agents mark their subprocess environment; a human's shell or
-/// WM keybind has none of these. Opens from an agent default to
-/// `Headless` so verification flows never appear in the WM at all,
-/// while human entries keep Normal. Explicit flags always win
-/// (`--focus` opts an agent back into Normal deliberately), and the
-/// agent default is configurable: `HWATU_AGENT_MODE` env, then
-/// `agent_mode` in `~/.config/hwatu/config.json`, then headless.
+/// Every window opens headless. A window becomes visible only through
+/// `show`, so there is no per-environment default to detect.
 fn default_open_mode() -> OpenMode {
-    const AGENT_MARKERS: &[&str] = &[
-        "CLAUDECODE",    // Claude Code
-        "CODEX_SANDBOX", // Codex CLI
-        "CURSOR_AGENT",  // Cursor CLI
-        "AGENT",         // Amp, and a de-facto generic marker
-        "OPENCODE",      // opencode
-        "GEMINI_CLI",    // Gemini CLI
-    ];
-    // jcode tool subprocesses carry various JCODE_* vars (JCODE_SCRATCH_DIR,
-    // JCODE_NON_INTERACTIVE, ...) but not always JCODE_SOCKET, so treat any
-    // JCODE_-prefixed var as an agent marker, except user-config knobs that
-    // people export session-wide from .profile/environment.d (those would
-    // make the whole desktop look like an agent and force every WM-keybind
-    // launch headless).
-    const JCODE_USER_CONFIG_VARS: &[&str] = &["JCODE_NO_AUTO_UPDATE", "JCODE_BING_API_KEY"];
-    let from_jcode = std::env::vars_os().any(|(k, _)| {
-        k.to_str()
-            .map(|k| k.starts_with("JCODE_") && !JCODE_USER_CONFIG_VARS.contains(&k))
-            .unwrap_or(false)
-    });
-    let from_agent = from_jcode || AGENT_MARKERS.iter().any(|k| std::env::var_os(k).is_some());
-    let gio_launch_pid = std::env::var("GIO_LAUNCHED_DESKTOP_FILE_PID").ok();
-    let user_initiated = is_current_gio_launch(
-        std::env::var_os("GIO_LAUNCHED_DESKTOP_FILE").is_some(),
-        gio_launch_pid.as_deref(),
-        std::process::id(),
-    ) || std::env::var("JCODE_OPEN_ORIGIN").as_deref() == Ok("user");
-    if should_default_to_normal(user_initiated, from_agent) {
-        return OpenMode::Normal;
-    }
-    if let Ok(v) = std::env::var("HWATU_AGENT_MODE") {
-        if let Some(mode) = parse_open_mode(&v) {
-            return mode;
-        }
-        eprintln!(
-            "hwatu: ignoring invalid HWATU_AGENT_MODE={v:?} (want normal|background|headless)"
-        );
-    }
-    config_agent_mode().unwrap_or(OpenMode::Headless)
-}
-
-/// A URL explicitly activated by a user is visible even when the application
-/// that called the system opener is itself an agent UI. GIO marks conforming
-/// desktop-entry launches; jcode supplies `JCODE_OPEN_ORIGIN=user` because some
-/// `xdg-open` implementations execute desktop entries directly without a GIO
-/// marker. Without this exception, the inherited `JCODE_*` environment would
-/// silently create a headless hwatu page.
-fn should_default_to_normal(user_initiated: bool, from_agent: bool) -> bool {
-    user_initiated || !from_agent
-}
-
-/// GIO launch markers are inherited by child processes. The companion PID is
-/// therefore required to prove that GIO launched this process, rather than an
-/// ancestor such as a terminal or agent UI.
-fn is_current_gio_launch(
-    desktop_file_present: bool,
-    launched_pid: Option<&str>,
-    current_pid: u32,
-) -> bool {
-    desktop_file_present
-        && launched_pid.and_then(|pid| pid.parse::<u32>().ok()) == Some(current_pid)
-}
-
-/// Parse a user-facing mode name. `focus` is accepted as an alias for
-/// `normal` to match the `--focus` flag.
-fn parse_open_mode(value: &str) -> Option<OpenMode> {
-    match value.trim() {
-        "normal" | "focus" => Some(OpenMode::Normal),
-        "background" => Some(OpenMode::Background),
-        "headless" => Some(OpenMode::Headless),
-        _ => None,
-    }
-}
-
-/// `agent_mode` from `~/.config/hwatu/config.json` (the same file the
-/// daemon uses for adblock state). Absent/invalid values fall through
-/// to the built-in headless default.
-fn config_agent_mode() -> Option<OpenMode> {
-    let base = platform::config_root();
-    let raw = std::fs::read_to_string(base.join("hwatu").join("config.json")).ok()?;
-    let json: serde_json::Value = serde_json::from_str(&raw).ok()?;
-    json.get("agent_mode")
-        .and_then(|v| v.as_str())
-        .and_then(parse_open_mode)
+    OpenMode::Headless
 }
 
 fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Request, String> {
@@ -774,12 +686,12 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                     .and_then(|v| v.parse().ok())
                     .ok_or("usage: --by <pages>")?,
             );
-        } else if arg == "--background" {
-            mode = OpenMode::Background;
         } else if arg == "--headless" {
             mode = OpenMode::Headless;
-        } else if arg == "--focus" {
-            mode = OpenMode::Normal;
+        } else if arg == "--background" || arg == "--focus" {
+            return Err(format!(
+                "{arg} was removed: windows always open headless; use `hwatu show <id>` to make one visible"
+            ));
         } else if arg.starts_with("--") {
             // An unknown flag must not fall through to the URL/search
             // path: `hwatu --version` used to open a web search for
@@ -1402,20 +1314,20 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 timeout_ms,
             })
         }
-        Some("focus") => {
+        Some("show") | Some("focus") => {
             let id = rest
                 .get(1)
                 .and_then(|s| s.parse().ok())
                 .or(id)
-                .ok_or("usage: hwatu focus <id>")?;
+                .ok_or("usage: hwatu show <id>")?;
             Ok(Request::Focus { id })
         }
-        Some("unfocus") | Some("hide") => {
+        Some("hide") | Some("unfocus") => {
             let id = rest
                 .get(1)
                 .and_then(|s| s.parse().ok())
                 .or(id)
-                .ok_or("usage: hwatu unfocus <id>")?;
+                .ok_or("usage: hwatu hide <id>")?;
             Ok(Request::Unfocus { id })
         }
         Some("adblock") => {
@@ -1485,10 +1397,9 @@ fn resolve_profile(flag: Option<String>) -> Option<String> {
     Some(format!("wt-{hash:016x}"))
 }
 
-const USAGE: &str = "usage: hwatu [--app-id <id>] [--profile <name|auto>] [--background|--headless|--focus] [url] \
-(agent environments default to --headless; set HWATU_AGENT_MODE or \
-\"agent_mode\" in ~/.config/hwatu/config.json to normal|background|headless) \
-| list [--json] | close <id> | focus <id> | unfocus <id> \
+const USAGE: &str = "usage: hwatu [--app-id <id>] [--profile <name|auto>] [url] \
+(windows always open headless; `show <id>` makes one visible, `hide <id>` returns it to headless) \
+| list [--json] | close <id> | show <id> | hide <id> \
 	| eval [--id <id>] [--timeout-ms <ms>] <js> | goto [--id <id>] [--no-wait] [--until <stage>] <url> \
 	| batch (--stdin | '<json-action-array>' | '{\"cmd\":\"batch\",...}') \
 	    | shot [--id <id>] [--full] [path] | wait-load [--id <id>] [--until (committed|dom|settled)] \
@@ -1528,7 +1439,6 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--profile <name|auto>] [--bac
 | clone <url> [--out <dir>] [--viewport <WxH>] [--tolerance <0-255>] [--no-verify] [--keep] \
 | adblock [on|off|status|update] \
 | doctor | setup [--client claude|cursor|generic|jcode] [--scope project|user] [--dry-run] [--undo] \
-| demo [url] [--focus] \
 | verify <spec.json> | verify --stdin \
 | mcp | update | ping | quit | --version";
 
@@ -2002,9 +1912,8 @@ fn client_token() -> std::io::Result<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        authenticate_tcp, is_current_gio_launch, is_onboarding_command, is_version_flag,
-        normalize_request_paths, parse_with_default_mode, read_response, should_default_to_normal,
-        OpenMode,
+        authenticate_tcp, is_onboarding_command, is_version_flag, normalize_request_paths,
+        parse_with_default_mode, read_response, OpenMode,
     };
     use hwatu_ipc::{AuthReply, AuthRequest, PressKey, Request, Response};
 
@@ -2053,7 +1962,7 @@ mod tests {
     fn onboarding_commands_are_handled_before_url_parsing() {
         assert!(is_onboarding_command(Some("doctor")));
         assert!(is_onboarding_command(Some("setup")));
-        assert!(is_onboarding_command(Some("demo")));
+        assert!(!is_onboarding_command(Some("demo")));
         assert!(!is_onboarding_command(Some("https://example.com")));
         assert!(!is_onboarding_command(None));
     }
@@ -2071,26 +1980,9 @@ mod tests {
         assert!(!is_version_flag(None));
     }
 
-    #[test]
-    fn desktop_entry_launch_is_visible_inside_agent_environment() {
-        assert!(should_default_to_normal(true, true));
-        assert!(should_default_to_normal(false, false));
-        assert!(!should_default_to_normal(false, true));
-    }
-
-    #[test]
-    fn gio_launch_marker_must_belong_to_current_process() {
-        assert!(is_current_gio_launch(true, Some("42"), 42));
-        assert!(!is_current_gio_launch(true, Some("41"), 42));
-        assert!(!is_current_gio_launch(true, None, 42));
-        assert!(!is_current_gio_launch(true, Some("not-a-pid"), 42));
-        assert!(!is_current_gio_launch(false, Some("42"), 42));
-    }
-
-    /// Env-independent parse: tests themselves often run under a
-    /// coding agent, which would flip `default_open_mode()`.
+    /// Env-independent parse with the production default.
     fn parse(args: &[String]) -> Result<Request, String> {
-        let mut request = parse_with_default_mode(args, OpenMode::Normal)?;
+        let mut request = parse_with_default_mode(args, OpenMode::Headless)?;
         normalize_request_paths(&mut request);
         Ok(request)
     }
@@ -2513,30 +2405,32 @@ mod tests {
     }
 
     #[test]
-    fn agent_default_applies_and_focus_overrides() {
-        let Ok(Request::Open { mode, .. }) =
-            parse_with_default_mode(&args(&["example.com"]), OpenMode::Headless)
-        else {
+    fn open_is_always_headless_and_visible_flags_point_to_show() {
+        assert_eq!(super::default_open_mode(), OpenMode::Headless);
+        let Ok(Request::Open { mode, .. }) = parse(&args(&["example.com"])) else {
             panic!("expected Open");
         };
         assert_eq!(mode, OpenMode::Headless);
-        let Ok(Request::Open { mode, .. }) =
-            parse_with_default_mode(&args(&["--focus", "example.com"]), OpenMode::Headless)
-        else {
-            panic!("expected Open");
-        };
-        assert_eq!(mode, OpenMode::Normal);
+        for flag in ["--focus", "--background"] {
+            let err = parse(&args(&[flag, "example.com"])).unwrap_err();
+            assert!(err.contains("hwatu show"), "got: {err}");
+        }
     }
 
     #[test]
-    fn mode_names_parse() {
-        use super::parse_open_mode;
-        assert_eq!(parse_open_mode("normal"), Some(OpenMode::Normal));
-        assert_eq!(parse_open_mode("focus"), Some(OpenMode::Normal));
-        assert_eq!(parse_open_mode("background"), Some(OpenMode::Background));
-        assert_eq!(parse_open_mode(" headless "), Some(OpenMode::Headless));
-        assert_eq!(parse_open_mode("visible"), None);
-        assert_eq!(parse_open_mode(""), None);
+    fn show_and_hide_parse_with_legacy_aliases() {
+        for verb in ["show", "focus"] {
+            assert!(matches!(
+                parse(&args(&[verb, "3"])),
+                Ok(Request::Focus { id: 3 })
+            ));
+        }
+        for verb in ["hide", "unfocus"] {
+            assert!(matches!(
+                parse(&args(&[verb, "3"])),
+                Ok(Request::Unfocus { id: 3 })
+            ));
+        }
     }
 
     /// `hwatu --version` (or any typo'd flag) must error out, not open
@@ -2571,20 +2465,10 @@ mod tests {
             Ok(Request::Open {
                 url: None,
                 app_id: None,
-                mode: OpenMode::Normal,
+                mode: OpenMode::Headless,
                 profile: None,
             })
         ));
-    }
-
-    #[test]
-    fn background_flag_sets_mode() {
-        let Ok(Request::Open { url, mode, .. }) = parse(&args(&["--background", "localhost:3000"]))
-        else {
-            panic!("expected Open");
-        };
-        assert_eq!(url.as_deref(), Some("localhost:3000"));
-        assert_eq!(mode, OpenMode::Background);
     }
 
     #[test]

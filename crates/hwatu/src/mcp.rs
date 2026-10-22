@@ -205,21 +205,36 @@ fn opt_bool(args: &Value, key: &str) -> Option<bool> {
     args.get(key).and_then(Value::as_bool)
 }
 
+/// Vision-table command names accepted as MCP tool names, mapped to the
+/// original tool names. Both spellings work; tools/list advertises the
+/// vision names.
+fn canonical_tool(name: &str) -> &str {
+    match name {
+        "shot" => "screenshot",
+        "type" => "type_text",
+        "fill" => "fill_form",
+        "batch" => "batch_actions",
+        "content" => "get_content",
+        "show" => "focus",
+        "hide" => "unfocus",
+        other => other,
+    }
+}
+
 /// Map an MCP tool call onto the wire [`Request`].
 pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String> {
+    let name = canonical_tool(name);
     let id = opt_u64(args, "id");
     let timeout_ms = opt_u64(args, "timeout_ms");
     match name {
         "open" => {
-            // MCP callers are agents: headless unless they say otherwise.
+            // Windows always open headless; `show` is the only way to make
+            // one visible.
             let mode = match opt_str(args, "mode").as_deref() {
-                None => OpenMode::Headless,
-                Some("headless") => OpenMode::Headless,
-                Some("background") => OpenMode::Background,
-                Some("normal") | Some("focus") => OpenMode::Normal,
+                None | Some("headless") => OpenMode::Headless,
                 Some(other) => {
                     return Err(format!(
-                        "invalid mode {other:?} (want normal|background|headless)"
+                        "invalid mode {other:?}: windows always open headless; use show to make one visible"
                     ))
                 }
             };
@@ -234,6 +249,16 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
         "close" => Ok(Request::Close {
             id: opt_u64(args, "id").ok_or("missing required argument: id")?,
         }),
+        "press" => {
+            let key = req_str(args, "key")?;
+            Ok(Request::Press {
+                id,
+                key: hwatu_ipc::PressKey::parse(&key).ok_or_else(|| {
+                    format!("invalid key {key:?} (want Tab|Enter|Escape|ArrowLeft|ArrowRight)")
+                })?,
+                timeout_ms,
+            })
+        }
         "focus" => Ok(Request::Focus {
             id: opt_u64(args, "id").ok_or("missing required argument: id")?,
         }),
@@ -682,13 +707,11 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
     vec![
         tool(
             "open",
-            "Open a browser window (headless by default: fully live but invisible \
-             to the window manager). Returns the window id. ~15ms on a warm daemon.",
+            "Open a headless window and return its id. Use show to make it \
+             visible to the user.",
             json!({
-                "url": prop("string", "URL to load (https:// implied; non-URL text becomes a web search). Omit for a blank launcher page."),
-                "mode": { "type": "string", "enum": ["headless", "background", "normal"],
-                    "description": "headless (default): no window at all. background: mapped in the WM but not focused. normal: mapped and focused." },
-                "app_id": prop("string", "Wayland app_id, for the user's WM window rules."),
+                "url": prop("string", "URL to load (https:// implied). Omit for about:blank."),
+                "app_id": prop("string", "Optional label reported by list_windows."),
             }),
             &[],
         ),
@@ -826,7 +849,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
             &[],
         ),
         tool(
-            "type_text",
+            "type",
             "Type into an input/textarea/select/contenteditable, targeted like \
              click. Uses native setters + input/change events by default; \
              trusted=true requests native trusted key input synthesis. Trusted \
@@ -900,7 +923,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
             &[],
         ),
         tool(
-            "screenshot",
+            "shot",
             "Capture the page as a PNG file and return its path. Use `full` for \
              the whole document instead of the viewport. For text/DOM checks, \
              snapshot is much cheaper.",
@@ -940,7 +963,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
             &[],
         ),
         tool(
-            "batch_actions",
+            "batch",
             "Run a bounded ordered batch of allowlisted browser actions in one IPC request. The daemon validates every step before executing any, runs sequentially, stops on first failure, and returns per-step ok/error/skipped results with explicit partial-execution semantics.",
             json!({
                 "actions": {
@@ -949,7 +972,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
                     "items": {
                         "type": "object",
                         "properties": {
-                            "tool": { "type": "string", "enum": ["eval", "goto", "screenshot", "wait_load", "scroll", "snapshot", "click", "type_text", "console", "expect"],
+                            "tool": { "type": "string", "enum": ["eval", "goto", "shot", "screenshot", "wait_load", "scroll", "snapshot", "click", "type", "type_text", "press", "console", "expect"],
                                 "description": "Allowlisted tool to execute as this batch step." },
                             "args": { "type": "object", "description": "Arguments for that tool, using the same schema as the standalone MCP tool." }
                         },
@@ -1073,23 +1096,32 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
             &["id"],
         ),
         tool(
-            "focus",
-            "Raise and focus a window, promoting headless/background windows to \
-             normal: the human sees the agent's live session, cookies and all. \
-             Use ONLY when a human must see or act on the page (CAPTCHA, OAuth \
-             consent, judgment call); call unfocus as soon as their part is \
-             done. Unattended promoted windows auto-demote after a timeout.",
+            "show",
+            "Make a window visible to the user, with its live session, cookies, \
+             and page state. The only way a window becomes visible. Use when \
+             the user must see or act on the page (a challenge the agent \
+             could not clear, a judgment call). Call hide when done. \
+             `focus` is a legacy alias.",
             json!({ "id": prop("integer", "Window id to show.") }),
             &["id"],
         ),
         tool(
-            "unfocus",
-            "Hide a window again: the inverse of focus. Returns the window to \
-             the mode it had before promotion (headless windows go fully \
-             invisible; the live session, cookies, and page state survive). \
-             Call this the moment the human's part is done.",
+            "hide",
+            "Return a shown window to headless. The live session, cookies, \
+             and page state are kept. `unfocus` is a legacy alias.",
             json!({ "id": prop("integer", "Window id to hide.") }),
             &["id"],
+        ),
+        tool(
+            "press",
+            "Press a key in the page without showing the window: Tab, Enter, \
+             Escape, ArrowLeft, or ArrowRight.",
+            json!({
+                "id": prop("integer", "Window id (default: last targeted)."),
+                "key": prop("string", "Tab | Enter | Escape | ArrowLeft | ArrowRight"),
+                "timeout_ms": prop("integer", "Timeout in milliseconds."),
+            }),
+            &["key"],
         ),
         tool(
             "subscribe_events",
@@ -1112,7 +1144,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
             &["id"],
         ),
         tool(
-            "get_content",
+            "content",
             "Extract page content in one call: visible text (default), outer \
              HTML, title+url, or de-duplicated links. Optionally scoped to one \
              element by selector. Cheaper than eval for plain extraction.",
@@ -1128,7 +1160,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
             &[],
         ),
         tool(
-            "fill_form",
+            "fill",
             "Fill several form fields in one roundtrip: each field targets an \
              element (selector or snapshot ref) and sets a text value, a \
              select option, or a checkbox/radio state, with framework-safe \
@@ -1322,14 +1354,16 @@ mod tests {
     }
 
     #[test]
-    fn open_mode_parses_and_rejects_junk() {
+    fn open_mode_is_headless_only() {
         let Request::Open { mode, .. } =
-            build_request("open", &json!({ "mode": "background" })).unwrap()
+            build_request("open", &json!({ "mode": "headless" })).unwrap()
         else {
             panic!("expected Open");
         };
-        assert_eq!(mode, OpenMode::Background);
-        assert!(build_request("open", &json!({ "mode": "visible" })).is_err());
+        assert_eq!(mode, OpenMode::Headless);
+        for visible in ["background", "normal", "focus", "visible"] {
+            assert!(build_request("open", &json!({ "mode": visible })).is_err());
+        }
     }
 
     #[test]
@@ -1529,27 +1563,28 @@ mod tests {
             "snapshot": {},
             "expect": { "selector": "h1" },
             "click": { "ref": 0 },
-            "type_text": { "ref": 0, "text": "x" },
+            "type": { "ref": 0, "text": "x" },
             "paste": { "ref": 0 },
             "eval": { "js": "1+1" },
             "console": {},
             "net": {},
-            "screenshot": {},
+            "shot": {},
             "scroll": {},
             "wait_load": {},
-            "batch_actions": { "actions": [{ "tool": "snapshot" }] },
+            "batch": { "actions": [{ "tool": "snapshot" }] },
             "upload": { "selector": "input", "path": "/tmp/x" },
             "challenge": {},
             "motion": {},
             "seek": { "progress": 0.5 },
             "clock": { "action": "pause" },
             "diff": { "id": 1, "other": 2 },
-            "focus": { "id": 1 },
-            "unfocus": { "id": 1 },
+            "show": { "id": 1 },
+            "hide": { "id": 1 },
+            "press": { "key": "Tab" },
             "close": { "id": 1 },
             "subscribe_events": {},
-            "get_content": {},
-            "fill_form": { "fields": [{ "selector": "input", "value": "x" }] },
+            "content": {},
+            "fill": { "fields": [{ "selector": "input", "value": "x" }] },
             "list_downloads": {},
             "drop_file": { "selector": ".dropzone", "path": "/tmp/x" },
             "auth_context": {},

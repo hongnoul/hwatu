@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 Justin Hong
-//! Cross-client onboarding: `hwatu doctor`, `hwatu setup`, `hwatu demo`.
+//! Cross-client onboarding: `hwatu doctor`, `hwatu setup`.
 //!
 //! Design rules:
 //! - `setup` with no `--client` only *detects and recommends*; it never
@@ -22,7 +22,6 @@ pub fn run(args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
         Some("doctor") => doctor(),
         Some("setup") => setup(&args[1..]),
-        Some("demo") => demo(&args[1..]),
         _ => {
             eprintln!("hwatu: internal: onboarding called without subcommand");
             2
@@ -655,110 +654,6 @@ fn write_json(path: &Path, value: &serde_json::Value) -> Result<(), String> {
 }
 
 // ===================================================================
-// demo
-// ===================================================================
-
-const DEMO_USAGE: &str = "usage: hwatu demo [url] [--focus]";
-
-fn demo(args: &[String]) -> i32 {
-    let mut url = "https://example.com".to_string();
-    let mut focus = false;
-    for arg in args {
-        match arg.as_str() {
-            "--focus" => focus = true,
-            a if a.starts_with("--") => {
-                eprintln!("unknown flag {a:?}\n{DEMO_USAGE}");
-                return 2;
-            }
-            a => url = a.to_string(),
-        }
-    }
-    let mode = if focus {
-        OpenMode::Normal
-    } else {
-        OpenMode::Headless
-    };
-
-    println!(
-        "demo: opening {url} ({} mode)",
-        if focus { "focused" } else { "headless" }
-    );
-    let id = match send(&Request::Open {
-        url: Some(url.clone()),
-        app_id: None,
-        mode,
-        profile: None,
-    }) {
-        Ok(Response::Ok {
-            window: Some(w), ..
-        }) => w.id,
-        Ok(Response::Ok { .. }) => {
-            eprintln!("hwatu: open returned no window");
-            return 1;
-        }
-        Ok(Response::Err { message }) => {
-            eprintln!("hwatu: open failed: {message}");
-            return 1;
-        }
-        Err(e) => {
-            eprintln!("hwatu: cannot reach daemon: {e}");
-            return 1;
-        }
-    };
-    println!("demo: window {id} open");
-    let _ = send(&Request::WaitLoad {
-        id: Some(id),
-        until: Default::default(),
-        timeout_ms: Some(15_000),
-    });
-
-    let mut ok = true;
-    match send(&Request::Snapshot {
-        id: Some(id),
-        diff: false,
-        rect: false,
-        budget: None,
-        timeout_ms: Some(15_000),
-    }) {
-        Ok(Response::Ok { value: Some(v), .. }) => {
-            let title = v.get("title").and_then(|t| t.as_str()).unwrap_or("?");
-            println!("demo: snapshot ok (title: {title})");
-        }
-        other => {
-            ok = false;
-            eprintln!("hwatu: snapshot failed: {other:?}");
-        }
-    }
-    match send(&Request::Screenshot {
-        id: Some(id),
-        path: None,
-        full: false,
-        data: false,
-    }) {
-        Ok(Response::Ok { path: Some(p), .. }) => println!("demo: screenshot -> {p}"),
-        other => {
-            ok = false;
-            eprintln!("hwatu: screenshot failed: {other:?}");
-        }
-    }
-
-    if focus {
-        println!("demo: handoff: window {id} left open and focused; close with: hwatu close {id}");
-    } else {
-        match send(&Request::Close { id }) {
-            Ok(Response::Ok { .. }) => println!("demo: cleaned up window {id}"),
-            _ => eprintln!("hwatu: could not close window {id}; close manually: hwatu close {id}"),
-        }
-    }
-    if ok {
-        println!("demo: success");
-        0
-    } else {
-        1
-    }
-}
-
-// ===================================================================
 // shared helpers
 // ===================================================================
 
@@ -767,7 +662,7 @@ fn send(request: &Request) -> Result<Response, String> {
 }
 
 fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(PathBuf::from)
+    crate::platform::home_dir()
 }
 
 fn which(name: &str) -> Option<PathBuf> {

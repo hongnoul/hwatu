@@ -485,13 +485,13 @@ pub enum Request {
         #[serde(default)]
         timeout_ms: Option<u64>,
     },
-    /// Present (raise/focus) a window.
+    /// Make a window visible to the user (`show`). The only way a window
+    /// becomes visible. `focus` is accepted as a legacy alias.
+    #[serde(rename = "show", alias = "focus")]
     Focus { id: u64 },
-    /// The inverse of [`Request::Focus`]: unmap the window and return
-    /// it to the mode it had before a `Focus` promoted it (headless
-    /// for windows that were never promoted). Lets agents hand a
-    /// window back out of the user's way once it no longer needs
-    /// human attention.
+    /// The inverse of [`Request::Focus`] (`hide`): unmap the window and
+    /// return it to headless. `unfocus` is accepted as a legacy alias.
+    #[serde(rename = "hide", alias = "unfocus")]
     Unfocus { id: u64 },
     /// Select a file through WebKit's native chooser. Local clients pass a
     /// daemon-visible path. Remote clients pass base64 data that the daemon
@@ -1207,8 +1207,8 @@ impl Request {
             Request::Check { .. } => "check",
             Request::Prefetch { .. } => "prefetch",
             Request::Challenge { .. } => "challenge",
-            Request::Focus { .. } => "focus",
-            Request::Unfocus { .. } => "unfocus",
+            Request::Focus { .. } => "show",
+            Request::Unfocus { .. } => "hide",
             Request::Upload { .. } => "upload",
             Request::Scroll { .. } => "scroll",
             Request::Snapshot { .. } => "snapshot",

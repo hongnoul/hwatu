@@ -242,20 +242,10 @@ pub fn runtime_dir() -> PathBuf {
     }
 }
 
-/// Per-user config directory root (the parent of `hwatu/`).
-pub fn config_root() -> PathBuf {
-    #[cfg(windows)]
-    {
-        if let Some(d) = std::env::var_os("APPDATA") {
-            return PathBuf::from(d);
-        }
-    }
-    if let Some(d) = std::env::var_os("XDG_CONFIG_HOME") {
-        return PathBuf::from(d);
-    }
-    let home = std::env::var_os("HOME")
+/// The user's home directory: `HOME` on Unix, `USERPROFILE` on Windows.
+pub fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
+        .filter(|v| !v.is_empty())
         .map(PathBuf::from)
-        .unwrap_or_default();
-    home.join(".config")
 }
