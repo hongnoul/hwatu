@@ -4,6 +4,37 @@ Status: plan of record for taking Hwatu to Linux, macOS, and Windows. The
 constraints this plan must preserve live in the [vision](../../VISION.md).
 When this plan conflicts with the vision, this plan changes.
 
+## Backend contract
+
+Capability-oriented, not one trait pretending engines are identical. Every
+backend must be able to:
+
+- create, prewarm, navigate, resize, and close an invisible view,
+- evaluate JavaScript and bridge structured messages,
+- observe load, console, network, download, permission, popup, and crash,
+- deliver trusted input without touching the user's cursor or focus,
+- capture viewport and full-document pixels,
+- inject scripts and content-blocking rules before document code,
+- persist granted sessions across restarts, list and revoke them, or say
+  plainly that it cannot,
+- report engine name, version, and capability status.
+
+## Portability rules
+
+1. Platform dependencies live in target-specific crates, modules, and
+   dependency tables.
+2. Paths come from platform APIs. No portable module assumes `/tmp`, `$HOME`,
+   XDG, a Unix UID, or slash separators.
+3. Transport is an interface. Unix sockets and named pipes carry the same
+   framing, timeouts, subscriptions, and authentication.
+4. Daemon discovery and spawn are race-safe and idempotent. Concurrent
+   clients converge on one healthy per-user daemon.
+5. The protocol evolves additively. Capabilities are negotiated before use.
+6. Pixels compare only against baselines from the same declared engine
+   unless the caller opts out.
+7. Performance is measured per platform. Linux numbers are never marketed as
+   another OS's numbers.
+
 ## Platform targets
 
 ### Linux
