@@ -113,7 +113,7 @@ jobs:
       - name: Install system deps
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq libwebkitgtk-6.0-dev libgtk-4-dev cage sway wtype
+          sudo apt-get install -y -qq libwebkitgtk-6.0-dev libgtk-4-dev cage sway wtype mutter
 
       - name: Allow unprivileged user namespaces
         # Ubuntu 24.04 runners restrict userns via AppArmor, which breaks
@@ -145,6 +145,11 @@ jobs:
       # on the session.
       - name: Run conformance on a session display
         run: scripts/test-conformance-session.sh
+
+      # GNOME's compositor takes no virtual input; trusted input to shown
+      # and headless windows goes through the private compositor.
+      - name: Run conformance on a GNOME (Mutter) session
+        run: HWATU_SESSION=mutter scripts/test-conformance-session.sh
 
   macos-conformance:
     name: macOS daemon conformance

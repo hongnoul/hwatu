@@ -168,8 +168,10 @@ top-viewport CSS pixels (a `shot` pixel divided by `devicePixelRatio`).
 trusted input reaches headless windows and nothing appears on the user's
 screen. On macOS input goes to the web view. On Linux the daemon moves the
 window to a private Wayland compositor (sway, cage, or labwc) for the call;
-keys need `wtype`. It is `false` on an X11 session, or when no compositor is
-installed; then trusted input answers an error that says what is missing.
+keys need `wtype`. On GNOME and KDE, which accept no virtual input, shown
+windows take the same route. It is `false` on an X11 session, or when no
+compositor is installed; then trusted input answers an error that says what
+is missing.
 `doctor` reports the same.
 `--trusted` does not bypass the irreversible-action stop.
 

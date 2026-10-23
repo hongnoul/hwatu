@@ -2476,9 +2476,9 @@ fn trusted_input_mode_error(
 ) -> Option<&'static str> {
     if !supported {
         return Some(
-            "trusted input on Linux goes through a Wayland compositor, and this daemon runs \
-             on X11. Start hwatud on a Wayland session, or with no display (it then hosts \
-             its own compositor)",
+            "trusted input on Linux goes through a Wayland compositor: start hwatud on a \
+             Wayland session with sway, cage, or labwc installed, or with no display (it \
+             then hosts its own compositor)",
         );
     }
     // A headless window gets input on a private compositor no person can

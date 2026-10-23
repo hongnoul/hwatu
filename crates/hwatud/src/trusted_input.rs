@@ -188,6 +188,11 @@ fn input_display(output: (i32, i32)) -> Result<gtk::gdk::Display, String> {
         let keyboard = seat_keyboard(comp.socket(), comp.runtime_dir())?;
         let display = gtk::gdk::Display::open(Some(&name))
             .ok_or_else(|| format!("could not open the private input display {name}"))?;
+        // Keys there come from wtype, so no desktop input method is
+        // needed. The Wayland IM context aborted the daemon when a window
+        // moved between this display and a session without a seat
+        // (measured on weston's headless backend).
+        gtk::Settings::for_display(&display).set_gtk_im_module(Some("gtk-im-context-simple"));
         *slot = Some((comp, display.clone(), keyboard));
         Ok(display)
     })
@@ -221,16 +226,56 @@ pub fn headless_capable() -> bool {
     supported() && crate::compositor::input_compositor_available()
 }
 
+/// Trusted input to a shown window: through the session compositor when
+/// it accepts virtual input, else through the private one.
+pub fn shown_capable() -> bool {
+    crate::compositor::display_free()
+        || (supported()
+            && (session_takes_input() || crate::compositor::input_compositor_available()))
+}
+
 /// The pointer (wlr virtual pointer) and keys (wtype) are Wayland
 /// protocols, so trusted input needs a Wayland session display.
 pub fn supported() -> bool {
     gtk::gdk::Display::default().is_some_and(|d| d.is::<gdk_wayland::WaylandDisplay>())
 }
 
+/// Does the session compositor accept virtual input (wlroots: sway,
+/// niri, Hyprland)? GNOME and KDE do not; a shown window there is moved
+/// to the private compositor for the call like a headless one.
+fn session_takes_input() -> bool {
+    thread_local! {
+        static CACHED: Cell<Option<bool>> = const { Cell::new(None) };
+    }
+    CACHED.with(|c| {
+        if let Some(v) = c.get() {
+            return v;
+        }
+        let v = session_globals().is_ok_and(|names| {
+            names.iter().any(|n| n == "zwlr_virtual_pointer_manager_v1")
+                && names.iter().any(|n| n == "zwp_virtual_keyboard_manager_v1")
+        });
+        c.set(Some(v));
+        v
+    })
+}
+
+fn session_globals() -> Result<Vec<String>, String> {
+    let conn = Connection::connect_to_env().map_err(|e| e.to_string())?;
+    let (globals, _queue) = registry_queue_init::<WlState>(&conn).map_err(|e| e.to_string())?;
+    Ok(globals
+        .contents()
+        .clone_list()
+        .into_iter()
+        .map(|g| g.interface)
+        .collect())
+}
+
 pub fn prepare(win: &Rc<BrowserWindow>) -> Result<TrustedSession, String> {
     let promoted = win.mode() != OpenMode::Normal;
     let mut home_display = None;
-    if promoted && !crate::compositor::display_free() {
+    let private = !crate::compositor::display_free() && (promoted || !session_takes_input());
+    if private {
         let target = input_display(win.viewport_size())?;
         let home = gtk::prelude::WidgetExt::display(&win.window);
         win.window.set_visible(false);
@@ -276,6 +321,10 @@ impl TrustedSession {
         if let Some(home) = &self.home_display {
             self.win.window.set_visible(false);
             self.win.window.set_display(home);
+            if !self.promoted {
+                // A shown window borrowed for input goes back on screen.
+                self.win.window.present();
+            }
         }
         if self.promoted {
             self.win.unfocus();

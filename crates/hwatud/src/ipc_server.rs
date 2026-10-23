@@ -1034,7 +1034,8 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, transport: TransportKind, reply: 
             "display_free": crate::compositor::display_free(),
             "capabilities": {
                 "show": !crate::compositor::display_free(),
-                "trusted_input": crate::trusted_input::supported(),
+                "trusted_input": crate::trusted_input::supported()
+                    && crate::trusted_input::shown_capable(),
                 // Compositor input needs a mapped surface; headless
                 // windows get one on a private compositor nobody sees.
                 "trusted_input_headless": crate::trusted_input::headless_capable(),
