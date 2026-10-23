@@ -6,11 +6,15 @@
 set -euo pipefail
 root="$(cd "$(dirname "$0")/.." && pwd)"
 out="$root/platform/macos/Sources/PageScripts.swift"
-{
-  echo '// GENERATED from page-scripts/irreversible.js. Do not edit by hand.'
-  echo '// Regenerate: scripts/gen-page-scripts.sh'
-  echo 'let irreversibleJS = #"""'
-  cat "$root/page-scripts/irreversible.js"
+emit() { # emit <swift-name> <file>
+  echo "let $1 = #\"\"\""
+  cat "$root/page-scripts/$2"
   echo '"""#'
+}
+{
+  echo '// GENERATED from page-scripts/. Do not edit by hand.'
+  echo '// Regenerate: scripts/gen-page-scripts.sh'
+  emit irreversibleJS irreversible.js
+  emit loginWallJS login-wall.js
 } >"$out"
 echo "wrote $out"

@@ -506,7 +506,7 @@ func handle(_ req: JSON) -> JSON {
             "capabilities": [
                 "show": true,
                 "trusted_input": false,
-                "structured_stops": ["irreversible_action"],
+                "structured_stops": ["irreversible_action", "login_required"],
                 "transport": ["unix"],
             ],
         ]])
@@ -860,8 +860,102 @@ func handle(_ req: JSON) -> JSON {
             done(okResponse(["value": entries]))
         }
 
+    case "expect":
+        // Poll in the page until the assertion holds or the deadline passes.
+        // Same semantics as the GTK daemon: contains filters, text asserts,
+        // absent inverts, visible requires a nonzero rendered box.
+        return onMain { done in
+            guard let w = daemon.resolve(jint(req, "id")) else { done(errResponse("no window open")); return }
+            guard let sel = jstr(req, "selector") else { done(errResponse("expect: missing selector")); return }
+            let enc: (Any?) -> String = { v in
+                guard let v = v, !(v is NSNull) else { return "null" }
+                return (try? String(data: JSONSerialization.data(withJSONObject: [v]), encoding: .utf8)).map { "\($0)[0]" } ?? "null"
+            }
+            let timeout = jint(req, "timeout_ms") ?? 5000
+            let js = """
+            const sel = \(enc(sel)), nth = \(jint(req, "nth") ?? 0), contains = \(enc(req["contains"])),
+                  text = \(enc(req["text"])), absent = \(jbool(req, "absent")), visible = \(jbool(req, "visible"));
+            const deadline = Date.now() + \(timeout);
+            const vis = e => { const r = e.getBoundingClientRect(), s = getComputedStyle(e);
+              return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0'; };
+            let last = 'no match';
+            while (true) {
+              let els = Array.from(document.querySelectorAll(sel));
+              if (contains !== null) els = els.filter(e => ((e.textContent || '') + ' ' + (e.value || '')).includes(contains));
+              const el = els[nth];
+              if (absent) { if (!el) return { ok: true, absent: true }; last = 'still present'; }
+              else if (!el) { last = 'no match: ' + els.length + ' element(s)'; }
+              else if (visible && !vis(el)) { last = 'matched but not visible'; }
+              else if (text !== null && !(el.textContent || '').includes(text)) { last = 'text mismatch: ' + JSON.stringify((el.textContent || '').trim().slice(0, 120)); }
+              else return { ok: true, matches: els.length, text: (el.textContent || '').trim().slice(0, 120) };
+              if (Date.now() >= deadline) throw new Error('expect failed after \(timeout) ms: ' + last);
+              await new Promise(r => setTimeout(r, 50));
+            }
+            """
+            runJS(w, js, timeoutMs: timeout + 2000, done: done)
+        }
+
+    case "auth_context":
+        // Login-wall structured stop, from the shared page-scripts/login-wall.js.
+        return onMain { done in
+            guard let w = daemon.resolve(jint(req, "id")) else { done(errResponse("no window open")); return }
+            let js = """
+            const out = { url: location.href, origin: location.origin };
+            out.cookie_count = document.cookie ? document.cookie.split('; ').filter(Boolean).length : 0;
+            out.login_wall = \(loginWallJS);
+            return out;
+            """
+            runJS(w, js, timeoutMs: 10000) { r in
+                guard var v = r["value"] as? JSON else { done(r); return }
+                let wall = v.removeValue(forKey: "login_wall")
+                if let wall = wall as? JSON {
+                    let needs = ((wall["otp_fields"] as? NSNumber)?.intValue ?? 0) > 0 ? "one_time_code" : "credentials"
+                    v["login_required"] = [
+                        "reason": "login_required", "needs": needs, "url": v["url"] ?? "",
+                        "evidence": wall,
+                        "retry": ["command": "fill-login", "after": "the user provides the value"],
+                    ] as JSON
+                } else {
+                    v["login_required"] = NSNull()
+                }
+                done(okResponse(["value": v]))
+            }
+        }
+
+    case "batch":
+        // Run steps in order on this connection thread; each step does its own
+        // main-thread hop. Stop at the first error, report per-step results.
+        guard let actions = req["actions"] as? [JSON] else { return errResponse("batch: missing actions") }
+        var steps: [JSON] = []
+        var failedAt: Int? = nil
+        for (i, a) in actions.enumerated() {
+            let name = jstr(a, "cmd") ?? "?"
+            if failedAt != nil {
+                steps.append(["index": i, "action": name, "status": "skipped", "skipped_reason": "not run after step \(failedAt!) failed"])
+                continue
+            }
+            if name == "batch" {
+                failedAt = i
+                steps.append(["index": i, "action": name, "status": "error", "error": "nested batch is not allowed"])
+                continue
+            }
+            let r = handle(a)
+            var step: JSON = ["index": i, "action": name, "response": r]
+            if (r["status"] as? String) == "err" {
+                failedAt = i
+                step["status"] = "error"
+                step["error"] = r["message"] ?? ""
+            } else {
+                step["status"] = "ok"
+            }
+            steps.append(step)
+        }
+        var batch: JSON = ["complete": failedAt == nil, "executed": failedAt.map { $0 + 1 } ?? actions.count, "steps": steps]
+        if let f = failedAt { batch["failed_at"] = f }
+        return okResponse(["value": ["batch": batch]])
+
     default:
-        return errResponse("command \(cmd) is not supported by the macOS daemon yet (hwatud-mac); supported: ping, open, list, close, show, hide, navigate, eval, wait_load, screenshot, resize, get_content, snapshot, click, type, press, fill_form, scroll, console, quit")
+        return errResponse("command \(cmd) is not supported by the macOS daemon yet (hwatud-mac); supported: ping, open, list, close, show, hide, navigate, eval, wait_load, screenshot, resize, get_content, snapshot, click, type, press, fill_form, scroll, console, expect, auth_context, batch, quit")
     }
 }
 

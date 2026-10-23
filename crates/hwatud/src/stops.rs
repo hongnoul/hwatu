@@ -104,19 +104,25 @@ mod tests {
         }
     }
 
-    /// The macOS daemon embeds a generated copy of the classifier. Run
+    /// The macOS daemon embeds generated copies of the classifiers. Run
     /// scripts/gen-page-scripts.sh when this fails.
     #[test]
     fn macos_daemon_copy_matches_shared_script() {
         let swift = include_str!("../../../platform/macos/Sources/PageScripts.swift");
-        let body = swift
-            .split_once("let irreversibleJS = #\"\"\"\n")
-            .and_then(|(_, rest)| rest.rsplit_once("\"\"\"#"))
-            .map(|(body, _)| body)
-            .expect("PageScripts.swift has the generated shape");
-        assert_eq!(
-            body, IRREVERSIBLE_JS,
-            "platform/macos/Sources/PageScripts.swift is stale; run scripts/gen-page-scripts.sh"
-        );
+        for (name, js) in [
+            ("irreversibleJS", IRREVERSIBLE_JS),
+            ("loginWallJS", LOGIN_WALL_JS),
+        ] {
+            let open = format!("let {name} = #\"\"\"\n");
+            let body = swift
+                .split_once(open.as_str())
+                .and_then(|(_, rest)| rest.split_once("\"\"\"#"))
+                .map(|(body, _)| body)
+                .expect("PageScripts.swift has the generated shape");
+            assert_eq!(
+                body, js,
+                "{name} in platform/macos/Sources/PageScripts.swift is stale; run scripts/gen-page-scripts.sh"
+            );
+        }
     }
 }

@@ -5,15 +5,23 @@
 # Driven through the real CLI and the real MCP stdio server against an
 # isolated display-free daemon. Needs network access.
 # Usage: scripts/test-reference-skill.sh [release-bin-dir]
+# On macOS, HWATUD=<path to hwatud-mac> selects the daemon binary; the
+# daemon runs on an isolated socket and the user's daemon is not touched.
 set -u
 root="$(cd "$(dirname "$0")/.." && pwd)"
 b="${1:-$root/target/release}"
-w=$(mktemp -d /tmp/hw-acc.XXXX)
-mkdir -p "$w/run" "$w/state"
-export WEBKIT_DISABLE_DMABUF_RENDERER=1 LIBGL_ALWAYS_SOFTWARE=1 WLR_RENDERER=pixman
+w=$(mktemp -d "${TMPDIR:-/tmp}/hw-acc.XXXX")
+mkdir -p "$w/run" "$w/state" "$w/bin"
 export XDG_RUNTIME_DIR="$w/run" XDG_STATE_HOME="$w/state" XDG_DATA_HOME="$w/data" XDG_CONFIG_HOME="$w/config"
-unset WAYLAND_DISPLAY DISPLAY
-hw() { "$b/hwatu" "$@" 2>&1; }
+if [[ "$(uname)" == Darwin ]]; then
+  export HWATU_SOCKET="$w/run/hwatu.sock"
+  ln -sf "${HWATUD:-$b/hwatud}" "$w/bin/hwatud"
+  export PATH="$w/bin:$PATH"
+else
+  export WEBKIT_DISABLE_DMABUF_RENDERER=1 LIBGL_ALWAYS_SOFTWARE=1 WLR_RENDERER=pixman
+  unset WAYLAND_DISPLAY DISPLAY
+fi
+hw() { "$b/hwatu" "$@" 2>&1 | grep -v "daemon build .* != client build"; }
 pass=0; fail=0
 ck() { if eval "$2"; then pass=$((pass+1)); echo "ok   - $1"; else fail=$((fail+1)); echo "FAIL - $1"; fi; }
 
@@ -58,14 +66,23 @@ mcp_out=$(printf '%s\n' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
   "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"click\",\"arguments\":{\"id\":$id,\"selector\":\"#finish\"}}}" \
   "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"shot\",\"arguments\":{\"id\":$id,\"path\":\"$w/overview.png\"}}}" \
-  | timeout 30 "$b/hwatu" mcp 2>&1)
+  | "$b/hwatu" mcp 2>&1)
 ck "R13 MCP tools/list advertises show, shot, type, fill, batch, content, press" 'for t in show hide shot type fill batch content press; do grep -q "\"name\":\"$t\"" <<<"$mcp_out" || exit 1; done'
 ck "R14 MCP click on Finish returns irreversible_action" 'grep -q irreversible_action <<<"$mcp_out"'
 ck "R15 MCP shot (vision name) writes PNG" '[[ -s "$w/overview.png" ]]'
 o=$(hw eval --id "$id" 'return location.pathname'); ck "R16 still not placed after MCP attempt" 'grep -q "checkout-step-two" <<<"$o"'
 
 # show is the only visibility path; display-free reports it cannot show
-o=$(hw show "$id"); ck "R17 show answers (display-free: structured no-display error)" 'grep -q "no display" <<<"$o"'
+o=$(hw show "$id")
+if [[ "$(uname)" == Darwin ]]; then
+  l=$(hw list --json)
+  ck "R17 show makes the window visible (mode leaves headless)" '! grep -q "\"mode\":\"headless\"" <<<"$l"'
+  hw hide "$id" >/dev/null
+  l=$(hw list --json)
+  ck "R17b hide returns it to headless" 'grep -q "\"mode\":\"headless\"" <<<"$l"'
+else
+  ck "R17 show answers (display-free: structured no-display error)" 'grep -q "no display" <<<"$o"'
+fi
 o=$(hw --focus https://example.com); ck "R18 visible open flags rejected" 'grep -q "hwatu show" <<<"$o"'
 o=$(hw history foo); ck "R19 removed command history is rejected" 'grep -q "was removed" <<<"$o"'
 o=$(hw how to exit vim); ck "R19b non-URL words are rejected, not searched" 'grep -q "not a URL" <<<"$o"'
