@@ -62,6 +62,77 @@ func encodeFrame(_ obj: JSON) -> Data {
 
 // MARK: - Window
 
+/// Records completed resource loads for `net`. WKWebView has no public
+/// per-request API; this uses WebKit's `_WKResourceLoadDelegate`, guarded
+/// by `responds(to:)` so a WebKit without it degrades to "net unavailable"
+/// instead of crashing. Observation only.
+final class NetLog: NSObject {
+    weak var window: Window?
+    static let setter = NSSelectorFromString("_setResourceLoadDelegate:")
+    private(set) var available = false
+
+    func attach(_ wv: WKWebView) {
+        guard wv.responds(to: NetLog.setter) else { return }
+        wv.perform(NetLog.setter, with: self)
+        available = true
+    }
+
+    private var started: [UInt64: Date] = [:]
+
+    @objc(webView:resourceLoad:didSendRequest:)
+    func sent(_ wv: WKWebView, info: NSObject, request: URLRequest) {
+        guard let k = info.value(forKey: "resourceLoadID") as? UInt64 else { return }
+        started[k] = Date()
+        if started.count > 1000 { started.removeAll() }
+    }
+
+    @objc(webView:resourceLoad:didCompleteWithError:response:)
+    func complete(_ wv: WKWebView, info: NSObject, error: NSError?, response: URLResponse?) {
+        guard let w = window else { return }
+        // Navigating away cancels in-flight loads; that is noise.
+        if let e = error, e.domain == NSURLErrorDomain, e.code == NSURLErrorCancelled {
+            if let k = info.value(forKey: "resourceLoadID") as? UInt64 { started.removeValue(forKey: k) }
+            return
+        }
+        let url = (response?.url ?? (info.value(forKey: "originalURL") as? URL))?.absoluteString ?? ""
+        let method = (info.value(forKey: "originalHTTPMethod") as? String) ?? "GET"
+        let mime = response?.mimeType ?? ""
+        var e: JSON = [
+            "method": method,
+            "url": url,
+            "type": NetLog.classify(mime: mime),
+        ]
+        let now = Date()
+        let key = info.value(forKey: "resourceLoadID") as? UInt64
+        if let k = key, let sent = started.removeValue(forKey: k) {
+            e["start_ms"] = max(0, Int(sent.timeIntervalSince(w.netEpoch) * 1000))
+            e["duration_ms"] = max(0, Int(now.timeIntervalSince(sent) * 1000))
+        } else {
+            e["start_ms"] = max(0, Int(now.timeIntervalSince(w.netEpoch) * 1000))
+        }
+        if let http = response as? HTTPURLResponse { e["status"] = http.statusCode }
+        if let err = error { e["error"] = err.localizedDescription }
+        if let page = wv.url?.absoluteString { e["page"] = page }
+        w.netBuf.append(e)
+        if w.netBuf.count > 500 { w.netBuf.removeFirst(w.netBuf.count - 500) }
+    }
+
+    /// Same coarse classes as crates/hwatud/src/net.rs classify(), from
+    /// the response MIME type. WebKit's raw request-type values are
+    /// undocumented and not used.
+    static func classify(mime: String) -> String {
+        let m = mime.lowercased()
+        if m.contains("javascript") || m.contains("ecmascript") { return "script" }
+        if m.hasPrefix("text/css") { return "stylesheet" }
+        if m.hasPrefix("image/") { return "image" }
+        if m.hasPrefix("font/") || m.contains("font") { return "font" }
+        if m.hasPrefix("audio/") || m.hasPrefix("video/") { return "media" }
+        if m.contains("json") || m.contains("xml") { return "data" }
+        if m.hasPrefix("text/html") { return "document" }
+        return "other"
+    }
+}
+
 final class Window: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     let id: UInt64
     let webView: WKWebView
@@ -71,6 +142,10 @@ final class Window: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessag
     var loadState: String = "idle" // idle | loading | committed | settled | failed
     var lastError: String?
     var consoleBuf: [JSON] = []
+    /// `net` ring buffer (same cap and entry shape as the GTK daemon).
+    var netBuf: [JSON] = []
+    var netEpoch = Date()
+    let netLog = NetLog()
     /// File the next file chooser receives (`upload`). Without one, file
     /// choosers are cancelled: a headless window never shows a panel.
     var pendingUpload: URL?
@@ -185,6 +260,8 @@ final class Window: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessag
         controller.add(self, name: "hwatuConsole")
         webView.navigationDelegate = self
         webView.uiDelegate = self
+        netLog.window = self
+        netLog.attach(webView)
         if mode != "headless" {
             host.makeKeyAndOrderFront(nil)
         } else {
@@ -228,7 +305,10 @@ final class Window: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessag
         }
     }
 
-    func webView(_ w: WKWebView, didStartProvisionalNavigation n: WKNavigation!) { loadState = "loading" }
+    func webView(_ w: WKWebView, didStartProvisionalNavigation n: WKNavigation!) {
+        loadState = "loading"
+        netEpoch = Date()
+    }
     func webView(_ w: WKWebView, didCommit n: WKNavigation!) { loadState = "committed" }
     func webView(_ w: WKWebView, didFinish n: WKNavigation!) { loadState = "settled" }
     func webView(_ w: WKWebView, didFail n: WKNavigation!, withError e: Error) {
@@ -1009,6 +1089,18 @@ func handle(_ req: JSON) -> JSON {
                 entries = Array(entries.suffix(limit))
             }
             if jbool(req, "clear") { w.consoleBuf.removeAll() }
+            done(okResponse(["value": entries]))
+        }
+
+    case "net":
+        return onMain { done in
+            guard let w = daemon.resolve(jint(req, "id")) else { done(errResponse("no window open")); return }
+            guard w.netLog.available else {
+                done(errResponse("net is unavailable: this WebKit has no resource-load delegate")); return
+            }
+            var entries = w.netBuf
+            if let limit = jint(req, "limit"), entries.count > limit { entries = Array(entries.suffix(limit)) }
+            if jbool(req, "clear") { w.netBuf.removeAll() }
             done(okResponse(["value": entries]))
         }
 

@@ -121,5 +121,17 @@ o=$(hw eval --id "$id" 'for (let i = 0; i < 20 && !got; i++) await new Promise(r
 ck "C25 page reads the uploaded bytes" 'grep -q "hello upload" <<<"$o"'
 o=$(hw upload --id "$id" '#t' "$w/up.txt"); ck "C26 upload to a non-file input is refused" 'grep -q "not an <input type=file>" <<<"$o"'
 
+# Network log: method, status and type per completed request; --clear drains.
+o=$(hw goto --id "$id" "$base/net.html")
+hw eval --id "$id" 'return await posted' >/dev/null
+o=$(hw net --id "$id")
+netq() { python3 -c 'import json,sys; e=json.loads(sys.argv[1]); sys.exit(0 if any('"$1"' for x in e) else 1)' "$o"; }
+ck "C27 net logs the document with status 200" 'netq "x[\"url\"].endswith(\"/net.html\") and x.get(\"status\")==200 and x[\"type\"]==\"document\""'
+ck "C28 net logs the stylesheet type" 'netq "x[\"url\"].endswith(\"/net.css\") and x[\"type\"]==\"stylesheet\""'
+ck "C29 net logs a 404 subresource with its status" 'netq "x[\"url\"].endswith(\"/missing.png\") and x.get(\"status\")==404"'
+ck "C30 net logs the fetch POST method" 'netq "x[\"method\"]==\"POST\" and \"post\" in x[\"url\"]"'
+hw net --id "$id" --clear >/dev/null
+o=$(hw net --id "$id"); ck "C31 net --clear drains the buffer" '[[ "$o" == "[]" ]]'
+
 echo "pass=$pass fail=$fail ($(uname))"
 [[ $fail -eq 0 ]]

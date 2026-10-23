@@ -15,7 +15,7 @@ cp hwatud-mac ~/.local/bin/hwatud   # the CLI spawns `hwatud` from PATH
 
 ping, open, list, close, show, hide, navigate, eval, wait_load,
 screenshot, resize, get_content, snapshot, click, type, press, fill_form,
-scroll, console, expect, auth_context, challenge, upload, batch, quit. Unsupported commands answer a clean error naming
+scroll, console, net, expect, auth_context, challenge, upload, batch, quit. Unsupported commands answer a clean error naming
 the command. `focus` and `unfocus` are accepted aliases of `show` and `hide`.
 
 `click` applies the `irreversible_action` structured stop, `auth_context`
@@ -27,7 +27,11 @@ focus do not move. `Sources/PageScripts.swift` is generated
 from `page-scripts/` by `scripts/gen-page-scripts.sh`; a Rust test fails when the copy is
 stale. `scripts/test-reference-skill.sh` (with `HWATUD=<path>`) passes
 against this daemon. macOS is not yet a supported platform: it lacks a
-signed package, `net`, `diff`, and `motion` (see VISION.md support criteria).
+signed package, `diff`, and `motion` (see VISION.md support criteria).
+
+`net` uses WebKit's private `_WKResourceLoadDelegate`, checked with
+`responds(to:)`. If a WebKit lacks it, `net` answers an error and nothing
+else changes.
 
 ## Headless notes
 
