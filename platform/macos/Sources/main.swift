@@ -62,7 +62,7 @@ func encodeFrame(_ obj: JSON) -> Data {
 
 // MARK: - Window
 
-final class Window: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+final class Window: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     let id: UInt64
     let webView: WKWebView
     let host: NSWindow
@@ -71,6 +71,17 @@ final class Window: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
     var loadState: String = "idle" // idle | loading | committed | settled | failed
     var lastError: String?
     var consoleBuf: [JSON] = []
+    /// File the next file chooser receives (`upload`). Without one, file
+    /// choosers are cancelled: a headless window never shows a panel.
+    var pendingUpload: URL?
+    /// Inline-data uploads staged on disk. The page's File objects read
+    /// from these lazily, so they live until the window closes (as on Linux).
+    var stagedUploads: [(dir: URL, size: Int)] = []
+
+    func removeStagedUploads() {
+        for s in stagedUploads { try? FileManager.default.removeItem(at: s.dir) }
+        stagedUploads.removeAll()
+    }
 
     init(id: UInt64, mode: String, appId: String?, profile: String?) {
         self.id = id
@@ -173,6 +184,7 @@ final class Window: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         super.init()
         controller.add(self, name: "hwatuConsole")
         webView.navigationDelegate = self
+        webView.uiDelegate = self
         if mode != "headless" {
             host.makeKeyAndOrderFront(nil)
         } else {
@@ -200,6 +212,13 @@ final class Window: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
             host.setFrameOrigin(NSPoint(x: 0, y: 0))
             host.orderFrontRegardless()
         }
+    }
+
+    func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters,
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping ([URL]?) -> Void) {
+        let file = pendingUpload
+        pendingUpload = nil
+        completionHandler(file.map { [$0] })
     }
 
     func userContentController(_ c: WKUserContentController, didReceive message: WKScriptMessage) {
@@ -266,11 +285,16 @@ final class Daemon {
         guard let w = windows.removeValue(forKey: id) else { return false }
         order.removeAll { $0 == id }
         w.host.close()
+        w.removeStagedUploads()
         return true
     }
 }
 
 let daemon = Daemon()
+// Same limits as the GTK daemon (hwatu-ipc INLINE_MAX_BYTES, window.rs).
+let inlineMaxBytes = 16 * 1024 * 1024
+let maxRetainedUploads = 16
+let maxRetainedUploadBytes = 64 * 1024 * 1024
 
 /// Keeps the socket watchdog's DispatchSourceTimer alive for the
 /// process lifetime (a local would be deallocated when serve() returns).
@@ -1087,6 +1111,73 @@ func handle(_ req: JSON) -> JSON {
                     ])
                     return
                 }
+                done(r)
+            }
+        }
+
+    case "upload":
+        // Arm the file the next chooser receives, then click the input and
+        // wait for its change event (same flow as the GTK daemon).
+        guard let selector = jstr(req, "selector"), let path = jstr(req, "path") else {
+            return errResponse("upload: missing selector or path")
+        }
+        var file: URL
+        var stagedDir: (dir: URL, size: Int)?
+        if let data = jstr(req, "data") {
+            guard let bytes = Data(base64Encoded: data) else { return errResponse("upload data is not valid base64") }
+            if bytes.count > inlineMaxBytes {
+                return errResponse("upload is \(bytes.count) bytes; the inline limit is \(inlineMaxBytes) bytes")
+            }
+            let dir = FileManager.default.temporaryDirectory.appendingPathComponent("hwatu-upload-\(UUID().uuidString)")
+            do {
+                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
+                                                        attributes: [.posixPermissions: 0o700])
+                file = dir.appendingPathComponent((path as NSString).lastPathComponent)
+                try bytes.write(to: file, options: .atomic)
+                stagedDir = (dir, bytes.count)
+            } catch {
+                return errResponse("cannot stage upload: \(error.localizedDescription)")
+            }
+        } else {
+            var isDir: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir) else {
+                return errResponse("cannot read \(path): No such file or directory")
+            }
+            if isDir.boolValue { return errResponse("cannot upload \(path): not a regular file") }
+            file = URL(fileURLWithPath: path)
+        }
+        return onMain { done in
+            guard let w = daemon.resolve(jint(req, "id")) else {
+                if let s = stagedDir { try? FileManager.default.removeItem(at: s.dir) }
+                done(errResponse("no window open")); return
+            }
+            if let s = stagedDir {
+                let bytes = w.stagedUploads.reduce(0) { $0 + $1.size }
+                if w.stagedUploads.count >= maxRetainedUploads || bytes + s.size > maxRetainedUploadBytes {
+                    try? FileManager.default.removeItem(at: s.dir)
+                    done(errResponse("too many staged uploads are still retained by this window")); return
+                }
+                w.stagedUploads.append(s)
+            }
+            w.pendingUpload = file
+            let js = """
+            const selector = \(jsonStringLiteral(selector));
+            const el = document.querySelector(selector);
+            if (!el) throw new Error('no element matches selector: ' + selector);
+            if (!(el instanceof HTMLInputElement) || el.type !== 'file')
+              throw new Error('element is not an <input type=file>: ' + selector);
+            el.value = '';
+            return await new Promise((resolve, reject) => {
+              el.addEventListener('change', () => {
+                const f = el.files && el.files[0];
+                if (!f) return reject(new Error('file chooser completed without a file'));
+                resolve({ uploaded: f.name, size: f.size, type: f.type });
+              }, { once: true });
+              el.click();
+            });
+            """
+            runJS(w, js, timeoutMs: jint(req, "timeout_ms") ?? 15000) { r in
+                w.pendingUpload = nil
                 done(r)
             }
         }

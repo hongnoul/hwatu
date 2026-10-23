@@ -1,0 +1,9 @@
+<!DOCTYPE html><meta charset="utf-8"><title>upload</title>
+<input id="f" type="file"><input id="t" type="text">
+<script>
+window.got = null;
+document.getElementById('f').addEventListener('change', async e => {
+  const f = e.target.files[0];
+  window.got = { name: f.name, size: f.size, text: await f.text() };
+});
+</script>

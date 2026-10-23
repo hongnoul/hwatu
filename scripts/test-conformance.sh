@@ -112,5 +112,14 @@ else
   o=$(hw eval --id "$id" 'return log.length'); ck "C23 refused trusted click sent no events" 'grep -q "0" <<<"$o"'
 fi
 
+# Upload: the file chooser receives the armed file without a panel; the
+# page can read the bytes; a non-file input is refused.
+printf 'hello upload\n' > "$w/up.txt"
+o=$(hw goto --id "$id" "$base/upload.html")
+o=$(hw upload --id "$id" '#f' "$w/up.txt"); ck "C24 upload reports the file" 'grep -q "\"uploaded\":\"up.txt\"" <<<"$o"'
+o=$(hw eval --id "$id" 'for (let i = 0; i < 20 && !got; i++) await new Promise(r => setTimeout(r, 50)); return JSON.stringify(got)')
+ck "C25 page reads the uploaded bytes" 'grep -q "hello upload" <<<"$o"'
+o=$(hw upload --id "$id" '#t' "$w/up.txt"); ck "C26 upload to a non-file input is refused" 'grep -q "not an <input type=file>" <<<"$o"'
+
 echo "pass=$pass fail=$fail ($(uname))"
 [[ $fail -eq 0 ]]
