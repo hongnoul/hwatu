@@ -210,6 +210,20 @@ out="$(hw auth-context --id "$sid" 2>&1)"
 check "auth-context reports login_required" grep -q '"reason":"login_required"' <<<"$out"
 hw close "$sid" >/dev/null 2>&1 || true
 
+# A generic "Finish" is ordinary on a wizard page and irreversible on a
+# checkout review that shows a total.
+wizard='<!DOCTYPE html><title>Setup wizard</title><button id="f">Finish</button>'
+wid="$(hw render --stdin --keep <<<"$wizard" | grep -o '"id":[0-9]*' | cut -d: -f2)"
+out="$(hw click --id "$wid" '#f' 2>&1)"
+check "Finish on a non-checkout page is not stopped" grep -q '"clicked"' <<<"$out"
+hw close "$wid" >/dev/null 2>&1 || true
+review='<!DOCTYPE html><title>Checkout: Overview</title><p>Total: $32.39</p><button id="f">Finish</button>'
+rid="$(hw render --stdin --keep <<<"$review" | grep -o '"id":[0-9]*' | cut -d: -f2)"
+out="$(hw click --id "$rid" '#f' 2>&1 || true)"
+check "Finish on a checkout review with a total is stopped" \
+    grep -q '"reason":"irreversible_action"' <<<"$out"
+hw close "$rid" >/dev/null 2>&1 || true
+
 # 4b. exact viewport sizing under the child compositor (issue #7).
 # The pre-fix bug was height-only and size-dependent, so sample a few
 # sizes including the two from the report.

@@ -247,16 +247,31 @@ fn smoke_test() -> Result<String, String> {
     };
     let shot = std::env::temp_dir().join(format!("hwatu-doctor-{}.png", std::process::id()));
     let result = (|| {
+        // A fresh window commits its initial about:blank asynchronously; an
+        // eval that lands during that commit is interrupted. Wait for a
+        // settled load and retry once on an interrupted eval.
         let _ = send(&Request::WaitLoad {
             id: Some(id),
-            until: Default::default(),
+            until: hwatu_ipc::LoadStage::Settled,
             timeout_ms: Some(10_000),
         });
-        match send(&Request::Eval {
-            id: Some(id),
-            js: "document.title='hwatu-doctor'; document.body.innerHTML='<h1>hwatu doctor smoke test</h1>'; return document.title".into(),
-            timeout_ms: Some(10_000),
-        }) {
+        let eval = || {
+            send(&Request::Eval {
+                id: Some(id),
+                js: "document.title='hwatu-doctor'; document.body.innerHTML='<h1>hwatu doctor smoke test</h1>'; return document.title".into(),
+                timeout_ms: Some(10_000),
+            })
+        };
+        let mut response = eval();
+        if matches!(&response, Ok(Response::Err { message, .. }) if message.contains("navigated")) {
+            let _ = send(&Request::WaitLoad {
+                id: Some(id),
+                until: hwatu_ipc::LoadStage::Settled,
+                timeout_ms: Some(10_000),
+            });
+            response = eval();
+        }
+        match response {
             Ok(Response::Ok { value: Some(v), .. }) if v.as_str() == Some("hwatu-doctor") => Ok(()),
             Ok(Response::Ok { value, .. }) => Err(format!("unexpected eval result: {value:?}")),
             Ok(Response::Err { message, .. }) => Err(format!("eval failed: {message}")),

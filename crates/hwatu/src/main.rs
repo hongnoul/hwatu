@@ -1325,20 +1325,53 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             Ok(Request::Adblock { action })
         }
         Some("-h") | Some("--help") => Err(USAGE.to_string()),
-        // Everything else is a URL or search query. Join the words so
-        // `hwatu how to exit vim` searches without needing quotes.
-        Some(_) => Ok(Request::Open {
-            url: Some(
-                rest.iter()
-                    .map(|s| s.as_str())
-                    .collect::<Vec<_>>()
-                    .join(" "),
-            ),
-            app_id,
-            mode,
-            profile: resolve_profile(profile),
-        }),
+        Some("history") | Some("jump") | Some("demo") => Err(format!(
+            "`{}` was removed: the browser keeps no history and has no demo",
+            rest[0]
+        )),
+        // Everything else is one URL, host, or local path. Words that are
+        // none of those are an error: input is never turned into a search.
+        Some(target) => {
+            if rest.len() > 1 || !looks_like_open_target(target) {
+                return Err(format!(
+                    "unknown command or not a URL: {:?}\n{USAGE}",
+                    rest.iter()
+                        .map(|s| s.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                ));
+            }
+            Ok(Request::Open {
+                url: Some(target.to_string()),
+                app_id,
+                mode,
+                profile: resolve_profile(profile),
+            })
+        }
     }
+}
+
+/// A URL with a scheme, `about:`/`data:`, a host with a dot or port,
+/// `localhost`, or an existing local path.
+fn looks_like_open_target(s: &str) -> bool {
+    if s.contains("://") || s.starts_with("about:") || s.starts_with("data:") {
+        return true;
+    }
+    if std::path::Path::new(s).exists() {
+        return true;
+    }
+    let host = s.split(['/', '?', '#']).next().unwrap_or(s);
+    let bare = host.split(':').next().unwrap_or(host);
+    !s.contains(char::is_whitespace)
+        && (bare == "localhost"
+            || bare.ends_with(".localhost")
+            || host.starts_with('[')
+            || (bare.contains('.') && !bare.starts_with('.') && !bare.ends_with('.'))
+            || (host.contains(':')
+                && host
+                    .rsplit(':')
+                    .next()
+                    .is_some_and(|p| p.parse::<u16>().is_ok())))
 }
 
 /// Resolve the profile choice (platform item 6): explicit flag wins,
@@ -2493,11 +2526,30 @@ mod tests {
     }
 
     #[test]
-    fn multiword_query_joins_into_one_open() {
-        let Ok(Request::Open { url, .. }) = parse(&args(&["how", "to", "exit", "vim"])) else {
-            panic!("expected Open");
-        };
-        assert_eq!(url.as_deref(), Some("how to exit vim"));
+    fn non_url_words_are_errors_not_searches() {
+        for words in [
+            &["how", "to", "exit", "vim"][..],
+            &["vim"],
+            &["history", "foo"],
+            &["jump", "x"],
+            &["demo"],
+        ] {
+            assert!(parse(&args(words)).is_err(), "{words:?} must not open");
+        }
+        for ok in [
+            "example.com",
+            "localhost:3000",
+            "127.0.0.1:8080",
+            "[::1]:3000",
+            "https://x.test/a",
+            "about:blank",
+            "app.localhost",
+        ] {
+            assert!(
+                matches!(parse(&args(&[ok])), Ok(Request::Open { .. })),
+                "{ok} must open"
+            );
+        }
     }
 
     #[test]
@@ -2910,13 +2962,21 @@ mod tests {
         ];
         let mut checked = 0;
         for doc in docs {
+            let mut in_code = false;
             for line in doc.lines() {
+                if line.trim_start().starts_with("```") {
+                    in_code = !in_code;
+                    continue;
+                }
+                if !in_code {
+                    continue;
+                }
                 let Some(cmd) = line.trim().strip_prefix("hwatu ") else {
                     continue;
                 };
                 let cmd = cmd.split(" #").next().unwrap().trim();
-                // Skip prose, multi-line quoted bodies, and stdin redirects.
-                if cmd.matches('\'').count() % 2 == 1 || cmd.contains(" is ") || cmd.contains('<') {
+                // Skip multi-line quoted bodies and stdin redirects.
+                if cmd.matches('\'').count() % 2 == 1 || cmd.contains('<') {
                     continue;
                 }
                 let words: Vec<String> = shell_words(cmd)

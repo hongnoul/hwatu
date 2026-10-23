@@ -21,5 +21,15 @@
   if (/\/(checkout|payment|purchase|order)\b.*\b(submit|place|confirm|complete)/.test(action)) {
     return { label, kind: 'payment' };
   }
+  // Generic final buttons ("Finish", "Confirm", "Submit", "Complete") are
+  // irreversible on a final checkout review: the URL names checkout or
+  // payment, and the page shows a grand total.
+  if (/^(finish|confirm|submit|complete|done|place)\b/.test(text)) {
+    const where = (location.pathname + ' ' + document.title).toLowerCase();
+    const page = (document.body ? document.body.innerText : '').toLowerCase();
+    const atCheckout = /checkout|payment|purchase|order|review/.test(where);
+    const hasTotal = /\b(order )?total\b[^\n]{0,40}[$€£¥₩]\s?\d|[$€£¥₩]\s?\d[^\n]{0,40}\btotal\b|\btotal:?\s*[$€£¥₩]?\s?\d/.test(page);
+    if (atCheckout && hasTotal) return { label, kind: 'payment' };
+  }
   return null;
 })(el)
