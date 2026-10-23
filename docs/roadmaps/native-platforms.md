@@ -77,12 +77,13 @@ policy `.prohibited`):
   Verify it or document it as unsupported.
 - The current host (`platform/macos`) is a separate Swift daemon built from
   source. It must ship as a signed binary before macOS is claimed.
-- Status: `scripts/test-conformance.sh` passes against it (36 checks, the
+- Status: `scripts/test-conformance.sh` passes against it (40 checks, the
   same fixtures as Linux). `scripts/test-reference-skill.sh` passes.
   Trusted input works in headless windows: AppKit events sent to the web
   view arrive with `isTrusted` and do not move the user's cursor or focus.
   `diff` runs in the CLI on `shot` output through `hwatu-pixeldiff`, the
-  same scoring code the GTK daemon uses. Missing: signed package, `motion`.
+  same scoring code the GTK daemon uses. Missing: signed package,
+  `motion --observe`.
 - A host window below the desktop icons is treated as occluded and its
   page timers drop to about 1 Hz. The host uses normal window level with
   alpha 0.0001.
@@ -132,9 +133,10 @@ Attack early, not after three backends exist.
   nearly all of it. Report the residue as structured blocks. Never spoof.
 - **Page-side scripts drift.** Snapshot ranking, `--contains` matching, and
   content extraction must be one shared asset loaded by every backend, not
-  three reimplementations. The stop classifiers and the challenge detector
-  are shared from `page-scripts/`. Pixel diff scoring is shared as the
-  `hwatu-pixeldiff` crate.
+  three reimplementations. The stop classifiers, the challenge detector,
+  and the `motion` inventory are shared from `page-scripts/`. Pixel diff
+  scoring is shared as the `hwatu-pixeldiff` crate. Snapshot ranking,
+  `--contains` matching, and content extraction are still duplicated.
 
 ## Delivery sequence and exit gates
 

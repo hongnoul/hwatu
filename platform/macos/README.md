@@ -15,7 +15,8 @@ cp hwatud-mac ~/.local/bin/hwatud   # the CLI spawns `hwatud` from PATH
 
 ping, open, list, close, show, hide, navigate, eval, wait_load,
 screenshot, resize, get_content, snapshot, click, type, press, fill_form,
-scroll, console, net, expect, auth_context, challenge, upload, batch, quit. Unsupported commands answer a clean error naming
+scroll, console, net, motion, expect, auth_context, challenge, upload, batch,
+quit. Unsupported commands answer a clean error naming
 the command. `focus` and `unfocus` are accepted aliases of `show` and `hide`.
 
 `click` applies the `irreversible_action` structured stop, `auth_context`
@@ -27,7 +28,7 @@ focus do not move. `Sources/PageScripts.swift` is generated
 from `page-scripts/` by `scripts/gen-page-scripts.sh`; a Rust test fails when the copy is
 stale. `scripts/test-reference-skill.sh` (with `HWATUD=<path>`) passes
 against this daemon. macOS is not yet a supported platform: it lacks a
-signed package and `motion` (see VISION.md support criteria).
+signed package and `motion --observe` (see VISION.md support criteria).
 
 `diff` is answered by the CLI: it captures with `screenshot` and diffs
 with `hwatu-pixeldiff`, the scoring code the GTK daemon uses.

@@ -146,5 +146,13 @@ hw shot --id "$wa" "$w/base.png" >/dev/null
 o=$(hw diff --id "$wa" --baseline "$w/base.png"); ck "C34 diff against own shot baseline matches" 'grep -q "\"significant_regions\":0" <<<"$o"'
 hw close "$wa" >/dev/null; hw close "$wb" >/dev/null
 
+# Motion inventory (declared CSS/WAAPI) and JSON-safe eval values.
+o=$(hw goto --id "$id" "$base/motion.html")
+o=$(hw motion --id "$id")
+ck "C35 motion reports the running keyframe animation" 'grep -q "\"name\":\"spin\"" <<<"$o" && grep -q "\"duration_ms\":2000" <<<"$o"'
+ck "C36 motion reports the idle declared transition" 'grep -q "\"property\":\"opacity\"" <<<"$o"'
+o=$(hw eval --id "$id" 'return [Infinity, NaN, 1]'); ck "C37 non-finite eval values serialize as null" 'grep -q "\[null,null,1\]" <<<"$o"'
+o=$(hw ping); ck "C38 daemon alive after non-finite values" 'grep -q "\"engine\"" <<<"$o"'
+
 echo "pass=$pass fail=$fail ($(uname))"
 [[ $fail -eq 0 ]]

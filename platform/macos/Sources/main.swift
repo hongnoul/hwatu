@@ -55,7 +55,12 @@ func okResponse(_ extra: JSON = [:]) -> JSON {
 func errResponse(_ message: String) -> JSON { ["status": "err", "message": message] }
 
 func encodeFrame(_ obj: JSON) -> Data {
-    var data = (try? JSONSerialization.data(withJSONObject: obj)) ?? Data("{\"status\":\"err\",\"message\":\"serialize failed\"}".utf8)
+    // dataWithJSONObject raises an Objective-C exception (not a Swift
+    // error) on invalid input such as NaN, which `try?` cannot catch.
+    let fallback = Data("{\"status\":\"err\",\"message\":\"response is not valid JSON (non-finite number or unsupported type)\"}".utf8)
+    var data = JSONSerialization.isValidJSONObject(obj)
+        ? ((try? JSONSerialization.data(withJSONObject: obj)) ?? fallback)
+        : fallback
     data.append(0x0A)
     return data
 }
@@ -403,7 +408,13 @@ func onMain(_ body: @escaping (@escaping (JSON) -> Void) -> Void) -> JSON {
 func jsonValue(from any: Any?) -> Any {
     guard let any = any else { return NSNull() }
     if any is NSNull { return NSNull() }
-    if let n = any as? NSNumber { return n }
+    if let n = any as? NSNumber {
+        // JSON has no Infinity/NaN; NSJSONSerialization throws on them
+        // (uncatchable from Swift) and would kill the daemon. Map them to
+        // null, as the GTK daemon's serde_json does.
+        if CFGetTypeID(n) != CFBooleanGetTypeID(), !n.doubleValue.isFinite { return NSNull() }
+        return n
+    }
     if let s = any as? String { return s }
     if let a = any as? [Any] { return a.map { jsonValue(from: $0) } }
     if let d = any as? [String: Any] { return d.mapValues { jsonValue(from: $0) } }
@@ -1207,6 +1218,16 @@ func handle(_ req: JSON) -> JSON {
             }
         }
 
+    case "motion":
+        // Declared motion inventory from the shared page-scripts/motion.js.
+        if jbool(req, "observe") {
+            return errResponse("motion --observe is not supported by the macOS daemon yet (hwatud-mac). Use motion without --observe for declared CSS/WAAPI motion.")
+        }
+        return onMain { done in
+            guard let w = daemon.resolve(jint(req, "id")) else { done(errResponse("no window open")); return }
+            runJS(w, motionJS, timeoutMs: jint(req, "timeout_ms") ?? 15000, done: done)
+        }
+
     case "upload":
         // Arm the file the next chooser receives, then click the input and
         // wait for its change event (same flow as the GTK daemon).
@@ -1307,7 +1328,7 @@ func handle(_ req: JSON) -> JSON {
         return okResponse(["value": ["batch": batch]])
 
     default:
-        return errResponse("command \(cmd) is not supported by the macOS daemon yet (hwatud-mac); supported: ping, open, list, close, show, hide, navigate, eval, wait_load, screenshot, resize, get_content, snapshot, click, type, press, fill_form, scroll, console, net, expect, auth_context, challenge, upload, batch, quit")
+        return errResponse("command \(cmd) is not supported by the macOS daemon yet (hwatud-mac); supported: ping, open, list, close, show, hide, navigate, eval, wait_load, screenshot, resize, get_content, snapshot, click, type, press, fill_form, scroll, console, net, motion, expect, auth_context, challenge, upload, batch, quit")
     }
 }
 

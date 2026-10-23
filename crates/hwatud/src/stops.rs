@@ -113,6 +113,7 @@ mod tests {
             ("irreversibleJS", IRREVERSIBLE_JS),
             ("loginWallJS", LOGIN_WALL_JS),
             ("challengeJS", crate::automation::challenge_detector_js()),
+            ("motionJS", crate::verify::MOTION_JS),
         ] {
             let open = format!("let {name} = #\"\"\"\n");
             let body = swift

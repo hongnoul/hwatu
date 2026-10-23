@@ -17,5 +17,6 @@ emit() { # emit <swift-name> <file>
   emit irreversibleJS irreversible.js
   emit loginWallJS login-wall.js
   emit challengeJS challenge.js
+  emit motionJS motion.js
 } >"$out"
 echo "wrote $out"
