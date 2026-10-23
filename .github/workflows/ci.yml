@@ -139,6 +139,37 @@ jobs:
       - name: Run cross-OS conformance fixtures
         run: scripts/test-conformance.sh
 
+  macos-conformance:
+    name: macOS daemon conformance
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: macos-conformance
+
+      - name: Page scripts in sync
+        run: |
+          scripts/gen-page-scripts.sh
+          git diff --exit-code platform/macos/Sources/PageScripts.swift
+
+      - name: Build CLI and macOS daemon
+        run: |
+          cargo build --release --locked -p hwatu
+          swiftc -O -o target/release/hwatud-mac \
+            platform/macos/Sources/main.swift platform/macos/Sources/PageScripts.swift \
+            -framework AppKit -framework WebKit -framework JavaScriptCore
+
+      # Same fixtures and expectations as the Linux job. The daemon runs on
+      # an isolated socket. Checks that need trusted input in a headless
+      # window use the macOS path (trusted_input_headless: true).
+      - name: Run cross-OS conformance fixtures
+        run: HWATUD="$PWD/target/release/hwatud-mac" scripts/test-conformance.sh
+
   audit:
     name: Dependency audit
     runs-on: ubuntu-latest
