@@ -538,7 +538,7 @@ func handle(_ req: JSON) -> JSON {
             "capabilities": [
                 "show": true,
                 "trusted_input": false,
-                "structured_stops": ["irreversible_action", "login_required"],
+                "structured_stops": ["irreversible_action", "login_required", "challenge"],
                 "transport": ["unix"],
             ],
         ]])
@@ -954,6 +954,47 @@ func handle(_ req: JSON) -> JSON {
             }
         }
 
+    case "challenge":
+        // Detect CAPTCHA / anti-bot UI with the shared page-scripts/challenge.js.
+        // With wait, a challenge still present at the deadline returns a
+        // structured `challenge` stop (same shape as the GTK daemon).
+        return onMain { done in
+            guard let w = daemon.resolve(jint(req, "id")) else { done(errResponse("no window open")); return }
+            let wait = jbool(req, "wait")
+            let timeout = jint(req, "timeout_ms") ?? 30000
+            let js = """
+            \(challengeJS)
+            const started = Date.now();
+            let current = detectHwatuChallenge();
+            if (\(wait)) {
+              while (current.status === 'challenge' && Date.now() - started < \(timeout)) {
+                await new Promise(r => setTimeout(r, 500));
+                current = detectHwatuChallenge();
+              }
+              current.status = current.status === 'challenge' ? 'manual_required' : 'cleared';
+              current.manual_required = current.status === 'manual_required';
+            }
+            current.elapsed_ms = Date.now() - started;
+            return current;
+            """
+            runJS(w, js, timeoutMs: timeout + 5000) { r in
+                if let v = r["value"] as? JSON, (v["status"] as? String) == "manual_required" {
+                    done([
+                        "status": "err",
+                        "message": "challenge still present; the agent could not clear it",
+                        "stop": [
+                            "reason": "challenge",
+                            "challenge_type": v["challenge_type"] ?? NSNull(),
+                            "url": v["url"] ?? NSNull(),
+                            "retry": ["command": "show", "after": "the user clears the challenge"],
+                        ] as JSON,
+                    ])
+                    return
+                }
+                done(r)
+            }
+        }
+
     case "batch":
         // Run steps in order on this connection thread; each step does its own
         // main-thread hop. Stop at the first error, report per-step results.
@@ -987,7 +1028,7 @@ func handle(_ req: JSON) -> JSON {
         return okResponse(["value": ["batch": batch]])
 
     default:
-        return errResponse("command \(cmd) is not supported by the macOS daemon yet (hwatud-mac); supported: ping, open, list, close, show, hide, navigate, eval, wait_load, screenshot, resize, get_content, snapshot, click, type, press, fill_form, scroll, console, expect, auth_context, batch, quit")
+        return errResponse("command \(cmd) is not supported by the macOS daemon yet (hwatud-mac); supported: ping, open, list, close, show, hide, navigate, eval, wait_load, screenshot, resize, get_content, snapshot, click, type, press, fill_form, scroll, console, expect, auth_context, challenge, batch, quit")
     }
 }
 

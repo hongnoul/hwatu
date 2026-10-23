@@ -16,5 +16,6 @@ emit() { # emit <swift-name> <file>
   echo '// Regenerate: scripts/gen-page-scripts.sh'
   emit irreversibleJS irreversible.js
   emit loginWallJS login-wall.js
+  emit challengeJS challenge.js
 } >"$out"
 echo "wrote $out"

@@ -112,6 +112,7 @@ mod tests {
         for (name, js) in [
             ("irreversibleJS", IRREVERSIBLE_JS),
             ("loginWallJS", LOGIN_WALL_JS),
+            ("challengeJS", crate::automation::challenge_detector_js()),
         ] {
             let open = format!("let {name} = #\"\"\"\n");
             let body = swift

@@ -1,0 +1,13 @@
+<!DOCTYPE html><meta charset="utf-8"><title>app</title><div id="root">Loading</div>
+<script>
+// A loading indicator mutates every 100 ms for 1 s, then the login form
+// renders. quiescent (300 ms with no DOM mutation) must wait for the form.
+let n = 0;
+const t = setInterval(() => {
+  const root = document.getElementById('root');
+  if (++n < 10) { root.textContent = 'Loading' + '.'.repeat(n % 4); return; }
+  clearInterval(t);
+  root.innerHTML =
+    '<form><input id="u" name="username"><input id="p" type="password"><button id="go">Log in</button></form>';
+}, 100);
+</script>

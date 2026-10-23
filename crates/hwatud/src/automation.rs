@@ -577,8 +577,18 @@ pub fn challenge(
     } else {
         reply
     };
-    eval_with(daemon, id, js, timeout_ms, NavPolicy::Success, reply);
+    // The in-page poll owns the deadline. The eval timeout must outlast it
+    // or it fires first and the agent gets "eval timed out" instead of the
+    // structured challenge stop.
+    let eval_timeout = if wait {
+        Some(ms.saturating_add(CHALLENGE_EVAL_GRACE_MS))
+    } else {
+        timeout_ms
+    };
+    eval_with(daemon, id, js, eval_timeout, NavPolicy::Success, reply);
 }
+
+const CHALLENGE_EVAL_GRACE_MS: u64 = 5_000;
 
 fn challenge_wait_js(timeout_ms: u64) -> String {
     format!(
@@ -614,49 +624,8 @@ fn challenge_detect_js() -> String {
     )
 }
 
-const CHALLENGE_DETECTOR_JS: &str = r#"
-function detectHwatuChallenge() {
-  const evidence = [];
-  const add = (kind, detail, weight) => evidence.push({ kind, detail: String(detail).slice(0, 160), weight });
-  const haystack = `${document.title || ''}\n${document.body ? document.body.innerText : ''}`.toLowerCase();
-  const textChecks = [
-    ['cloudflare', 'checking if the site connection is secure'],
-    ['cloudflare', 'verify you are human'],
-    ['generic', 'complete the security check'],
-    ['generic', 'prove you are human'],
-    ['generic', 'are you a robot'],
-  ];
-  for (const [kind, phrase] of textChecks) if (haystack.includes(phrase)) add(kind, phrase, 3);
-
-  const nodes = [...document.querySelectorAll('iframe, script, div, input, textarea')];
-  for (const el of nodes.slice(0, 400)) {
-    const tag = el.tagName.toLowerCase();
-    const attrs = ['src', 'title', 'name', 'id', 'class', 'data-sitekey', 'data-testid']
-      .map(a => el.getAttribute(a) || '').join(' ').toLowerCase();
-    if (!attrs) continue;
-    if (attrs.includes('turnstile')) add('turnstile', `${tag} ${attrs}`, 4);
-    if (attrs.includes('hcaptcha') || attrs.includes('h-captcha')) add('hcaptcha', `${tag} ${attrs}`, 4);
-    if (attrs.includes('recaptcha') || attrs.includes('g-recaptcha')) add('recaptcha', `${tag} ${attrs}`, 4);
-    if (attrs.includes('cf-challenge') || attrs.includes('challenge-platform')) add('cloudflare', `${tag} ${attrs}`, 4);
-  }
-
-  const weight = evidence.reduce((sum, e) => sum + e.weight, 0);
-  const firstStrong = evidence.find(e => e.weight >= 4) || evidence[0];
-  const challengeType = firstStrong ? firstStrong.kind : null;
-  const confidence = Math.max(0, Math.min(1, weight / 8));
-  const present = evidence.length > 0 && confidence >= 0.35;
-  return {
-    status: present ? 'challenge' : 'clear',
-    challenge_type: present ? challengeType : null,
-    confidence,
-    evidence: evidence.slice(0, 12),
-    actionable: present,
-    manual_required: present,
-    url: location.href,
-    title: document.title || '',
-  };
-}
-"#;
+/// Shared with every engine backend: `page-scripts/challenge.js`.
+const CHALLENGE_DETECTOR_JS: &str = include_str!("../../../page-scripts/challenge.js");
 
 pub(crate) fn challenge_detector_js() -> &'static str {
     CHALLENGE_DETECTOR_JS

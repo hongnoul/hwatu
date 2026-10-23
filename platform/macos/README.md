@@ -15,15 +15,16 @@ cp hwatud-mac ~/.local/bin/hwatud   # the CLI spawns `hwatud` from PATH
 
 ping, open, list, close, show, hide, navigate, eval, wait_load,
 screenshot, resize, get_content, snapshot, click, type, press, fill_form,
-scroll, console, expect, auth_context, batch, quit. Unsupported commands answer a clean error naming
+scroll, console, expect, auth_context, challenge, batch, quit. Unsupported commands answer a clean error naming
 the command. `focus` and `unfocus` are accepted aliases of `show` and `hide`.
 
-`click` applies the `irreversible_action` structured stop and `auth_context`
-reports `login_required`, using the shared `page-scripts/`. `Sources/PageScripts.swift` is generated
+`click` applies the `irreversible_action` structured stop, `auth_context`
+reports `login_required`, and `challenge --wait` returns the `challenge`
+stop on timeout, using the shared `page-scripts/`. `Sources/PageScripts.swift` is generated
 from it by `scripts/gen-page-scripts.sh`; a Rust test fails when the copy is
 stale. `scripts/test-reference-skill.sh` (with `HWATUD=<path>`) passes
 against this daemon. macOS is not yet a supported platform: it lacks a
-signed package, `challenge`, `upload`, `net`, `diff`, `motion`, and trusted
+signed package, `upload`, `net`, `diff`, `motion`, and trusted
 input (see VISION.md support criteria).
 
 ## Headless notes

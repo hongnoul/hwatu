@@ -136,6 +136,9 @@ jobs:
       - name: Run display-free behavioral suite
         run: scripts/test-display-free.sh
 
+      - name: Run cross-OS conformance fixtures
+        run: scripts/test-conformance.sh
+
   audit:
     name: Dependency audit
     runs-on: ubuntu-latest

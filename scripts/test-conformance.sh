@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# Cross-OS conformance: the same fixtures and the same expected results
+# against whichever daemon this OS runs (VISION.md "Platform support
+# criteria" item 3). Fixtures live in tests/conformance/ and are served
+# over local HTTP. No network access needed.
+# Usage: scripts/test-conformance.sh [release-bin-dir]
+# On macOS, HWATUD=<path to hwatud-mac> selects the daemon binary. The
+# daemon runs on an isolated socket and the user's daemon is not touched.
+set -u
+root="$(cd "$(dirname "$0")/.." && pwd)"
+b="${1:-$root/target/release}"
+w=$(mktemp -d "${TMPDIR:-/tmp}/hw-conf.XXXX")
+mkdir -p "$w/run" "$w/state" "$w/bin"
+export XDG_RUNTIME_DIR="$w/run" XDG_STATE_HOME="$w/state" XDG_DATA_HOME="$w/data" XDG_CONFIG_HOME="$w/config"
+if [[ "$(uname)" == Darwin ]]; then
+  export HWATU_SOCKET="$w/run/hwatu.sock"
+  ln -sf "${HWATUD:-$b/hwatud}" "$w/bin/hwatud"
+  export PATH="$w/bin:$PATH"
+else
+  export WEBKIT_DISABLE_DMABUF_RENDERER=1 LIBGL_ALWAYS_SOFTWARE=1 WLR_RENDERER=pixman
+  unset WAYLAND_DISPLAY DISPLAY
+fi
+
+port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
+python3 -m http.server "$port" --bind 127.0.0.1 --directory "$root/tests/conformance" >/dev/null 2>&1 &
+srv=$!
+trap 'kill $srv 2>/dev/null; "$b/hwatu" quit >/dev/null 2>&1; rm -rf "$w"' EXIT
+base="http://127.0.0.1:$port"
+for _ in $(seq 50); do curl -fs "$base/plain.html" >/dev/null && break; sleep 0.1; done
+
+hw() { "$b/hwatu" "$@" 2>&1 | grep -v "daemon build .* != client build"; }
+pass=0; fail=0
+ck() { if eval "$2"; then pass=$((pass+1)); echo "ok   - $1"; else fail=$((fail+1)); echo "FAIL - $1"; echo "       got: ${o:0:300}"; fi; }
+open_id() { hw "$1" | grep -o 'window [0-9]*' | head -1 | cut -d' ' -f2; }
+title() { hw eval --id "$1" 'return document.title'; }
+
+# C1 ping reports the contract fields every engine must expose
+o=$(hw ping)
+ck "C1 ping reports platform, engine, structured_stops" \
+  'grep -q "\"platform\"" <<<"$o" && grep -q "\"engine\"" <<<"$o" && grep -q "structured_stops" <<<"$o"'
+
+# C2 open is headless
+id=$(open_id "$base/plain.html"); hw wait-load --id "$id" --until settled >/dev/null
+o=$(hw list --json); ck "C2 open is headless" 'grep -q "\"mode\":\"headless\"" <<<"$o"'
+o=$(hw content --id "$id" --format text); ck "C3 content returns page text" 'grep -q Hello <<<"$o"'
+o=$(hw eval --id "$id" 'return 2 + 40'); ck "C4 eval returns a value" 'grep -q 42 <<<"$o"'
+hw shot --id "$id" "$w/plain.png" >/dev/null
+o=$(head -c 8 "$w/plain.png" | od -An -c | tr -d ' \n'); ck "C5 shot writes a PNG" '[[ "$o" == *PNG* ]]'
+hw close "$id" >/dev/null
+
+# Irreversible stop
+id=$(open_id "$base/stops.html"); hw wait-load --id "$id" >/dev/null
+o=$(hw click --id "$id" '#add'); ck "C6 ordinary click is not stopped" '! grep -q "\"stop\"" <<<"$o"'
+o=$(hw click --id "$id" '#pay'); ck "C7 Place Order returns irreversible_action stop" 'grep -q "\"reason\":\"irreversible_action\"" <<<"$o"'
+o=$(title "$id"); ck "C8 stopped click did not run the handler" 'grep -q added <<<"$o"'
+hw click --id "$id" --confirm '#pay' >/dev/null
+o=$(title "$id"); ck "C9 --confirm performs the click" 'grep -q paid <<<"$o"'
+o=$(hw auth-context --id "$id"); ck "C10 password form reports login_required" 'grep -q "\"reason\":\"login_required\"" <<<"$o"'
+hw close "$id" >/dev/null
+
+id=$(open_id "$base/wizard.html"); hw wait-load --id "$id" >/dev/null
+hw click --id "$id" '#f' >/dev/null; o=$(title "$id")
+ck "C11 Finish on a wizard page is not stopped" 'grep -q done <<<"$o"'
+hw close "$id" >/dev/null
+id=$(open_id "$base/review.html"); hw wait-load --id "$id" >/dev/null
+o=$(hw click --id "$id" '#f'); ck "C12 Finish on a checkout review with a total is stopped" 'grep -q "\"reason\":\"irreversible_action\"" <<<"$o"'
+o=$(title "$id"); ck "C13 order not placed" '! grep -q placed <<<"$o"'
+hw close "$id" >/dev/null
+
+# Login wall rendered by JS after a mutating loading indicator. settled
+# returns at the load event, before the form; quiescent waits for it.
+id=$(open_id "$base/late-login.html"); hw wait-load --id "$id" --until settled >/dev/null
+o=$(hw auth-context --id "$id"); ck "C14a control: settled returns before the JS login form" 'grep -q "\"login_required\":null" <<<"$o"'
+hw close "$id" >/dev/null
+id=$(open_id "$base/late-login.html"); hw wait-load --id "$id" --until quiescent >/dev/null
+o=$(hw auth-context --id "$id"); ck "C14 JS-rendered login form reports login_required after quiescent" 'grep -q "\"reason\":\"login_required\"" <<<"$o"'
+o=$(hw expect --id "$id" '#go' --visible --timeout-ms 3000); ck "C15 expect finds the rendered control" '! grep -qi "error\|timed out" <<<"$o"'
+hw close "$id" >/dev/null
+
+# Challenge
+id=$(open_id "$base/challenge.html"); hw wait-load --id "$id" >/dev/null
+o=$(hw challenge --id "$id"); ck "C16 challenge detected with type" 'grep -q "\"status\":\"challenge\"" <<<"$o" && grep -q "\"challenge_type\":\"turnstile\"" <<<"$o"'
+o=$(hw challenge --id "$id" --wait --timeout-ms 1500); ck "C17 challenge --wait timeout returns challenge stop with show retry" \
+  'grep -q "\"reason\":\"challenge\"" <<<"$o" && grep -q "\"command\":\"show\"" <<<"$o"'
+hw close "$id" >/dev/null
+id=$(open_id "$base/challenge-clears.html"); hw wait-load --id "$id" >/dev/null
+o=$(hw challenge --id "$id" --wait --timeout-ms 8000); ck "C18 challenge that clears reports cleared" 'grep -q "\"status\":\"cleared\"" <<<"$o"'
+hw close "$id" >/dev/null
+id=$(open_id "$base/plain.html"); hw wait-load --id "$id" >/dev/null
+o=$(hw challenge --id "$id"); ck "C19 plain page reports clear" 'grep -q "\"status\":\"clear\"" <<<"$o"'
+
+# batch stops at the first stop and reports it
+o=$(hw goto --id "$id" "$base/stops.html")
+o=$(hw batch "[{\"cmd\":\"click\",\"id\":$id,\"selector\":\"#add\"},{\"cmd\":\"click\",\"id\":$id,\"selector\":\"#pay\"},{\"cmd\":\"eval\",\"id\":$id,\"js\":\"return 1\"}]")
+ck "C20 batch halts at the irreversible stop" 'grep -q irreversible_action <<<"$o" && ! grep -q "\"complete\":true" <<<"$o"'
+o=$(title "$id"); ck "C21 batch did not run the stopped handler" '! grep -q paid <<<"$o"'
+
+echo "pass=$pass fail=$fail ($(uname))"
+[[ $fail -eq 0 ]]

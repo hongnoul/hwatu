@@ -76,8 +76,14 @@ policy `.prohibited`):
 - A logged-in GUI session appears required. GUI-less CI hosting is unproven.
   Verify it or document it as unsupported.
 - The current host (`platform/macos`) is a separate Swift daemon built from
-  source. It must ship as a signed binary and pass the same conformance
-  fixtures as Linux before macOS is claimed.
+  source. It must ship as a signed binary before macOS is claimed.
+- Status: `scripts/test-conformance.sh` passes against it (22 checks, the
+  same fixtures and expectations as Linux). `scripts/test-reference-skill.sh`
+  passes. Missing: signed package, `upload`, `net`, `diff`, `motion`,
+  trusted input.
+- A host window below the desktop icons is treated as occluded and its
+  page timers drop to about 1 Hz. The host uses normal window level with
+  alpha 0.0001.
 
 Headless-everything removes the hardest macOS problems: no browser shell, no
 scroll feel, no visible-window chrome. The verification instrument is the
@@ -124,7 +130,8 @@ Attack early, not after three backends exist.
   nearly all of it. Report the residue as structured blocks. Never spoof.
 - **Page-side scripts drift.** Snapshot ranking, `--contains` matching, and
   content extraction must be one shared asset loaded by every backend, not
-  three reimplementations.
+  three reimplementations. The stop classifiers and the challenge detector
+  are already shared from `page-scripts/`.
 
 ## Delivery sequence and exit gates
 
