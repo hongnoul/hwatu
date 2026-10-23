@@ -66,10 +66,6 @@ pub struct Daemon {
     /// Per-site permission decisions, persistent on disk
     /// unless the daemon runs an ephemeral profile.
     pub site_store: sitedata::Store,
-    /// Pending human hand-offs (platform items 10-11): window id ->
-    /// (reason, queued-at). Agents queue via `hwatu handoff`; the
-    /// human drains via `hwatu handoffs` on their own schedule.
-    pub handoffs: RefCell<Vec<HandoffEntry>>,
     /// Downloads this daemon session started (coverage C5), for
     /// `hwatu downloads`.
     pub downloads: downloads::Registry,
@@ -135,17 +131,6 @@ pub struct SecurityConfig {
     pub tcp_token: Option<SecretToken>,
 }
 
-/// One queued human hand-off (platform items 10-11).
-#[derive(Debug, Clone)]
-pub struct HandoffEntry {
-    pub window_id: u64,
-    pub reason: String,
-    /// Unix seconds when the agent queued it; answered_at is stamped
-    /// (and logged) when the human takes it, so the cost of waiting
-    /// on a human is a measured number, not a vibe.
-    pub queued_at: u64,
-}
-
 impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
@@ -175,7 +160,6 @@ impl Daemon {
             prewarmed: RefCell::new(None),
             adblock: adblock::Adblock::default(),
             site_store: sitedata::SiteStore::load(!security.ephemeral_profile),
-            handoffs: RefCell::new(Vec::new()),
             downloads: downloads::Registry::default(),
             last_target: RefCell::new(None),
             check_pool: RefCell::new(Vec::new()),

@@ -434,14 +434,6 @@ fn write_response(reader: Rc<FrameReader>, daemon: Rc<Daemon>, response: Respons
     );
 }
 
-/// Unix seconds now (hand-off queue timestamps).
-fn unix_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
-
 // ---- client fairness (platform item 6b) ------------------------------
 //
 // Cheap bulkheads before parallel-agent use gets heavy: one runaway
@@ -1055,135 +1047,10 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, transport: TransportKind, reply: 
         Request::Jump { .. } | Request::History { .. } => {
             Response::err("history and jump were removed: the browser keeps no browsing history")
         }
-        Request::Handoff { id, reason, now } => {
-            let Some(win) = daemon.windows.borrow().get(&id).cloned() else {
-                reply(Response::err(format!("no window {id}")));
-                return;
-            };
-            if now {
-                if crate::compositor::display_free() {
-                    reply(Response::err(
-                        "no display: hwatud is running display-free; queue with \
-                         `hwatu handoff <id> --reason ...` (without --now) instead"
-                            .to_string(),
-                    ));
-                    return;
-                }
-                win.present();
-                win.notice(&format!("agent needs you: {reason}"), 30);
-                daemon.events.emit(
-                    "handoff",
-                    Some(id),
-                    serde_json::json!({ "state": "presented", "reason": reason }),
-                );
-                reply(Response::value(
-                    serde_json::json!({ "handoff": "presented" }),
-                ));
-                return;
-            }
-            let mut queue = daemon.handoffs.borrow_mut();
-            // Re-queueing the same window updates the reason instead
-            // of duplicating the entry.
-            queue.retain(|e| e.window_id != id);
-            queue.push(crate::HandoffEntry {
-                window_id: id,
-                reason: reason.clone(),
-                queued_at: unix_now(),
-            });
-            let position = queue.len();
-            drop(queue);
-            daemon.events.emit(
-                "handoff",
-                Some(id),
-                serde_json::json!({ "state": "queued", "reason": reason }),
-            );
-            reply(Response::value(serde_json::json!({
-                "handoff": "queued",
-                "position": position,
-            })));
-            return;
-        }
-        Request::Handoffs { take } => {
-            match take {
-                None => {
-                    let now = unix_now();
-                    let queue = daemon.handoffs.borrow();
-                    let entries: Vec<_> = queue
-                        .iter()
-                        .map(|e| {
-                            serde_json::json!({
-                                "id": e.window_id,
-                                "reason": e.reason,
-                                "queued_at": e.queued_at,
-                                "waiting_secs": now.saturating_sub(e.queued_at),
-                            })
-                        })
-                        .collect();
-                    reply(Response::value(serde_json::json!({ "handoffs": entries })));
-                }
-                Some(id) => {
-                    // Validate everything BEFORE consuming the entry: a
-                    // failed take (dead window aside, e.g. display-free
-                    // daemon) must leave the hand-off queued, or the
-                    // human's one attempt silently discards the agent's
-                    // request.
-                    let exists = daemon.handoffs.borrow().iter().any(|e| e.window_id == id);
-                    if !exists {
-                        reply(Response::err(format!("no pending handoff for window {id}")));
-                        return;
-                    }
-                    let win = daemon.windows.borrow().get(&id).cloned();
-                    let Some(win) = win else {
-                        // The window died while queued: the entry can
-                        // never be taken; drop it with a clear error.
-                        daemon.handoffs.borrow_mut().retain(|e| e.window_id != id);
-                        reply(Response::err(format!(
-                            "window {id} closed while its handoff was queued"
-                        )));
-                        return;
-                    };
-                    if crate::compositor::display_free() {
-                        reply(Response::err(
-                            "no display: hwatud is running display-free; cannot present"
-                                .to_string(),
-                        ));
-                        return;
-                    }
-                    let entry = {
-                        let mut queue = daemon.handoffs.borrow_mut();
-                        let pos = queue.iter().position(|e| e.window_id == id);
-                        pos.map(|p| queue.remove(p))
-                    };
-                    let Some(entry) = entry else {
-                        reply(Response::err(format!("no pending handoff for window {id}")));
-                        return;
-                    };
-                    let waited = unix_now().saturating_sub(entry.queued_at);
-                    win.present();
-                    win.notice(&format!("handoff: {}", entry.reason), 30);
-                    // Queued-at/answered-at logged: the cost of waiting
-                    // on a human is a measured number, not a vibe.
-                    println!(
-                        "hwatud: handoff for window {id} answered after {waited}s ({})",
-                        entry.reason
-                    );
-                    daemon.events.emit(
-                        "handoff",
-                        Some(id),
-                        serde_json::json!({
-                            "state": "taken",
-                            "reason": entry.reason,
-                            "waited_secs": waited,
-                        }),
-                    );
-                    reply(Response::value(serde_json::json!({
-                        "handoff": "taken",
-                        "waited_secs": waited,
-                    })));
-                }
-            }
-            return;
-        }
+        Request::Handoff { .. } | Request::Handoffs { .. } => Response::err(
+            "handoff was removed: the browser does not talk to the user. Return the \
+             reason to your harness and call `hwatu show <id>` when the user is ready",
+        ),
         Request::Open {
             url,
             app_id,

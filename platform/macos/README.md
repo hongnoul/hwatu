@@ -41,6 +41,10 @@ with `hwatu-pixeldiff`, the scoring code the GTK daemon uses.
 `responds(to:)`. If a WebKit lacks it, `net` answers an error and nothing
 else changes.
 
+Cookies and storage persist across daemon restarts. The default socket
+uses the user's default `WKWebsiteDataStore`; a daemon on another socket
+(`HWATU_SOCKET`) gets its own persistent store keyed by that path.
+
 ## Headless notes
 
 WKWebView suspends rAF/compositing for non-visible windows and reports

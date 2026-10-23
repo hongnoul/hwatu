@@ -52,7 +52,7 @@ pub fn login_required(hit: &Value, url: &str) -> Value {
         "needs": needs,
         "url": url,
         "evidence": hit,
-        "retry": { "command": "fill-login", "after": "the user provides the value" },
+        "retry": { "command": "type", "after": "the user provides the value; enter it once, the session persists" },
     })
 }
 

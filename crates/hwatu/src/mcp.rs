@@ -259,9 +259,40 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
                 timeout_ms,
             })
         }
-        "focus" => Ok(Request::Focus {
-            id: opt_u64(args, "id").ok_or("missing required argument: id")?,
-        }),
+        "focus" => {
+            let id = opt_u64(args, "id").ok_or("missing required argument: id")?;
+            match opt_str(args, "as").as_deref().unwrap_or("window") {
+                "window" => Ok(Request::Focus { id }),
+                "shot" => Ok(Request::Screenshot {
+                    id: Some(id),
+                    path: opt_str(args, "path"),
+                    full: opt_bool(args, "full").unwrap_or(false),
+                    data: false,
+                }),
+                "diff" => {
+                    let other = opt_u64(args, "other");
+                    let baseline = opt_str(args, "baseline");
+                    if other.is_some() == baseline.is_some() {
+                        return Err(
+                            "show as diff needs exactly one of `other` or `baseline`".into()
+                        );
+                    }
+                    Ok(Request::Diff {
+                        id,
+                        other,
+                        baseline,
+                        baseline_data: None,
+                        tolerance: None,
+                        min_region_px: None,
+                        heatmap: opt_str(args, "heatmap"),
+                        heatmap_data: false,
+                        full: opt_bool(args, "full").unwrap_or(false),
+                        timeout_ms: None,
+                    })
+                }
+                other => Err(format!("show: unknown `as` {other:?} (window, shot, diff)")),
+            }
+        }
         "unfocus" => Ok(Request::Unfocus {
             id: opt_u64(args, "id").ok_or("missing required argument: id")?,
         }),
@@ -1118,12 +1149,21 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         ),
         tool(
             "show",
-            "Make a window visible to the user, with its live session, cookies, \
-             and page state. The only way a window becomes visible. Use when \
-             the user must see or act on the page (a challenge the agent \
-             could not clear, a judgment call). Call hide when done. \
-             `focus` is a legacy alias.",
-            json!({ "id": prop("integer", "Window id to show.") }),
+            "Render the live session for the user: as='window' (default) makes \
+             it visible with its session, cookies, and page state (the only way \
+             a window becomes visible; call hide when done), as='shot' returns a \
+             screenshot path, as='diff' compares with `other` or `baseline`. \
+             Use when the user must see or act on the page (a challenge the \
+             agent could not clear, a judgment call). `focus` is a legacy alias.",
+            json!({
+                "id": prop("integer", "Window id to show."),
+                "as": { "type": "string", "enum": ["window", "shot", "diff"], "description": "How to render the session (default window)." },
+                "path": prop("string", "as=shot: where to write the PNG."),
+                "other": prop("integer", "as=diff: window to compare with."),
+                "baseline": prop("string", "as=diff: baseline PNG path."),
+                "heatmap": prop("string", "as=diff: write a heatmap PNG here."),
+                "full": prop("boolean", "Full document instead of the viewport."),
+            }),
             &["id"],
         ),
         tool(

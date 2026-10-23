@@ -52,26 +52,10 @@ conformance coverage.
 
 ## Hand-off through `show`
 
-10. **Generalized hand-off.** **Shipped 2026-08-08** together with
-   item 11: `hwatu handoff <id> --reason <text> [--now]` — `--now`
-   calls `show` immediately and records the reason (the challenge
-   pattern generalized to any reason).
-11. **Hand-off queue.** **Shipped 2026-08-08:** queueing is the
-   default (`hwatu handoff` without `--now`); `hwatu handoffs` lists
-   pending entries with measured waiting_secs; `hwatu handoffs <id>`
-   takes one (present + remove + log queued-at/answered-at, so the
-   cost of waiting on a human is a measured number). Takes validate
-   before consuming: a failed take (display-free) leaves the entry
-   queued. All transitions emit handoff events on the push-IPC
-   stream. `scripts/test-handoff.sh` covers queue/list/dedup/take
-   and the structured-error paths.
-   Original scope for both items: `challenge` already detects
-   CAPTCHAs; generalize the pattern: agent flags "needs human" with
-   a reason, `show` renders the window with the reason, the
-   agent awaits resolution. The async half: queue instead of
-   materializing, and the human drains the queue on their own
-   schedule. Respects flow: an agent that needs a human at 14:02
-   should not steal focus at 14:02.
+10. **Hand-off.** Removed. The browser does not talk to the user and
+   keeps no queue of reasons. A command that needs a person returns a
+   structured stop; the agent relays the reason and calls `show`.
+11. **Hand-off queue.** Removed with item 10.
 
 ## Push IPC
 

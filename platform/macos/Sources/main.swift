@@ -34,6 +34,29 @@ func socketPath() -> String {
 
 let MAX_FRAME: Int = 32 * 1024 * 1024
 
+/// Persistent cookies and storage for this daemon. The default socket
+/// uses the user's default store, so sessions persist across runs. A
+/// daemon on another socket (HWATU_SOCKET, XDG_RUNTIME_DIR: tests,
+/// isolated agents) gets its own persistent store derived from the
+/// socket path, as the GTK daemon's data directory follows XDG.
+let sessionStore: WKWebsiteDataStore = {
+    let path = socketPath()
+    if path == "/tmp/hwatu-\(geteuid()).sock" { return WKWebsiteDataStore.default() }
+    if #available(macOS 14.0, *) {
+        // Stable UUID from the path (FNV-1a over the bytes, twice).
+        var a: UInt64 = 0xcbf29ce484222325, b: UInt64 = 0x84222325cbf29ce4
+        for byte in path.utf8 {
+            a = (a ^ UInt64(byte)) &* 0x100000001b3
+            b = (b ^ UInt64(byte)) &* 0x100000001b3 &+ 1
+        }
+        var bytes = [UInt8](repeating: 0, count: 16)
+        for i in 0..<8 { bytes[i] = UInt8((a >> (8 * UInt64(i))) & 0xff); bytes[8 + i] = UInt8((b >> (8 * UInt64(i))) & 0xff) }
+        let uuid = NSUUID(uuidBytes: bytes) as UUID
+        return WKWebsiteDataStore(forIdentifier: uuid)
+    }
+    return WKWebsiteDataStore.default()
+}()
+
 // MARK: - JSON helpers
 
 typealias JSON = [String: Any]
@@ -173,7 +196,7 @@ final class Window: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessag
         self.mode = mode
         self.appId = appId
         let cfg = WKWebViewConfiguration()
-        cfg.websiteDataStore = WKWebsiteDataStore.default()
+        cfg.websiteDataStore = sessionStore
         cfg.preferences.javaScriptCanOpenWindowsAutomatically = false
         // Headless windows are never key; do not let WebKit deprioritize
         // them as inactive pages.
@@ -1118,7 +1141,7 @@ func handle(_ req: JSON) -> JSON {
                     v["login_required"] = [
                         "reason": "login_required", "needs": needs, "url": v["url"] ?? "",
                         "evidence": wall,
-                        "retry": ["command": "fill-login", "after": "the user provides the value"],
+                        "retry": ["command": "type", "after": "the user provides the value; enter it once, the session persists"],
                     ] as JSON
                 } else {
                     v["login_required"] = NSNull()

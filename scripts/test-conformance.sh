@@ -195,12 +195,27 @@ ck "C40 irreversible guard stops every multilingual stop label on checkout" 'gre
 ck "C41 irreversible guard passes every navigation/section label" 'grep -q "\"go_stopped\":\[\]" <<<"$o"'
 echo "   held-out labels (not gated): $(hw eval --id "$id" "$(label_js heldout)")"
 
+# show renders the session as a shot or a diff without making it visible.
+o=$(hw show "$id" --as shot "$w/show.png"); ck "C45 show --as shot writes a PNG" '[[ -s "$w/show.png" ]]'
+o=$(hw show "$id" --as diff --baseline "$w/show.png"); ck "C46 show --as diff reports a diff" 'grep -q "\"significant_regions\"" <<<"$o"'
+o=$(hw list --json); ck "C47 show --as shot/diff leave the window headless" 'grep -q "\"mode\":\"headless\"" <<<"$o"'
+
 # Reply shapes: a fixed command sequence must produce the committed
 # golden output byte for byte (timings and ids normalized), so a skill
 # reads the same JSON on every engine. Regenerate on purpose with
 # scripts/conformance-shapes.sh after an intended contract change.
 o=$("$root/scripts/conformance-shapes.sh" "$b/hwatu" "$base" | diff "$root/tests/conformance/shapes.golden" - 2>&1)
-ck "C39 every command's reply matches tests/conformance/shapes.golden" '[[ -z "$o" ]]'
+ck "C39 every command's reply matches tests/conformance/shapes.golden" '[[ -z "$o" ]]'; [[ -n "$o" ]] && echo "$o" | head -8
+
+# Session persistence (VISION: credentials entered once, the session
+# persists across runs): cookies and localStorage survive a daemon
+# restart. Runs last because it restarts the daemon.
+hw goto --id "$id" "$base/plain.html" >/dev/null
+hw eval --id "$id" 'document.cookie = "hwatu_conf=1; max-age=3600; path=/"; localStorage.setItem("hwatu_conf", "1"); return 1' >/dev/null
+hw quit >/dev/null; sleep 1
+pid=$(hw "$base/plain.html" | grep -o 'window [0-9]*' | head -1 | cut -d' ' -f2); hw wait-load --id "$pid" >/dev/null
+o=$(hw eval --id "$pid" 'return JSON.stringify({c: document.cookie.includes("hwatu_conf=1"), ls: localStorage.getItem("hwatu_conf")})')
+ck "C48 cookies and localStorage survive a daemon restart" 'grep -q "c.\{0,3\}:true" <<<"$o" && grep -q "ls.\{0,3\}:.\{0,3\}1" <<<"$o"'
 
 echo "pass=$pass fail=$fail ($(uname))"
 [[ $fail -eq 0 ]]

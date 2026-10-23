@@ -893,13 +893,9 @@ pub enum Request {
         #[serde(default)]
         host: Option<String>,
     },
-    /// Generalized human hand-off (platform roadmap items 10-11).
-    /// Flags "this window needs a person" with a reason. Default is
-    /// queueing: the entry waits in the hand-off queue until a human
-    /// drains it (respects flow — an agent that needs a human at
-    /// 14:02 should not steal focus at 14:02). With `now`, the window
-    /// materializes immediately with the reason as a notice (the old
-    /// challenge-style behavior, for when the agent is blocked).
+    /// Removed. Kept on the wire so old clients receive an error that
+    /// names the removal: the browser does not talk to the user; the
+    /// agent relays the reason and calls `show`.
     Handoff {
         id: u64,
         reason: String,
@@ -907,9 +903,7 @@ pub enum Request {
         #[serde(default)]
         now: bool,
     },
-    /// List pending hand-offs (id, reason, queued_at) or resolve one:
-    /// `take` promotes that window to focus and removes the entry,
-    /// stamping answered_at so waiting cost is a measured number.
+    /// Removed with [`Request::Handoff`].
     Handoffs {
         /// Window id to take (present + remove). Absent = list.
         #[serde(default)]

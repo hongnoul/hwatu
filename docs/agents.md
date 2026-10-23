@@ -614,8 +614,10 @@ see [benchmarks.md](benchmarks.md)).
 To let the user see the session:
 
 ```sh
-hwatu show $id     # renders the live session; state is kept
-hwatu hide $id     # returns it to headless
+hwatu show $id                              # visible window; state is kept
+hwatu hide $id                              # returns it to headless
+hwatu show $id --as shot out.png            # screenshot, stays headless
+hwatu show $id --as diff --baseline b.png   # diff, stays headless
 ```
 
 `focus` and `unfocus` remain accepted aliases of `show` and `hide`.

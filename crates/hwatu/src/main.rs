@@ -317,6 +317,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
     let mut by_pages: Option<f64> = None;
     let mut r#ref: Option<u32> = None;
     let mut at: Option<[f64; 2]> = None;
+    let mut show_as: Option<String> = None;
     let mut clear = false;
     let mut no_clear = false;
     let mut enter = false;
@@ -346,8 +347,6 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
     let mut diff = false;
     let mut rect = false;
     let mut budget: Option<usize> = None;
-    let mut reason: Option<String> = None;
-    let mut now = false;
     let mut profile: Option<String> = None;
     let mut expect_watch = false;
     let mut mode = default_mode;
@@ -415,6 +414,12 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 it.next()
                     .filter(|v| !v.is_empty())
                     .ok_or("usage: --contains <text>")?
+                    .clone(),
+            );
+        } else if arg == "--as" {
+            show_as = Some(
+                it.next()
+                    .ok_or("usage: hwatu show <id> [--as window|shot|diff]")?
                     .clone(),
             );
         } else if arg == "--at" {
@@ -535,20 +540,6 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             );
         } else if let Some(v) = arg.strip_prefix("--budget=") {
             budget = Some(v.parse().map_err(|_| "usage: --budget=<chars>")?);
-        } else if arg == "--reason" {
-            reason = Some(
-                it.next()
-                    .filter(|v| !v.trim().is_empty())
-                    .ok_or("usage: --reason <text>")?
-                    .clone(),
-            );
-        } else if let Some(v) = arg.strip_prefix("--reason=") {
-            if v.trim().is_empty() {
-                return Err("usage: --reason=<text>".into());
-            }
-            reason = Some(v.to_string());
-        } else if arg == "--now" {
-            now = true;
         } else if arg == "--profile" {
             profile = Some(
                 it.next()
@@ -1205,25 +1196,11 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
         Some("clear-site-data") => Ok(Request::ClearSiteData {
             host: rest.get(1).map(|s| s.to_string()),
         }),
-        Some("handoff") => {
-            // `hwatu handoff <id> --reason <text> [--now]`
-            let win = rest
-                .get(1)
-                .and_then(|s| s.parse().ok())
-                .or(id)
-                .ok_or("usage: hwatu handoff <id> --reason <text> [--now]")?;
-            let reason = reason
-                .clone()
-                .ok_or("usage: hwatu handoff <id> --reason <text> [--now]")?;
-            Ok(Request::Handoff {
-                id: win,
-                reason,
-                now,
-            })
-        }
-        Some("handoffs") => Ok(Request::Handoffs {
-            take: rest.get(1).and_then(|s| s.parse().ok()),
-        }),
+        Some("handoff") | Some("handoffs") => Err(
+            "handoff was removed: the browser does not talk to the user. Return the reason \
+             to your harness and call `hwatu show <id>` when the user is ready"
+                .into(),
+        ),
         Some("content") | Some("get-content") => {
             let format = match format_arg.as_deref() {
                 Some(v) => hwatu_ipc::ContentFormat::parse(v)
@@ -1318,12 +1295,41 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
             })
         }
         Some("show") | Some("focus") => {
+            // VISION: show renders the live session as a screenshot, a
+            // diff, or a visible window. shot and diff never map a window.
+            let usage = "usage: hwatu show <id> [--as window | --as shot [path] | --as diff (--other <id> | --baseline <png>) [--heatmap <png>]]";
             let id = rest
                 .get(1)
                 .and_then(|s| s.parse().ok())
                 .or(id)
-                .ok_or("usage: hwatu show <id>")?;
-            Ok(Request::Focus { id })
+                .ok_or(usage)?;
+            match show_as.as_deref().unwrap_or("window") {
+                "window" => Ok(Request::Focus { id }),
+                "shot" | "screenshot" => Ok(Request::Screenshot {
+                    id: Some(id),
+                    path: resolve_path(rest.get(2).map(|s| s.to_string())),
+                    full,
+                    data: false,
+                }),
+                "diff" => {
+                    if other.is_none() && baseline.is_none() {
+                        return Err(usage.into());
+                    }
+                    Ok(Request::Diff {
+                        id,
+                        other,
+                        baseline,
+                        baseline_data: None,
+                        tolerance,
+                        min_region_px,
+                        heatmap,
+                        heatmap_data: false,
+                        full,
+                        timeout_ms,
+                    })
+                }
+                _ => Err(usage.into()),
+            }
         }
         Some("hide") | Some("unfocus") => {
             let id = rest
@@ -1448,7 +1454,6 @@ const USAGE: &str = "usage: hwatu [--app-id <id>] [--profile <name|auto>] [url] 
 | scroll [--id <id>] [<selector> [nth]] [--contains <text>] [--to-y <px>] [--by <pages>] \
 | snapshot [--id <id>] [--diff] [--rect] [--budget <chars>] \
 | clear-site-data [<host>] \
-| handoff <id> --reason <text> [--now] | handoffs [<id>] \
 | content [<selector>] [--format (text|html|title|links)] [--max-chars <n>] [--id <id>] \
 | fill --field <selector>=<value> [--field '<sel>:checked=true' ...] [--submit] [--id <id>] \
 | downloads [--limit <n>] \
@@ -2685,6 +2690,36 @@ mod tests {
             parse(&args(&["close", "3"])),
             Ok(Request::Close { id: 3 })
         ));
+    }
+
+    #[test]
+    fn show_renders_as_window_shot_or_diff() {
+        assert!(matches!(
+            parse(&args(&["show", "3"])),
+            Ok(Request::Focus { id: 3 })
+        ));
+        assert!(matches!(
+            parse(&args(&["show", "3", "--as", "window"])),
+            Ok(Request::Focus { id: 3 })
+        ));
+        assert!(matches!(
+            parse(&args(&["show", "3", "--as", "shot", "/tmp/s.png"])),
+            Ok(Request::Screenshot {
+                id: Some(3),
+                path: Some(_),
+                ..
+            })
+        ));
+        assert!(matches!(
+            parse(&args(&["show", "3", "--as", "diff", "--other", "4"])),
+            Ok(Request::Diff {
+                id: 3,
+                other: Some(4),
+                ..
+            })
+        ));
+        assert!(parse(&args(&["show", "3", "--as", "diff"])).is_err());
+        assert!(parse(&args(&["show", "3", "--as", "movie"])).is_err());
     }
 
     #[test]
