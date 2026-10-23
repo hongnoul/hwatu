@@ -1307,7 +1307,7 @@ func handle(_ req: JSON) -> JSON {
         return okResponse(["value": ["batch": batch]])
 
     default:
-        return errResponse("command \(cmd) is not supported by the macOS daemon yet (hwatud-mac); supported: ping, open, list, close, show, hide, navigate, eval, wait_load, screenshot, resize, get_content, snapshot, click, type, press, fill_form, scroll, console, expect, auth_context, challenge, batch, quit")
+        return errResponse("command \(cmd) is not supported by the macOS daemon yet (hwatud-mac); supported: ping, open, list, close, show, hide, navigate, eval, wait_load, screenshot, resize, get_content, snapshot, click, type, press, fill_form, scroll, console, net, expect, auth_context, challenge, upload, batch, quit")
     }
 }
 

@@ -27,7 +27,10 @@ focus do not move. `Sources/PageScripts.swift` is generated
 from `page-scripts/` by `scripts/gen-page-scripts.sh`; a Rust test fails when the copy is
 stale. `scripts/test-reference-skill.sh` (with `HWATUD=<path>`) passes
 against this daemon. macOS is not yet a supported platform: it lacks a
-signed package, `diff`, and `motion` (see VISION.md support criteria).
+signed package and `motion` (see VISION.md support criteria).
+
+`diff` is answered by the CLI: it captures with `screenshot` and diffs
+with `hwatu-pixeldiff`, the scoring code the GTK daemon uses.
 
 `net` uses WebKit's private `_WKResourceLoadDelegate`, checked with
 `responds(to:)`. If a WebKit lacks it, `net` answers an error and nothing

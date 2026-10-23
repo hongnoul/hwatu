@@ -11,6 +11,7 @@ categories = ["web-programming", "development-tools"]
 
 [dependencies]
 hwatu-ipc = { path = "../ipc", version = "0.7.1" }
+hwatu-pixeldiff = { path = "../pixeldiff", version = "0.7.1" }
 # v4_14 for TextureDownloader (diff pixel access) and Monitor::scale
 # (fractional-scale-aware CSS-px viewports); GTK 4.14 = GNOME 46.
 gtk = { package = "gtk4", version = "0.9", features = ["v4_14"] }

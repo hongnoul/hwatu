@@ -1,0 +1,15 @@
+[package]
+name = "hwatu-pixeldiff"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Engine-independent pixel diff for hwatu"
+
+[dependencies]
+png = "0.17"
+serde_json = "1"
+
+[lib]
+path = "src/lib.rs"

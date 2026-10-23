@@ -133,5 +133,18 @@ ck "C30 net logs the fetch POST method" 'netq "x[\"method\"]==\"POST\" and \"pos
 hw net --id "$id" --clear >/dev/null
 o=$(hw net --id "$id"); ck "C31 net --clear drains the buffer" '[[ "$o" == "[]" ]]'
 
+# Pixel diff: identical windows match; a moved block is a significant
+# region; a baseline PNG from shot compares equal. Engines without a
+# native diff are diffed by the client from shot output.
+wa=$(open_id "$base/diff-a.html"); wb=$(open_id "$base/diff-a.html")
+hw wait-load --id "$wa" >/dev/null; hw wait-load --id "$wb" >/dev/null
+o=$(hw diff --id "$wa" --other "$wb"); ck "C32 identical windows: 0 significant regions" 'grep -q "\"significant_regions\":0" <<<"$o" && grep -q "\"match_percent\":100" <<<"$o"'
+hw eval --id "$wb" 'document.getElementById("box").style.left = "400px"; return 1' >/dev/null; sleep 0.3
+o=$(hw diff --id "$wa" --other "$wb" --heatmap "$w/hm.png"); ck "C33 moved block: significant region and heatmap" \
+  '! grep -q "\"significant_regions\":0" <<<"$o" && grep -q worst_region <<<"$o" && [[ -s "$w/hm.png" ]]'
+hw shot --id "$wa" "$w/base.png" >/dev/null
+o=$(hw diff --id "$wa" --baseline "$w/base.png"); ck "C34 diff against own shot baseline matches" 'grep -q "\"significant_regions\":0" <<<"$o"'
+hw close "$wa" >/dev/null; hw close "$wb" >/dev/null
+
 echo "pass=$pass fail=$fail ($(uname))"
 [[ $fail -eq 0 ]]

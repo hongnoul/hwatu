@@ -543,6 +543,7 @@ name = "hwatu"
 version = "0.7.1"
 dependencies = [
  "hwatu-ipc",
+ "hwatu-pixeldiff",
  "libc",
  "png",
  "serde_json",
@@ -558,6 +559,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "hwatu-pixeldiff"
+version = "0.7.1"
+dependencies = [
+ "png",
+ "serde_json",
+]
+
+[[package]]
 name = "hwatud"
 version = "0.7.1"
 dependencies = [
@@ -565,6 +574,7 @@ dependencies = [
  "glib",
  "gtk4",
  "hwatu-ipc",
+ "hwatu-pixeldiff",
  "libc",
  "png",
  "rusqlite",
