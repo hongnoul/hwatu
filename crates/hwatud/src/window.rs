@@ -1760,10 +1760,14 @@ impl BrowserWindow {
             .take()
             .is_some_and(|group| Rc::strong_count(&group) > 1);
         if shared {
+            if let Some(webview) = webview {
+                drop_signal_handlers(&webview);
+            }
             return;
         }
         if let Some(webview) = webview {
             webview.terminate_web_process();
+            drop_signal_handlers(&webview);
         }
     }
 
@@ -1948,6 +1952,32 @@ impl BrowserWindow {
             glib::timeout_add_local_once(std::time::Duration::from_millis(50), move || {
                 this.answer_confirm("prompt", allow);
             });
+        }
+    }
+}
+
+/// Drop every signal handler on a detached WebView. `attach_webview`
+/// wires a dozen handlers whose closures own an `Rc<BrowserWindow>`;
+/// GObject keeps them (and so the window, its buffers and its view) alive
+/// for as long as the WebView object exists, which WebKit may extend past
+/// close. Measured before: no BrowserWindow was ever dropped, and daemon
+/// RSS grew ~200 KB per opened-and-closed window.
+fn drop_signal_handlers(view: &webkit6::WebView) {
+    use glib::translate::ToGlibPtr;
+    use webkit6::prelude::WebViewExt;
+    // The console capture's script-message handler lives on the view's
+    // UserContentManager and its closure owns a WebView clone: a
+    // view -> manager -> closure -> view cycle that keeps the view (and its
+    // shared-memory and timer fds) alive forever. Clear both objects.
+    let mut objects: Vec<glib::Object> = vec![view.clone().upcast()];
+    if let Some(ucm) = view.user_content_manager() {
+        objects.push(ucm.upcast());
+    }
+    for obj in &objects {
+        // SAFETY: the pointer is a live GObject borrowed for the call;
+        // g_signal_handlers_destroy only disconnects handlers on it.
+        unsafe {
+            glib::gobject_ffi::g_signal_handlers_destroy(obj.to_glib_none().0);
         }
     }
 }

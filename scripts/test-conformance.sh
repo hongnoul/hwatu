@@ -220,6 +220,21 @@ hw goto --id "$id" "$base/nav.html" >/dev/null
 hw fill --id "$id" --field '#q=yo' --submit >/dev/null; hw wait-load --id "$id" >/dev/null
 o=$(hw eval --id "$id" 'return location.search'); ck "C51 fill --submit submits the form" 'grep -q "q=yo" <<<"$o"'
 
+# Window churn: a long-lived daemon must release closed windows. Before
+# the fix, open/close leaked ~0.8 MB per window on macOS and 2 fds per
+# window on Linux (the daemon aborted at ~490 windows on fd exhaustion).
+# Warm up 50 windows (engine caches fill), then 60 more must add fewer
+# than 40 fds and less than 30 MB.
+# The daemon is whichever process holds the isolated socket open.
+dpid=$(lsof -t "$w/run/hwatu.sock" 2>/dev/null | head -1)
+churn() { for _ in $(seq "$1"); do c=$(hw "$base/snap.html" | grep -o 'window [0-9]*' | cut -d' ' -f2); hw wait-load --id "$c" >/dev/null; hw snapshot --id "$c" >/dev/null; hw close "$c" >/dev/null; done; }
+fds() { lsof -p "$dpid" 2>/dev/null | wc -l | tr -d ' '; }
+churn 50; r0=$(ps -o rss= -p "$dpid" | tr -d ' '); f0=$(fds)
+churn 60; r1=$(ps -o rss= -p "$dpid" | tr -d ' '); f1=$(fds)
+o="pid $dpid: rss ${r0}KB -> ${r1}KB, fds $f0 -> $f1 over 60 windows"; echo "   $o"
+ck "C52 closed windows are released (60 windows add < 40 fds, < 30 MB)" \
+  '[[ -n "$dpid" && -n "$r1" && $((f1 - f0)) -lt 40 && $((r1 - r0)) -lt 30720 ]]'
+
 # Session persistence (VISION: credentials entered once, the session
 # persists across runs): cookies and localStorage survive a daemon
 # restart. Runs last because it restarts the daemon.
