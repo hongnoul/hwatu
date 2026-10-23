@@ -20,12 +20,14 @@ the command. `focus` and `unfocus` are accepted aliases of `show` and `hide`.
 
 `click` applies the `irreversible_action` structured stop, `auth_context`
 reports `login_required`, and `challenge --wait` returns the `challenge`
-stop on timeout, using the shared `page-scripts/`. `Sources/PageScripts.swift` is generated
-from it by `scripts/gen-page-scripts.sh`; a Rust test fails when the copy is
+stop on timeout, using the shared `page-scripts/`. `click --trusted` and
+`type --trusted` send AppKit events straight to the web view, so the page
+sees `isTrusted` events in headless windows and the user's cursor and
+focus do not move. `Sources/PageScripts.swift` is generated
+from `page-scripts/` by `scripts/gen-page-scripts.sh`; a Rust test fails when the copy is
 stale. `scripts/test-reference-skill.sh` (with `HWATUD=<path>`) passes
 against this daemon. macOS is not yet a supported platform: it lacks a
-signed package, `upload`, `net`, `diff`, `motion`, and trusted
-input (see VISION.md support criteria).
+signed package, `upload`, `net`, `diff`, and `motion` (see VISION.md support criteria).
 
 ## Headless notes
 

@@ -1,0 +1,8 @@
+<!DOCTYPE html><meta charset="utf-8"><title>trusted</title>
+<button id="b" style="margin:40px;width:160px;height:40px">Verify</button>
+<input id="i" style="margin:40px">
+<script>
+window.log = [];
+document.getElementById('b').addEventListener('click', e => log.push('click:' + e.isTrusted));
+document.getElementById('i').addEventListener('keydown', e => log.push('key:' + e.isTrusted));
+</script>

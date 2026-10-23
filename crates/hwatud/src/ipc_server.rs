@@ -1039,6 +1039,9 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, transport: TransportKind, reply: 
             "capabilities": {
                 "show": !crate::compositor::display_free(),
                 "trusted_input": true,
+                // Compositor input reaches only shown windows; headless
+                // windows answer an error naming `show`.
+                "trusted_input_headless": false,
                 "structured_stops": ["irreversible_action", "login_required", "challenge"],
                 "transport": ["unix", "tcp"],
             },

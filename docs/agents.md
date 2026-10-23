@@ -157,6 +157,13 @@ to read it, `click --trusted` and `type` to answer it in the real engine,
 then `challenge` again to confirm the status is `cleared`. `challenge --wait
 --timeout-ms 60000` polls until the challenge disappears.
 
+`click --trusted` and `type --trusted` deliver events the page sees with
+`isTrusted === true`. `ping` reports `capabilities.trusted_input_headless`.
+On macOS it is `true`: input goes to the web view without moving the
+user's cursor or focus. On Linux it is `false`: trusted input goes through
+the compositor and a headless window answers an error naming `show`.
+`--trusted` does not bypass the irreversible-action stop.
+
 If the agent cannot clear the challenge, `challenge` returns a structured
 block and the session is kept. The agent can call `show`, tell the user what
 is needed, and continue once the status is `cleared`.

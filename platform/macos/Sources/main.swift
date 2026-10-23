@@ -306,16 +306,103 @@ func jsonValue(from any: Any?) -> Any {
     return String(describing: any)
 }
 
-/// Evaluate JS with Linux-parity eval semantics (docs/agents.md "Eval
-/// semantics", mirrors crates/hwatud plan_eval_source): an expression
-/// runs as `return (expr)`; a body with explicit `return`/`await` runs
-/// as-is; a return-less body routes through indirect eval so the page
-/// answers the completion value of the last statement. Daemon-side
-/// syntax errors answer `eval failed: SyntaxError: <message>` without
-/// ever reaching the page. User code executes exactly once, in the page.
+// Trusted input: AppKit events delivered straight to the WKWebView. WebKit
+// turns them into page events with isTrusted === true. They are not posted
+// to the window server, so the user's cursor, keyboard focus and frontmost
+// app do not change, and they work in headless (click-through) windows.
+func mouseEvent(_ w: Window, _ type: NSEvent.EventType, _ p: NSPoint) -> NSEvent? {
+    NSEvent.mouseEvent(with: type, location: p, modifierFlags: [],
+                       timestamp: ProcessInfo.processInfo.systemUptime,
+                       windowNumber: w.host.windowNumber, context: nil, eventNumber: 0,
+                       clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0)
+}
+
+func keyEvent(_ w: Window, _ type: NSEvent.EventType, _ chars: String, _ keyCode: UInt16) -> NSEvent? {
+    NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [],
+                     timestamp: ProcessInfo.processInfo.systemUptime,
+                     windowNumber: w.host.windowNumber, context: nil, characters: chars,
+                     charactersIgnoringModifiers: chars, isARepeat: false, keyCode: keyCode)
+}
+
+/// Scroll the target into view and return its centre in CSS pixels.
+func targetCenterJS(_ args: String) -> String {
+    """
+    \(findElementJS)
+    \(args)
+    const { el, matches } = __hwatuFind(__sel, __nth, __contains, __ref);
+    el.scrollIntoView({block: 'center'});
+    const r = el.getBoundingClientRect();
+    return { matches, tag: el.tagName.toLowerCase(), x: r.x + r.width / 2, y: r.y + r.height / 2,
+             text: ((el.innerText || el.value || '') + '').trim().slice(0, 120) };
+    """
+}
+
+func nativeClick(_ w: Window, cssX: Double, cssY: Double) {
+    // WKWebView is a flipped view, so its local coordinates match CSS
+    // viewport coordinates (top-left origin). Page zoom is 1.
+    let local = NSPoint(x: cssX, y: w.webView.isFlipped ? cssY : Double(w.webView.bounds.height) - cssY)
+    let p = w.webView.convert(local, to: nil)
+    if let down = mouseEvent(w, .leftMouseDown, p), let up = mouseEvent(w, .leftMouseUp, p) {
+        w.webView.mouseDown(with: down)
+        w.webView.mouseUp(with: up)
+    }
+}
+
+func trustedClick(_ w: Window, _ args: String, _ req: JSON, _ done: @escaping (JSON) -> Void) {
+    runJS(w, targetCenterJS(args), timeoutMs: jint(req, "timeout_ms") ?? 15000) { r in
+        guard var v = r["value"] as? JSON, let x = v["x"] as? Double, let y = v["y"] as? Double else { done(r); return }
+        nativeClick(w, cssX: x, cssY: y)
+        v["trusted"] = true
+        v.removeValue(forKey: "x"); v.removeValue(forKey: "y")
+        done(okResponse(["value": v]))
+    }
+}
+
+func trustedType(_ w: Window, _ req: JSON, _ text: String, _ done: @escaping (JSON) -> Void) {
+    let clear = jbool(req, "clear", true)
+    let enter = jbool(req, "enter")
+    // Click to focus (trusted), optionally clear the old value, then send
+    // one key event per character.
+    let js = targetCenterJS(targetArgsJS(req))
+    runJS(w, js, timeoutMs: jint(req, "timeout_ms") ?? 15000) { r in
+        guard var v = r["value"] as? JSON, let x = v["x"] as? Double, let y = v["y"] as? Double else { done(r); return }
+        nativeClick(w, cssX: x, cssY: y)
+        let send = {
+            for ch in text {
+                let s = String(ch)
+                if let d = keyEvent(w, .keyDown, s, 0), let u = keyEvent(w, .keyUp, s, 0) {
+                    w.webView.keyDown(with: d); w.webView.keyUp(with: u)
+                }
+            }
+            if enter, let d = keyEvent(w, .keyDown, "\r", 36), let u = keyEvent(w, .keyUp, "\r", 36) {
+                w.webView.keyDown(with: d); w.webView.keyUp(with: u)
+            }
+            // Read back after WebKit has processed the queued key events.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                runJS(w, "const el = document.activeElement; return { tag: el ? el.tagName.toLowerCase() : null, value: el && 'value' in el ? String(el.value).slice(0, 200) : null };", timeoutMs: 5000) { after in
+                    v.removeValue(forKey: "x"); v.removeValue(forKey: "y"); v.removeValue(forKey: "text")
+                    v["trusted"] = true
+                    if let a = after["value"] as? JSON { v["value"] = a["value"] ?? NSNull() }
+                    done(okResponse(["value": v]))
+                }
+            }
+        }
+        w.host.makeFirstResponder(w.webView)
+        if clear {
+            runJS(w, "const el = document.activeElement; if (el && 'select' in el) el.select(); else document.execCommand('selectAll'); return true;", timeoutMs: 5000) { _ in
+                // Typed text replaces the selection.
+                send()
+            }
+        } else {
+            send()
+        }
+    }
+}
+
 /// Dispatch a pointer-event click at the target's center. Called after the
 /// irreversible-action check, or directly when the request carries confirm.
 func clickNow(_ w: Window, _ args: String, _ req: JSON, _ done: @escaping (JSON) -> Void) {
+    if jbool(req, "trusted") { trustedClick(w, args, req, done); return }
     let js = """
     \(findElementJS)
     \(args)
@@ -334,6 +421,13 @@ func clickNow(_ w: Window, _ args: String, _ req: JSON, _ done: @escaping (JSON)
     runJS(w, js, timeoutMs: jint(req, "timeout_ms") ?? 15000, done: done)
 }
 
+/// Evaluate JS with Linux-parity eval semantics (docs/agents.md "Eval
+/// semantics", mirrors crates/hwatud plan_eval_source): an expression
+/// runs as `return (expr)`; a body with explicit `return`/`await` runs
+/// as-is; a return-less body routes through indirect eval so the page
+/// answers the completion value of the last statement. Daemon-side
+/// syntax errors answer `eval failed: SyntaxError: <message>` without
+/// ever reaching the page. User code executes exactly once, in the page.
 func runJS(_ w: Window, _ js: String, timeoutMs: Int, done: @escaping (JSON) -> Void) {
     let source: String
     switch planEvalSource(js) {
@@ -537,7 +631,8 @@ func handle(_ req: JSON) -> JSON {
             "engine": ["name": "wkwebview", "version": webkit],
             "capabilities": [
                 "show": true,
-                "trusted_input": false,
+                "trusted_input": true,
+                "trusted_input_headless": true,
                 "structured_stops": ["irreversible_action", "login_required", "challenge"],
                 "transport": ["unix"],
             ],
@@ -772,6 +867,7 @@ func handle(_ req: JSON) -> JSON {
         return onMain { done in
             guard let w = daemon.resolve(jint(req, "id")) else { done(errResponse("no window open")); return }
             guard let text = jstr(req, "text") else { done(errResponse("type: missing text")); return }
+            if jbool(req, "trusted") { trustedType(w, req, text, done); return }
             let textJSON = (try? String(data: JSONSerialization.data(withJSONObject: [text]), encoding: .utf8)) ?? "[\"\"]"
             let clear = jbool(req, "clear", true)
             let enter = jbool(req, "enter")

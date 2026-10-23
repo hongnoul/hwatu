@@ -52,6 +52,7 @@ hw close "$id" >/dev/null
 id=$(open_id "$base/stops.html"); hw wait-load --id "$id" >/dev/null
 o=$(hw click --id "$id" '#add'); ck "C6 ordinary click is not stopped" '! grep -q "\"stop\"" <<<"$o"'
 o=$(hw click --id "$id" '#pay'); ck "C7 Place Order returns irreversible_action stop" 'grep -q "\"reason\":\"irreversible_action\"" <<<"$o"'
+o=$(hw click --id "$id" --trusted '#pay'); ck "C7b --trusted does not bypass the irreversible stop" 'grep -q "\"reason\":\"irreversible_action\"" <<<"$o"'
 o=$(title "$id"); ck "C8 stopped click did not run the handler" 'grep -q added <<<"$o"'
 hw click --id "$id" --confirm '#pay' >/dev/null
 o=$(title "$id"); ck "C9 --confirm performs the click" 'grep -q paid <<<"$o"'
@@ -94,6 +95,22 @@ o=$(hw goto --id "$id" "$base/stops.html")
 o=$(hw batch "[{\"cmd\":\"click\",\"id\":$id,\"selector\":\"#add\"},{\"cmd\":\"click\",\"id\":$id,\"selector\":\"#pay\"},{\"cmd\":\"eval\",\"id\":$id,\"js\":\"return 1\"}]")
 ck "C20 batch halts at the irreversible stop" 'grep -q irreversible_action <<<"$o" && ! grep -q "\"complete\":true" <<<"$o"'
 o=$(title "$id"); ck "C21 batch did not run the stopped handler" '! grep -q paid <<<"$o"'
+
+# Trusted input. Where the engine supports it headless, the page sees
+# isTrusted events. Elsewhere the daemon must refuse with an error naming
+# show instead of silently sending untrusted events.
+o=$(hw goto --id "$id" "$base/trusted.html")
+caps=$(hw ping)
+if grep -q '"trusted_input_headless":true' <<<"$caps"; then
+  hw click --id "$id" --trusted '#b' >/dev/null
+  hw type --id "$id" --trusted '#i' ab >/dev/null
+  o=$(hw eval --id "$id" 'return JSON.stringify({log, v: document.getElementById("i").value})')
+  ck "C22 trusted click and type arrive with isTrusted" 'grep -q "click:true" <<<"$o" && grep -q "key:true" <<<"$o" && ! grep -q ":false" <<<"$o"'
+  ck "C23 trusted type sets the value" 'grep -q "ab" <<<"$o"'
+else
+  o=$(hw click --id "$id" --trusted '#b'); ck "C22 headless trusted click refused with show hint" 'grep -q "show" <<<"$o"'
+  o=$(hw eval --id "$id" 'return log.length'); ck "C23 refused trusted click sent no events" 'grep -q "0" <<<"$o"'
+fi
 
 echo "pass=$pass fail=$fail ($(uname))"
 [[ $fail -eq 0 ]]

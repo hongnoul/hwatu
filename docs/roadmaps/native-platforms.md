@@ -77,10 +77,11 @@ policy `.prohibited`):
   Verify it or document it as unsupported.
 - The current host (`platform/macos`) is a separate Swift daemon built from
   source. It must ship as a signed binary before macOS is claimed.
-- Status: `scripts/test-conformance.sh` passes against it (22 checks, the
-  same fixtures and expectations as Linux). `scripts/test-reference-skill.sh`
-  passes. Missing: signed package, `upload`, `net`, `diff`, `motion`,
-  trusted input.
+- Status: `scripts/test-conformance.sh` passes against it (25 checks, the
+  same fixtures as Linux). `scripts/test-reference-skill.sh` passes.
+  Trusted input works in headless windows: AppKit events sent to the web
+  view arrive with `isTrusted` and do not move the user's cursor or focus.
+  Missing: signed package, `upload`, `net`, `diff`, `motion`.
 - A host window below the desktop icons is treated as occluded and its
   page timers drop to about 1 Hz. The host uses normal window level with
   alpha 0.0001.
