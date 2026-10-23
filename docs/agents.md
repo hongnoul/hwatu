@@ -179,7 +179,11 @@ relays the reason through its harness. In a `batch`, the failing step's
 - `login_required`: reported by `auth-context` as the `login_required`
   field when a visible password or one-time-code field is on the page.
   `needs` is `credentials` or `one_time_code`. The agent asks the user,
-  enters the value once, and the session persists across runs.
+  enters the value once, and the session persists across runs. On pages
+  that render the form with JavaScript, run `wait-load --until quiescent`
+  first: `settled` can return before the form exists (measured on
+  saucedemo.com from a fresh daemon: 3 to 7 misses in 15 runs with
+  `settled`, 0 in 15 with `quiescent`).
 - `challenge`: returned by `challenge --wait` when a challenge is still
   present at the deadline. `retry.command` is `show`.
 

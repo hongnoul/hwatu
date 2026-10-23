@@ -79,6 +79,11 @@ final class Window: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         let cfg = WKWebViewConfiguration()
         cfg.websiteDataStore = WKWebsiteDataStore.default()
         cfg.preferences.javaScriptCanOpenWindowsAutomatically = false
+        // Headless windows are never key; do not let WebKit deprioritize
+        // them as inactive pages.
+        if #available(macOS 14.0, *) {
+            cfg.preferences.inactiveSchedulingPolicy = .none
+        }
         let controller = WKUserContentController()
         // Console capture: forward console.* and errors to the daemon.
         let js = """
@@ -177,14 +182,21 @@ final class Window: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
             // Keep the window technically visible to the window server but
             // imperceptible and non-interactive: ~0 alpha, click-through,
             // hidden from Mission Control / window cycling, never key.
-            // 0.001, not 0.01: stacked headless windows composite their
-            // alphas, and ~15 windows at 1% each produced a visible page
-            // "ghost" over the desktop. scripts/probes/macos/raf3.swift
-            // measured that snapshots still render at 0.001.
-            host.alphaValue = 0.001
+            // 0.0001: stacked headless windows composite their alphas
+            // (1% each produced a visible "ghost"; 15 windows at 0.001
+            // composite to 1.5%). At 0.0001, 15 stacked windows composite
+            // to 0.15%; timers run at full rate and snapshots render the
+            // page (measured 2026-10-22, macOS 26.6).
+            //
+            // Normal window level, not below the desktop icons: macOS treats
+            // a below-desktop window as occluded and throttles its page
+            // timers to about 1 s (measured: setInterval(100) produced 9
+            // ticks in 4 s below desktop, 39 at normal level), which stalls
+            // expect and wait-load quiescent.
+            host.alphaValue = 0.0001
             host.ignoresMouseEvents = true
             host.collectionBehavior = [.transient, .ignoresCycle, .canJoinAllSpaces]
-            host.level = NSWindow.Level(Int(CGWindowLevelForKey(.desktopIconWindow)) - 1)
+            host.hasShadow = false
             host.setFrameOrigin(NSPoint(x: 0, y: 0))
             host.orderFrontRegardless()
         }
@@ -431,6 +443,26 @@ func waitLoad(_ w: Window, until: String, timeoutMs: Int, done: @escaping (JSON)
                         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: check)
                     }
                 }
+                return
+            }
+            if until == "quiescent" {
+                // Settled, then no DOM mutations for 300 ms, capped at 5 s.
+                // Same constants as the GTK daemon.
+                let js = """
+                return await new Promise((resolve) => {
+                  let last = performance.now(); const started = last;
+                  const mo = new MutationObserver(() => { last = performance.now(); });
+                  mo.observe(document.documentElement || document, { childList: true, subtree: true, attributes: true, characterData: true });
+                  const tick = () => {
+                    const now = performance.now();
+                    if (now - last >= 300) { mo.disconnect(); resolve({ quiescent: true, waited_ms: Math.round(now - started) }); }
+                    else if (now - started >= 5000) { mo.disconnect(); resolve({ quiescent: false, waited_ms: Math.round(now - started) }); }
+                    else setTimeout(tick, 100);
+                  };
+                  setTimeout(tick, 100);
+                });
+                """
+                runJS(w, js, timeoutMs: 7000) { _ in done(okResponse()) }
                 return
             }
             done(okResponse())

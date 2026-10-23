@@ -30,7 +30,7 @@ o=$(hw doctor); ck "R1 doctor: all checks passed" 'grep -q "all checks passed" <
 
 # R: open is headless
 o=$(hw https://www.saucedemo.com/); echo "   open: $o"; id=$(grep -o 'window [0-9]*' <<<"$o" | head -1 | cut -d' ' -f2)
-hw wait-load --id "$id" --until settled >/dev/null
+hw wait-load --id "$id" --until quiescent >/dev/null
 o=$(hw list --json); ck "R2 window opened headless" 'grep -q "\"mode\":\"headless\"" <<<"$o"'
 
 # R: login wall reported as structured stop
