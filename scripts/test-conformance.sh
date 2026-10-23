@@ -207,6 +207,19 @@ o=$(hw list --json); ck "C47 show --as shot/diff leave the window headless" 'gre
 o=$("$root/scripts/conformance-shapes.sh" "$b/hwatu" "$base" | diff "$root/tests/conformance/shapes.golden" - 2>&1)
 ck "C39 every command's reply matches tests/conformance/shapes.golden" '[[ -z "$o" ]]'; [[ -n "$o" ]] && echo "$o" | head -8
 
+# Navigation during a script: eval reports the interruption with the
+# destination; click/type --enter/fill --submit complete and land on the
+# new page.
+o=$(hw goto --id "$id" "$base/nav.html")
+o=$(hw eval --id "$id" 'location.href = "plain.html"; await new Promise(r => setTimeout(r, 2000)); return 1')
+ck "C49 eval interrupted by navigation names the destination" 'grep -q "eval interrupted: the page navigated to .*plain.html" <<<"$o"'
+hw goto --id "$id" "$base/nav.html" >/dev/null
+hw type --id "$id" '#q' hi --enter >/dev/null; hw wait-load --id "$id" >/dev/null
+o=$(hw eval --id "$id" 'return location.search'); ck "C50 type --enter submits the form" 'grep -q "q=hi" <<<"$o"'
+hw goto --id "$id" "$base/nav.html" >/dev/null
+hw fill --id "$id" --field '#q=yo' --submit >/dev/null; hw wait-load --id "$id" >/dev/null
+o=$(hw eval --id "$id" 'return location.search'); ck "C51 fill --submit submits the form" 'grep -q "q=yo" <<<"$o"'
+
 # Session persistence (VISION: credentials entered once, the session
 # persists across runs): cookies and localStorage survive a daemon
 # restart. Runs last because it restarts the daemon.

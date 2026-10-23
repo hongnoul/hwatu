@@ -171,6 +171,10 @@ final class Window: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessag
     var mode: String
     var appId: String?
     var loadState: String = "idle" // idle | loading | committed | settled | failed
+    /// One-shot callbacks for the next document commit / load finish
+    /// (navigation during an eval; see runJS NavPolicy).
+    var commitHooks: [() -> Void] = []
+    var finishHooks: [() -> Void] = []
     var lastError: String?
     var consoleBuf: [JSON] = []
     /// Last `snapshot --diff` value; cleared when a new document commits.
@@ -358,8 +362,14 @@ final class Window: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessag
     func webView(_ w: WKWebView, didCommit n: WKNavigation!) {
         loadState = "committed"
         snapshotBaseline = nil
+        let hooks = commitHooks; commitHooks.removeAll()
+        hooks.forEach { $0() }
     }
-    func webView(_ w: WKWebView, didFinish n: WKNavigation!) { loadState = "settled" }
+    func webView(_ w: WKWebView, didFinish n: WKNavigation!) {
+        loadState = "settled"
+        let hooks = finishHooks; finishHooks.removeAll()
+        hooks.forEach { $0() }
+    }
     func webView(_ w: WKWebView, didFail n: WKNavigation!, withError e: Error) {
         loadState = "failed"; lastError = e.localizedDescription
     }
@@ -539,7 +549,7 @@ func trustedReply(_ w: Window, _ action: String, _ target: JSON, extra: JSON = [
 }
 
 func trustedClick(_ w: Window, _ req: JSON, _ done: @escaping (JSON) -> Void) {
-    runJS(w, targetCenterJS(req), timeoutMs: jint(req, "timeout_ms") ?? 15000) { r in
+    runJS(w, targetCenterJS(req), timeoutMs: jint(req, "timeout_ms") ?? 15000, nav: .success) { r in
         guard let v = r["value"] as? JSON, let x = v["x"] as? Double, let y = v["y"] as? Double else { done(r); return }
         nativeClick(w, cssX: x, cssY: y)
         done(trustedReply(w, "clicked", v))
@@ -595,7 +605,7 @@ func clickNow(_ w: Window, _ req: JSON, _ done: @escaping (JSON) -> Void) {
     \(targetPreludeJS(req))
     \(clickJS)
     """
-    runJS(w, js, timeoutMs: jint(req, "timeout_ms") ?? 15000, done: done)
+    runJS(w, js, timeoutMs: jint(req, "timeout_ms") ?? 15000, nav: .success, done: done)
 }
 
 /// Evaluate JS with Linux-parity eval semantics (docs/agents.md "Eval
@@ -605,7 +615,12 @@ func clickNow(_ w: Window, _ req: JSON, _ done: @escaping (JSON) -> Void) {
 /// answers the completion value of the last statement. Daemon-side
 /// syntax errors answer `eval failed: SyntaxError: <message>` without
 /// ever reaching the page. User code executes exactly once, in the page.
-func runJS(_ w: Window, _ js: String, timeoutMs: Int, done: @escaping (JSON) -> Void) {
+/// What a cross-document navigation during a script means (same as the
+/// GTK daemon's NavPolicy): an interruption for eval, the point of the
+/// action for click/type/fill/challenge.
+enum NavPolicy { case error, success }
+
+func runJS(_ w: Window, _ js: String, timeoutMs: Int, nav: NavPolicy = .error, done: @escaping (JSON) -> Void) {
     let source: String
     switch planEvalSource(js) {
     case .success(let s): source = s
@@ -616,6 +631,20 @@ func runJS(_ w: Window, _ js: String, timeoutMs: Int, done: @escaping (JSON) -> 
     var finished = false
     let finish: (JSON) -> Void = { r in
         if !finished { finished = true; done(r) }
+    }
+    // A committed navigation destroys the script's JS context; its
+    // completion never arrives. Answer for it.
+    w.commitHooks.append { [weak w] in
+        guard let w = w, !finished else { return }
+        let uri = w.webView.url?.absoluteString ?? ""
+        switch nav {
+        case .error:
+            finish(errResponse("eval interrupted: the page navigated to \(uri) while the script was running, destroying its JS context. Wait for the load (`hwatu wait-load`) and run the script against the new document."))
+        case .success:
+            w.finishHooks.append { [weak w] in
+                finish(okResponse(["value": ["navigated": true, "url": w?.webView.url?.absoluteString ?? uri] as JSON]))
+            }
+        }
     }
     DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(timeoutMs)) {
         finish(errResponse("eval timed out after \(timeoutMs) ms"))
@@ -1058,7 +1087,7 @@ func handle(_ req: JSON) -> JSON {
             const enter = \(jbool(req, "enter"));
             \(typeJS)
             """
-            runJS(w, js, timeoutMs: jint(req, "timeout_ms") ?? 15000, done: done)
+            runJS(w, js, timeoutMs: jint(req, "timeout_ms") ?? 15000, nav: .success, done: done)
         }
 
     case "fill_form":
@@ -1087,7 +1116,7 @@ func handle(_ req: JSON) -> JSON {
             const SUBMIT = \(jbool(req, "submit"));
             \(fillJS)
             """
-            runJS(w, js, timeoutMs: jint(req, "timeout_ms") ?? 15000, done: done)
+            runJS(w, js, timeoutMs: jint(req, "timeout_ms") ?? 15000, nav: jbool(req, "submit") ? .success : .error, done: done)
         }
 
     case "press":
@@ -1101,7 +1130,7 @@ func handle(_ req: JSON) -> JSON {
             let raw = (jstr(req, "key") ?? "enter").lowercased()
             guard let key = names[raw] else { done(errResponse("press: unsupported key \(raw)")); return }
             let js = nativeTimeJS + "\n" + pressJS.replacingOccurrences(of: "__HWATU_KEY__", with: jsonStringLiteral(key))
-            runJS(w, js, timeoutMs: jint(req, "timeout_ms") ?? 15000, done: done)
+            runJS(w, js, timeoutMs: jint(req, "timeout_ms") ?? 15000, nav: .success, done: done)
         }
 
     case "scroll":
@@ -1221,7 +1250,7 @@ func handle(_ req: JSON) -> JSON {
             current.elapsed_ms = Date.now() - started;
             return current;
             """
-            runJS(w, js, timeoutMs: timeout + 5000) { r in
+            runJS(w, js, timeoutMs: timeout + 5000, nav: .success) { r in
                 if let v = r["value"] as? JSON, (v["status"] as? String) == "manual_required" {
                     done([
                         "status": "err",
