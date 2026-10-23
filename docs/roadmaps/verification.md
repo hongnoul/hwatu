@@ -141,7 +141,7 @@ worth native features; the rest stay non-goals.
 
 **Shipped 2026-08-08** (both items; live checks in
 `scripts/test-snapshot-budget.sh`). Item 12 as `snapshot --budget
-<chars>` (snapbudget.rs): coarse-to-fine degradation — text halves
+<chars>` (crates/snapshot/src/budget.rs): coarse-to-fine degradation — text halves
 to a 200-char floor, interactable fields shorten, entries cap at 30
 with an omission marker, final tier is per-tag landmark counts —
 with surviving refs keeping their original numbers. Measured:

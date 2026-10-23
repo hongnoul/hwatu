@@ -367,7 +367,7 @@ pub struct BrowserWindow {
     /// (a new document is a new page; diffing across it would report
     /// the whole world as changed anyway, and the agent is told
     /// explicitly via `baseline_established` instead).
-    pub snapshot_baseline: RefCell<Option<Vec<crate::snapdiff::Node>>>,
+    pub snapshot_baseline: RefCell<Option<serde_json::Value>>,
     /// Console/error/network capture for `hwatu console`. Outlives
     /// discards: the page's state dies, what it logged did happen.
     pub console: crate::console::Buffer,

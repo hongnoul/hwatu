@@ -114,6 +114,18 @@ mod tests {
             ("loginWallJS", LOGIN_WALL_JS),
             ("challengeJS", crate::automation::challenge_detector_js()),
             ("motionJS", crate::verify::MOTION_JS),
+            ("targetJS", crate::automation::TARGET_JS),
+            ("snapshotJS", crate::automation::SNAPSHOT_JS),
+            ("contentJS", crate::coverage::CONTENT_JS),
+            ("clickJS", crate::automation::CLICK_JS),
+            ("typeJS", crate::automation::TYPE_JS),
+            ("nativeTimeJS", crate::automation::NATIVE_TIME_JS),
+            ("pressJS", crate::automation::PRESS_JS),
+            ("visibilityJS", crate::automation::VISIBILITY_INSPECTOR_JS),
+            ("expectJS", crate::automation::EXPECT_JS),
+            ("scrollJS", crate::automation::SCROLL_JS),
+            ("fillJS", crate::coverage::FILL_JS),
+            ("authContextJS", crate::coverage::AUTH_CONTEXT_JS),
         ] {
             let open = format!("let {name} = #\"\"\"\n");
             let body = swift

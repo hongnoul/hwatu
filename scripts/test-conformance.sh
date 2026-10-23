@@ -154,5 +154,12 @@ ck "C36 motion reports the idle declared transition" 'grep -q "\"property\":\"op
 o=$(hw eval --id "$id" 'return [Infinity, NaN, 1]'); ck "C37 non-finite eval values serialize as null" 'grep -q "\[null,null,1\]" <<<"$o"'
 o=$(hw ping); ck "C38 daemon alive after non-finite values" 'grep -q "\"engine\"" <<<"$o"'
 
+# Reply shapes: a fixed command sequence must produce the committed
+# golden output byte for byte (timings and ids normalized), so a skill
+# reads the same JSON on every engine. Regenerate on purpose with
+# scripts/conformance-shapes.sh after an intended contract change.
+o=$("$root/scripts/conformance-shapes.sh" "$b/hwatu" "$base" | diff "$root/tests/conformance/shapes.golden" - 2>&1)
+ck "C39 every command's reply matches tests/conformance/shapes.golden" '[[ -z "$o" ]]'
+
 echo "pass=$pass fail=$fail ($(uname))"
 [[ $fail -eq 0 ]]

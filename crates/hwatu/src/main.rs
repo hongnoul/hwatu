@@ -1705,6 +1705,54 @@ pub(crate) fn read_text_frame(
         .transpose()
 }
 
+/// Daemons that return the raw `page-scripts/snapshot.js` value (macOS)
+/// wrap it as `{hwatu_raw_snapshot: {snapshot, previous?}}`. Diff, budget
+/// and injection quarantine then run here with the same code the GTK
+/// daemon uses, so agents get the same reply on every engine.
+fn finish_raw_snapshot(response: &mut Response, budget: Option<usize>) {
+    let Response::Ok {
+        value: Some(value), ..
+    } = response
+    else {
+        return;
+    };
+    let Some(raw) = value.get("hwatu_raw_snapshot") else {
+        return;
+    };
+    let snapshot = &raw["snapshot"];
+    let previous = raw
+        .get("previous")
+        .map(|p| if p.is_null() { None } else { Some(p) });
+    *value = hwatu_snapshot::finish(snapshot, previous, budget);
+}
+
+/// Same as [`finish_raw_snapshot`] for snapshot steps inside a batch reply.
+fn finish_batch_snapshots(actions: &[Request], value: &mut serde_json::Value) {
+    let Some(steps) = value
+        .pointer_mut("/batch/steps")
+        .and_then(|s| s.as_array_mut())
+    else {
+        return;
+    };
+    for step in steps {
+        let Some(index) = step.get("index").and_then(|i| i.as_u64()) else {
+            continue;
+        };
+        let Some(Request::Snapshot { budget, .. }) = actions.get(index as usize) else {
+            continue;
+        };
+        let Some(response) = step.get_mut("response") else {
+            continue;
+        };
+        if let Ok(mut parsed) = serde_json::from_value::<Response>(response.clone()) {
+            finish_raw_snapshot(&mut parsed, *budget);
+            if let Ok(v) = serde_json::to_value(&parsed) {
+                *response = v;
+            }
+        }
+    }
+}
+
 pub(crate) fn transact_request(request: &Request) -> std::io::Result<Response> {
     let mut connection = connect_or_spawn()?;
     let mut request = request.clone();
@@ -1725,6 +1773,14 @@ pub(crate) fn transact_request(request: &Request) -> std::io::Result<Response> {
             write_request(&mut c, r)?;
             read_response(&mut c)
         })?;
+    }
+    if let Request::Snapshot { budget, .. } = &request {
+        finish_raw_snapshot(&mut response, *budget);
+    }
+    if let (Request::Batch { actions }, Response::Ok { value: Some(v), .. }) =
+        (&request, &mut response)
+    {
+        finish_batch_snapshots(actions, v);
     }
     artifacts
         .materialize(&mut response)

@@ -77,7 +77,7 @@ policy `.prohibited`):
   Verify it or document it as unsupported.
 - The current host (`platform/macos`) is a separate Swift daemon built from
   source. It must ship as a signed binary before macOS is claimed.
-- Status: `scripts/test-conformance.sh` passes against it (40 checks, the
+- Status: `scripts/test-conformance.sh` passes against it (41 checks, the
   same fixtures as Linux). `scripts/test-reference-skill.sh` passes.
   Trusted input works in headless windows: AppKit events sent to the web
   view arrive with `isTrusted` and do not move the user's cursor or focus.
@@ -131,12 +131,15 @@ Attack early, not after three backends exist.
   evidence.
 - **Sites gate on accumulated identity.** Granted persistent sessions cover
   nearly all of it. Report the residue as structured blocks. Never spoof.
-- **Page-side scripts drift.** Snapshot ranking, `--contains` matching, and
-  content extraction must be one shared asset loaded by every backend, not
-  three reimplementations. The stop classifiers, the challenge detector,
-  and the `motion` inventory are shared from `page-scripts/`. Pixel diff
-  scoring is shared as the `hwatu-pixeldiff` crate. Snapshot ranking,
-  `--contains` matching, and content extraction are still duplicated.
+- **Page-side scripts drift.** Page logic must be one shared asset loaded
+  by every backend, not three reimplementations. `page-scripts/` holds
+  targeting, snapshot, content, click, type, press, scroll, expect, fill,
+  auth-context, the stop classifiers, the challenge detector, and the
+  `motion` inventory. The GTK daemon embeds them with `include_str!`; the
+  macOS daemon gets a generated copy checked by a Rust test. Pixel diff
+  and snapshot quarantine, budget and `--diff` are the `hwatu-pixeldiff`
+  and `hwatu-snapshot` crates. `tests/conformance/shapes.golden` pins the
+  reply JSON of 22 commands on every engine.
 
 ## Delivery sequence and exit gates
 

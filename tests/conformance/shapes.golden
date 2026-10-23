@@ -1,0 +1,44 @@
+== snapshot --id N
+{"interactables":[{"href":"BASE/a","ref":0,"tag":"a","text":"Home"},{"href":"BASE/b","ref":1,"tag":"a","text":"Cart"},{"id":"q","name":"q","ref":2,"tag":"input","text":"Search","type":"text"},{"id":"add1","ref":3,"tag":"button","text":"Add to cart"},{"id":"add2","ref":4,"tag":"button","text":"Add to cart"},{"id":"s","ref":5,"tag":"select","text":"Two"}],"scroll":{"max_y":0,"y":0},"text":"Store\nHome Cart\nSearch Add to cartAdd to cart\nTotal: $10.00","title":"snap","url":"BASE/snap.html"}
+== content --id N --format text
+{"content":"Store\n\nHome Cart\nSearch Add to cartAdd to cart \nTotal: $10.00","format":"text","title":"snap","truncated":false,"url":"BASE/snap.html"}
+== content --id N --format links
+{"format":"links","links":[{"text":"Home","url":"BASE/a"},{"text":"Cart","url":"BASE/b"}],"title":"snap","url":"BASE/snap.html"}
+== content --id N --format title
+{"format":"title","title":"snap","url":"BASE/snap.html"}
+== content --id N p
+{"content":"Total: $10.00","format":"text","title":"snap","truncated":false,"url":"BASE/snap.html"}
+== click --id N button --contains Add 1
+{"clicked":{"matches":2,"tag":"button","text":"Add to cart"},"url":"BASE/snap.html"}
+== click --id N --ref 3
+{"clicked":{"ref":3,"tag":"button","text":"Add to cart"},"url":"BASE/snap.html"}
+== type --id N #q hello
+{"typed":{"matches":1,"tag":"input","text":""},"url":"BASE/snap.html","value":"hello"}
+== type --id N #q x --no-clear
+{"typed":{"matches":1,"tag":"input","text":"hello"},"url":"BASE/snap.html","value":"hellox"}
+== press --id N Tab
+{"canceled":false,"focused":{"id":"add1","tag":"button","text":"Add to cart"},"pressed":"Tab","wrapped":false}
+== scroll --id N --by 1
+{"at_bottom":true,"max_y":0,"x":0,"y":0}
+== scroll --id N #s
+{"at_bottom":true,"matched":{"matches":1,"tag":"select","text":"OneTwo"},"max_y":0,"x":0,"y":0}
+== expect --id N #add1
+{"elapsed_ms":N,"matches":1,"ok":true,"tag":"button","text":"Add to cart"}
+== expect --id N #nope --absent
+{"elapsed_ms":N,"ok":true}
+== expect --id N #add1 --text Add
+{"elapsed_ms":N,"matches":1,"ok":true,"tag":"button","text":"Add to cart"}
+== eval --id N 1+1
+2
+== fill --id N --field #q=z
+{"applied":[{"index":0,"tag":"input","value":"z"}],"filled":1,"submitted":false,"total":1,"url":"BASE/snap.html"}
+== auth-context --id N
+{"cookie_count":0,"cookie_names":[],"likely_authenticated":false,"local_storage_count":0,"local_storage_keys":[],"login_required":null,"origin":"BASE","persistent_cookies":0,"profile":null,"session_cookies":0,"session_storage_count":0,"url":"BASE/snap.html"}
+== challenge --id N
+{"actionable":false,"challenge_type":null,"confidence":0,"elapsed_ms":N,"evidence":[],"manual_required":false,"status":"clear","title":"snap","url":"BASE/snap.html"}
+== snapshot --id N --diff
+{"baseline_established":true,"interactables":[{"href":"BASE/a","ref":0,"tag":"a","text":"Home"},{"href":"BASE/b","ref":1,"tag":"a","text":"Cart"},{"id":"q","name":"q","ref":2,"tag":"input","text":"Search","type":"text","value":"z"},{"id":"add1","ref":3,"tag":"button","text":"Add to cart"},{"id":"add2","ref":4,"tag":"button","text":"Add to cart"},{"id":"s","ref":5,"tag":"select","text":"Two"}],"scroll":{"max_y":0,"y":0},"text":"Store\nHome Cart\nSearch Add to cartAdd to cart\nTotal: $10.00","title":"snap","url":"BASE/snap.html"}
+== snapshot --id N --diff
+{"added":[{"kind":"text","text":"Shop"}],"changed":[],"removed":[{"kind":"text","text":"Store"}],"unchanged_count":11,"url":"BASE/snap.html"}
+== snapshot --id N --budget 300
+{"degraded":"landmarks","interactable_counts":{"a":2,"button":2,"input":1,"select":1},"scroll":{"max_y":0,"y":0},"title":"snap","url":"BASE/snap.html"}

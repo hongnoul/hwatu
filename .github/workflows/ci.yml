@@ -29,8 +29,8 @@ jobs:
         with:
           key: ipc-${{ matrix.os }}
 
-      - name: Test IPC protocol and pixel diff
-        run: cargo test -p hwatu-ipc -p hwatu-pixeldiff --locked
+      - name: Test IPC protocol, pixel diff, snapshot processing
+        run: cargo test -p hwatu-ipc -p hwatu-pixeldiff -p hwatu-snapshot --locked
 
       - name: Clippy and test CLI
         run: |

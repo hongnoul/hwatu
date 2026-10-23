@@ -87,18 +87,7 @@ const DEFAULT_TIMEOUT_MS: u64 = 15_000;
 /// the page's virtual clock (crate::clock) is paused. Falls back to
 /// the page globals when the clock script is absent (old pages loaded
 /// before a daemon upgrade).
-const NATIVE_TIME_JS: &str = r#"
-const __hwatuNative = (window.__hwatu_clock && window.__hwatu_clock.native) || null;
-const hwatuSleep = (ms) => new Promise((r) =>
-  __hwatuNative ? __hwatuNative.setTimeout(r, ms) : setTimeout(r, ms));
-const hwatuNow = () => (__hwatuNative ? __hwatuNative.dateNow() : Date.now());
-"#;
-
-/// Deliver the viewport update callbacks that WebKit ties to rendering
-/// opportunities. Headless/unmapped views do not receive those opportunities,
-/// so an automation scroll explicitly pumps the clock shim's tracked scroll
-/// listeners and IntersectionObservers after the offset settles.
-const VIEWPORT_PUMP_JS: &str = "__hwatuNative?.pumpViewport?.();";
+pub(crate) const NATIVE_TIME_JS: &str = include_str!("../../../page-scripts/native-time.js");
 
 /// Pick the target window: explicit id, else the focused window, else
 /// the last window an automation command targeted (if still open),
@@ -1988,50 +1977,8 @@ pub fn scroll(
         ));
     }
     let js = format!(
-        r#"{native}const selector = {selector};
-const nth = {nth};
-const contains = {contains};
-const toY = {to_y};
-const byPages = {by_pages};
-if (selector !== null) {{
-  let els = [...document.querySelectorAll(selector)];
-  const total = els.length;
-  if (contains !== null)
-    els = els.filter(e => ((e.textContent || '') + ' ' + (e.value || '')).includes(contains));
-  const el = els[nth];
-  if (!el) {{
-    const filt = contains === null ? '' : ` (${{els.length}} after contains filter)`;
-    throw new Error(`no match: ${{total}} element(s) for selector${{filt}}, nth=${{nth}}`);
-  }}
-  el.scrollIntoView({{ block: 'center', behavior: 'instant' }});
-  var matched = {{
-    matches: els.length,
-    tag: el.tagName.toLowerCase(),
-    text: (el.textContent || '').trim().slice(0, 120),
-  }};
-}} else if (toY !== null) {{
-  window.scrollTo({{ top: toY, behavior: 'instant' }});
-}} else {{
-  window.scrollBy({{ top: window.innerHeight * (byPages ?? 1.0), behavior: 'instant' }});
-}}
-// Let the instant scroll settle before measuring. Not rAF: frames
-// never fire in headless/unmapped windows, which are exactly where
-// agent scrolls run. scrollTo/scrollBy with behavior:'instant'
-// update scrollY synchronously; one macrotask covers layout shifts.
-// Native-clock sleep so a paused virtual clock cannot stall it.
-await hwatuSleep(0);
-{viewport_pump}
-const doc = document.documentElement;
-const maxY = Math.max(0, doc.scrollHeight - window.innerHeight);
-return {{
-  x: window.scrollX,
-  y: window.scrollY,
-  max_y: maxY,
-  at_bottom: window.scrollY >= maxY - 1,
-  ...(typeof matched === 'undefined' ? {{}} : {{ matched }}),
-}};"#,
+        "{native}const selector = {selector};\nconst nth = {nth};\nconst contains = {contains};\nconst toY = {to_y};\nconst byPages = {by_pages};\n{SCROLL_JS}",
         native = NATIVE_TIME_JS,
-        viewport_pump = VIEWPORT_PUMP_JS,
         selector = json_or_null(selector.as_deref()),
         nth = nth.unwrap_or(0),
         contains = json_or_null(contains.as_deref()),
@@ -2050,144 +1997,8 @@ pub(crate) fn json_or_null(s: Option<&str>) -> String {
 // JavaScript so both call sites apply exactly the same rendered-state rules.
 // The caller owns stability sampling because one-shot expect polls inside one
 // eval while expect --watch is sampled by the native GLib scheduler.
-const VISIBILITY_INSPECTOR_JS: &str = r#"
-function hwatuRoundedRect(r) {
-  return {
-    left: Math.round(r.left * 100) / 100,
-    top: Math.round(r.top * 100) / 100,
-    width: Math.round(r.width * 100) / 100,
-    height: Math.round(r.height * 100) / 100,
-  };
-}
-
-function hwatuRectChanged(a, b) {
-  return ['left', 'top', 'width', 'height'].some(k => Math.abs(a[k] - b[k]) > 0.5);
-}
-
-// Inspect an element as a user would see it while leaving the caller's scroll
-// position intact. Scrolling can still cause irreversible page work (lazy
-// loading), so geometry/document mutations are returned as instability rather
-// than silently becoming the basis of a passing assertion.
-function hwatuInspectVisibility(el) {
-  let effectiveOpacity = 1;
-  const opacityChain = [];
-  for (let n = el; n instanceof Element; n = n.parentElement) {
-    const st = getComputedStyle(n);
-    if (st.display === 'none') return { why: n === el ? 'display:none' : 'display:none on ancestor <' + n.tagName.toLowerCase() + '>' };
-    if (st.visibility === 'hidden' || st.visibility === 'collapse')
-      return { why: 'visibility:' + st.visibility + (n === el ? '' : ' on ancestor <' + n.tagName.toLowerCase() + '>') };
-    const opacity = Number.parseFloat(st.opacity);
-    if (Number.isFinite(opacity)) {
-      effectiveOpacity *= opacity;
-      if (opacity < 1) opacityChain.push({ tag: n.tagName.toLowerCase(), id: n.id || null, opacity });
-    }
-  }
-  effectiveOpacity = Math.round(effectiveOpacity * 1000000) / 1000000;
-  if (effectiveOpacity <= 0)
-    return { why: 'effective opacity is 0', effective_opacity: effectiveOpacity, opacity_chain: opacityChain };
-
-  const root = document.documentElement;
-  const ancestorScroll = [];
-  for (let n = el.parentElement; n instanceof Element; n = n.parentElement) {
-    ancestorScroll.push({ node: n, left: n.scrollLeft, top: n.scrollTop });
-  }
-  const original = {
-    x: scrollX,
-    y: scrollY,
-    width: root.scrollWidth,
-    height: root.scrollHeight,
-    rect: hwatuRoundedRect(el.getBoundingClientRect()),
-  };
-  if (original.rect.width === 0 || original.rect.height === 0)
-    return { why: `zero-size box (${original.rect.width}x${original.rect.height})`, effective_opacity: effectiveOpacity, opacity_chain: opacityChain };
-
-  let r = el.getBoundingClientRect();
-  let scrolled = false;
-  let why = null;
-  let points = [];
-  try {
-    if (r.bottom <= 0 || r.top >= innerHeight || r.right <= 0 || r.left >= innerWidth) {
-      scrolled = true;
-      el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
-      r = el.getBoundingClientRect();
-    }
-    const left = Math.max(r.left, 0), right = Math.min(r.right, innerWidth);
-    const top = Math.max(r.top, 0), bottom = Math.min(r.bottom, innerHeight);
-    if (right <= left || bottom <= top) {
-      why = `outside viewport after scroll (rect ${Math.round(r.left)},${Math.round(r.top)} ${Math.round(r.width)}x${Math.round(r.height)})`;
-    } else {
-      const ix = Math.min(1, (right - left) / 2), iy = Math.min(1, (bottom - top) / 2);
-      const samples = [
-        ['center', (left + right) / 2, (top + bottom) / 2],
-        ['top-left', left + ix, top + iy], ['top-right', right - ix, top + iy],
-        ['bottom-left', left + ix, bottom - iy], ['bottom-right', right - ix, bottom - iy],
-      ];
-      for (const [name, x, y] of samples) {
-        const hit = document.elementFromPoint(x, y);
-        const hitName = hit ? `${hit.tagName.toLowerCase()}${hit.id ? '#' + hit.id : ''}` : null;
-        points.push({ name, x: Math.round(x * 100) / 100, y: Math.round(y * 100) / 100, hit: hitName });
-        if (hit && (hit === el || el.contains(hit) || hit.contains(el)
-            || (hit.shadowRoot && hit.shadowRoot.contains(el))
-            || (hit instanceof HTMLLabelElement && hit.control === el))) continue;
-        if (!hit) {
-          why = `${name} point hits nothing (elementFromPoint returned null)`;
-        } else {
-          const t = (hit.textContent || '').trim().slice(0, 60);
-          why = `${name} point covered by <${hitName}> ${JSON.stringify(t)}`;
-        }
-        break;
-      }
-    }
-  } finally {
-    if (scrolled) window.scrollTo(original.x, original.y);
-    for (const saved of ancestorScroll) {
-      saved.node.scrollLeft = saved.left;
-      saved.node.scrollTop = saved.top;
-    }
-  }
-
-  const restored = {
-    x: scrollX,
-    y: scrollY,
-    width: root.scrollWidth,
-    height: root.scrollHeight,
-    rect: hwatuRoundedRect(el.getBoundingClientRect()),
-  };
-  const layoutChanged = original.width !== restored.width
-    || original.height !== restored.height
-    || Math.abs(original.x - restored.x) > 0.5
-    || Math.abs(original.y - restored.y) > 0.5
-    || hwatuRectChanged(original.rect, restored.rect);
-  const ancestorScrollRestored = ancestorScroll.every(saved =>
-    Math.abs(saved.node.scrollLeft - saved.left) <= 0.5
-      && Math.abs(saved.node.scrollTop - saved.top) <= 0.5);
-  const diagnostics = {
-    scrolled,
-    scroll_restored: Math.abs(original.x - restored.x) <= 0.5
-      && Math.abs(original.y - restored.y) <= 0.5 && ancestorScrollRestored,
-    ancestor_scroll_restored: ancestorScrollRestored,
-    layout_changed: layoutChanged,
-    effective_opacity: effectiveOpacity,
-    opacity_chain: opacityChain,
-    original_rect: original.rect,
-    restored_rect: restored.rect,
-    document_before: { width: original.width, height: original.height },
-    document_after: { width: restored.width, height: restored.height },
-    points,
-  };
-  if (layoutChanged && !why) why = 'visibility inspection changed page layout or target geometry';
-  diagnostics.why = why;
-  const signature = JSON.stringify({
-    effective_opacity: effectiveOpacity,
-    rect: original.rect,
-    document: diagnostics.document_after,
-    points,
-    why,
-  });
-  Object.defineProperty(diagnostics, 'signature', { value: signature, enumerable: false });
-  return diagnostics;
-}
-"#;
+pub(crate) const VISIBILITY_INSPECTOR_JS: &str =
+    include_str!("../../../page-scripts/visibility.js");
 
 /// Assert page state, polling inside the page until it holds or the
 /// deadline passes. Success replies `{ok: true, matches, tag, text,
@@ -2209,66 +2020,7 @@ pub fn expect(
 ) {
     let deadline = timeout_ms.unwrap_or(5000);
     let js = format!(
-        r#"{native}{visibility_inspector}
-const selector = {selector};
-const nth = {nth};
-const contains = {contains};
-const wantText = {want_text};
-const absent = {absent};
-const wantVisible = {visible};
-const deadline = {deadline};
-const started = hwatuNow();
-let previousVisibilitySignature = null;
-let stableVisibility = null;
-
-function check() {{
-  let els = [...document.querySelectorAll(selector)];
-  const total = els.length;
-  if (contains !== null)
-    els = els.filter(e => ((e.textContent || '') + ' ' + (e.value || '')).includes(contains));
-  const el = els[nth];
-  if (absent) {{
-    if (els.length === 0) return {{ ok: true }};
-    const t = (els[0].textContent || '').trim().slice(0, 120);
-    return {{ ok: false, why: `expected no match, found ${{els.length}} (first: <${{els[0].tagName.toLowerCase()}}> ${{JSON.stringify(t)}})` }};
-  }}
-  if (!el) {{
-    const filt = contains === null ? '' : ` (${{els.length}} after contains filter)`;
-    return {{ ok: false, why: `no match: ${{total}} element(s) for selector${{filt}}, nth=${{nth}}` }};
-  }}
-  const actual = (el.textContent || '').trim();
-  if (wantText !== null && !actual.includes(wantText)) {{
-    return {{ ok: false, why: `text mismatch: expected to contain ${{JSON.stringify(wantText)}}, got ${{JSON.stringify(actual.slice(0, 200))}}` }};
-  }}
-  if (wantVisible) {{
-    const visibility = hwatuInspectVisibility(el);
-    if (visibility.why) {{
-      previousVisibilitySignature = null;
-      return {{ ok: false, why: `element matched but is not visible: ${{visibility.why}}`, visibility }};
-    }}
-    if (previousVisibilitySignature !== visibility.signature) {{
-      previousVisibilitySignature = visibility.signature;
-      return {{ ok: false, stabilizing: true, why: 'visibility has not remained stable across samples', visibility }};
-    }}
-    stableVisibility = visibility;
-  }}
-  return {{
-    ok: true,
-    matches: els.length,
-    tag: el.tagName.toLowerCase(),
-    text: actual.slice(0, 120),
-    ...(wantVisible ? {{ visibility: stableVisibility }} : {{}}),
-  }};
-}}
-
-let result = check();
-while (!result.ok && hwatuNow() - started < deadline) {{
-  await hwatuSleep(100);
-  result = check();
-}}
-result.elapsed_ms = hwatuNow() - started;
-if (!result.ok) throw new Error(`expect failed after ${{result.elapsed_ms}} ms: ${{result.why}}`);
-return result;"#,
+        "{native}{visibility_inspector}\nconst selector = {selector};\nconst nth = {nth};\nconst contains = {contains};\nconst wantText = {want_text};\nconst absent = {absent};\nconst wantVisible = {visible};\nconst deadline = {deadline};\n{EXPECT_JS}",
         native = NATIVE_TIME_JS,
         visibility_inspector = VISIBILITY_INSPECTOR_JS,
         selector = js_string(&selector),
@@ -2555,6 +2307,9 @@ return {{ ok: true, matches: els.length, tag: el.tagName.toLowerCase(), text: ac
     )
 }
 
+/// Shared with every engine backend: `page-scripts/snapshot.js`.
+pub(crate) const SNAPSHOT_JS: &str = include_str!("../../../page-scripts/snapshot.js");
+
 /// Token-cheap page state: url, title, bounded visible text, and an
 /// indexed list of interactable elements (links, buttons, inputs...).
 /// The elements are remembered on `window.__hwatu_refs`, so a
@@ -2569,114 +2324,26 @@ pub fn snapshot(
     timeout_ms: Option<u64>,
     reply: Reply,
 ) {
-    const JS: &str = r#"
-const MAX_TEXT = 4000;
-const MAX_ELS = 120;
-const INCLUDE_RECTS = __HWATU_INCLUDE_RECTS__;
-const clip = (s, n) => {
-  s = (s || '').replace(/\s+/g, ' ').trim();
-  return s.length > n ? s.slice(0, n - 1) + '…' : s;
-};
-const visible = (el) => {
-  const r = el.getBoundingClientRect();
-  if (r.width === 0 && r.height === 0) return false;
-  const st = getComputedStyle(el);
-  return st.visibility !== 'hidden' && st.display !== 'none';
-};
-const label = (el) => {
-  const aria = el.getAttribute('aria-label');
-  if (aria) return aria;
-  if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) {
-    if (el.labels && el.labels.length) return el.labels[0].textContent;
-    return el.placeholder || el.name || el.value || '';
-  }
-  if (el instanceof HTMLImageElement) return el.alt;
-  return el.textContent;
-};
-const sel = 'a[href], button, input, textarea, select, [role=button], [role=link], [role=tab], [role=menuitem], [role=checkbox], [contenteditable=""], [contenteditable=true], [onclick]';
-const els = [...document.querySelectorAll(sel)].filter(visible).slice(0, MAX_ELS);
-window.__hwatu_refs = els;
-const interactables = els.map((el, i) => {
-  const out = { ref: i, tag: el.tagName.toLowerCase() };
-  if (INCLUDE_RECTS) {
-    const r = el.getBoundingClientRect();
-    out.rect = [r.x, r.y, r.width, r.height];
-  }
-  const text = clip(label(el), 80);
-  if (text) out.text = text;
-  if (el.id) out.id = el.id;
-  if (el instanceof HTMLInputElement) {
-    out.type = el.type;
-    if (el.value && el.type !== 'password') out.value = clip(el.value, 40);
-    if (el.checked) out.checked = true;
-  }
-  if (el.name) out.name = el.name;
-  if (el instanceof HTMLAnchorElement && el.href) out.href = clip(el.href, 120);
-  if (el.disabled) out.disabled = true;
-  return out;
-});
-const doc = document.documentElement;
-// Per-line text (spaces collapsed within a line, newlines kept):
-// agents read it the same, and `snapshot --diff` can report the one
-// line that changed instead of the whole blob.
-const rawText = document.body ? document.body.innerText : '';
-let text = rawText.split('\n')
-  .map(l => l.replace(/\s+/g, ' ').trim())
-  .filter(Boolean)
-  .join('\n');
-if (text.length > MAX_TEXT) text = text.slice(0, MAX_TEXT - 1) + '…';
-return {
-  url: location.href,
-  title: document.title,
-  text,
-  interactables,
-  scroll: {
-    y: window.scrollY,
-    max_y: Math.max(0, doc.scrollHeight - window.innerHeight),
-  },
-};"#;
-    let js = JS.replace(
+    let js = SNAPSHOT_JS.replace(
         "__HWATU_INCLUDE_RECTS__",
         if rect { "true" } else { "false" },
     );
-    // Injection quarantine (verification P3 item 13) applies to every
-    // snapshot: page text is untrusted input headed for agent context.
-    // Budgeted mode (P3 item 12) additionally degrades the reply
-    // coarse-to-fine to fit `budget` chars instead of truncating
-    // arbitrarily. Wraps whichever reply path (full or diff) produces
-    // the value.
-    let reply: Reply = {
-        let budget = budget.filter(|b| *b > 0);
-        Box::new(move |resp| {
-            let resp = match resp {
-                Response::Ok {
-                    value: Some(value),
-                    window,
-                    windows,
-                    adblock,
-                    path,
-                    data,
-                } => {
-                    let value = match budget {
-                        Some(budget) => crate::snapbudget::apply(value, budget),
-                        None => crate::snapbudget::quarantine(value),
-                    };
-                    Response::Ok {
-                        value: Some(value),
-                        window,
-                        windows,
-                        adblock,
-                        path,
-                        data,
-                    }
-                }
-                other => other,
-            };
-            reply(resp)
-        })
-    };
+    // Diff, budget and quarantine are engine-independent and shared with
+    // the CLI (which finishes raw snapshots from other engines) through
+    // `hwatu_snapshot::finish`.
     if !diff {
-        return eval(daemon, id, js, timeout_ms, reply);
+        return eval(
+            daemon,
+            id,
+            js,
+            timeout_ms,
+            Box::new(move |resp| match resp {
+                Response::Ok {
+                    value: Some(raw), ..
+                } => reply(Response::value(hwatu_snapshot::finish(&raw, None, budget))),
+                other => reply(other),
+            }),
+        );
     }
     // Diff mode: pin the target window now so the baseline read and
     // the post-eval write hit the same window even if focus moves
@@ -2696,8 +2363,8 @@ return {
         timeout_ms,
         Box::new(move |resp| {
             let Response::Ok {
-                value: Some(full), ..
-            } = &resp
+                value: Some(raw), ..
+            } = resp
             else {
                 return reply(resp); // errors pass through untouched
             };
@@ -2707,32 +2374,22 @@ return {
                     "window {window_id} closed while the snapshot ran"
                 )));
             };
-            let new = crate::snapdiff::normalize(full);
-            let previous = win.snapshot_baseline.replace(Some(new));
-            match previous {
-                Some(old) => {
-                    let baseline = win.snapshot_baseline.borrow();
-                    let new = baseline.as_deref().expect("baseline just stored");
-                    let mut out = crate::snapdiff::diff(&old, new);
-                    if let Some(map) = out.as_object_mut() {
-                        map.insert("url".into(), full["url"].clone());
-                    }
-                    reply(Response::value(out));
-                }
-                // First diff of this window (or first since a
-                // navigation reset the baseline): nothing to diff
-                // against, return the full snapshot and say so.
-                None => {
-                    let mut full = full.clone();
-                    if let Some(map) = full.as_object_mut() {
-                        map.insert("baseline_established".into(), serde_json::json!(true));
-                    }
-                    reply(Response::value(full));
-                }
-            }
+            let previous = win.snapshot_baseline.replace(Some(raw.clone()));
+            reply(Response::value(hwatu_snapshot::finish(
+                &raw,
+                Some(previous.as_ref()),
+                budget,
+            )))
         }),
     );
 }
+
+/// Shared with every engine backend: `page-scripts/target.js`.
+pub(crate) const TARGET_JS: &str = include_str!("../../../page-scripts/target.js");
+/// Shared with every engine backend: `page-scripts/click.js`.
+pub(crate) const CLICK_JS: &str = include_str!("../../../page-scripts/click.js");
+/// Shared with every engine backend: `page-scripts/type.js`.
+pub(crate) const TYPE_JS: &str = include_str!("../../../page-scripts/type.js");
 
 /// JS prelude that resolves a click/type target: by snapshot `ref` or
 /// by selector + nth/contains (same disambiguation as scroll). Leaves
@@ -2750,53 +2407,7 @@ pub(crate) fn target_prelude(
         )));
     }
     Ok(format!(
-        r#"const selector = {selector};
-const nth = {nth};
-const contains = {contains};
-const refIdx = {ref_idx};
-let el;
-if (refIdx !== null) {{
-  const refs = window.__hwatu_refs;
-  if (!refs) throw new Error('no snapshot taken; run `hwatu snapshot` first or use a selector');
-  el = refs[refIdx];
-  if (!el) throw new Error(`ref ${{refIdx}} out of range (snapshot had ${{refs.length}} interactables)`);
-  if (!el.isConnected) throw new Error(`ref ${{refIdx}} is no longer in the document; re-run snapshot`);
-  var matched = {{ ref: refIdx }};
-	}} else {{
-	  // ATS portals such as iCIMS commonly place the actual application in a
-	  // same-origin iframe under a branded outer page. Traverse all accessible
-	  // frame documents so selectors retain their normal meaning there. Frames
-	  // with a different origin are skipped by the browser's same-origin guard.
-	  const documents = [document];
-	  for (let i = 0; i < documents.length; i++) {{
-	    for (const frame of documents[i].querySelectorAll('iframe,frame')) {{
-	      try {{
-	        const child = frame.contentDocument;
-	        if (child && !documents.includes(child)) documents.push(child);
-	      }} catch (_) {{}}
-	    }}
-	  }}
-	  let els = documents.flatMap(doc => [...doc.querySelectorAll(selector)]);
-  const total = els.length;
-  if (contains !== null) {{
-    els = els.filter(e => ((e.textContent || '') + ' ' + (e.value || '')).includes(contains));
-    // Leaf preference: a page-root div's textContent contains
-    // everything, so ancestor matches shadow the element the caller
-    // actually means. Keep only matches that do not contain another
-    // match; document order is preserved, so nth stays meaningful
-    // over the de-shadowed list.
-    els = els.filter(e => !els.some(o => o !== e && e.contains(o)));
-  }}
-  el = els[nth];
-  if (!el) {{
-    const filt = contains === null ? '' : ` (${{els.length}} after contains filter)`;
-    throw new Error(`no match: ${{total}} element(s) for selector${{filt}}, nth=${{nth}}`);
-  }}
-  var matched = {{ matches: els.length }};
-}}
-matched.tag = el.tagName.toLowerCase();
-matched.text = (el.textContent || el.value || '').trim().slice(0, 120);
-"#,
+        "const selector = {selector};\nconst nth = {nth};\nconst contains = {contains};\nconst refIdx = {ref_idx};\n{TARGET_JS}",
         selector = json_or_null(selector),
         nth = nth.unwrap_or(0),
         contains = json_or_null(contains),
@@ -3107,27 +2718,7 @@ fn click_unguarded(
             reply,
         );
     }
-    let js = format!(
-        r#"{native}{prelude}
-el.scrollIntoView({{ block: 'center', behavior: 'instant' }});
-const r = el.getBoundingClientRect();
-const x = r.left + r.width / 2, y = r.top + r.height / 2;
-	const targetView = el.ownerDocument.defaultView || window;
-	const opts = {{ bubbles: true, cancelable: true, composed: true, view: targetView,
-	                clientX: x, clientY: y, button: 0, detail: 1 }};
-	el.dispatchEvent(new targetView.PointerEvent('pointerdown', {{ ...opts, pointerId: 1, isPrimary: true }}));
-	el.dispatchEvent(new targetView.MouseEvent('mousedown', opts));
-	if (el.focus) el.focus();
-	el.dispatchEvent(new targetView.PointerEvent('pointerup', {{ ...opts, pointerId: 1, isPrimary: true }}));
-	el.dispatchEvent(new targetView.MouseEvent('mouseup', opts));
-	el.click ? el.click() : el.dispatchEvent(new targetView.MouseEvent('click', opts));
-// Give a same-document reaction (SPA routing, form handlers) one
-// macrotask to run, so the reported url reflects the click. Uses the
-// native clock so a paused virtual clock cannot stall it.
-await hwatuSleep(0);
-return {{ clicked: matched, url: location.href }};"#,
-        native = NATIVE_TIME_JS,
-    );
+    let js = format!("{native}{prelude}\n{CLICK_JS}", native = NATIVE_TIME_JS,);
     eval_with(daemon, id, js, timeout_ms, NavPolicy::Success, reply);
 }
 
@@ -3169,55 +2760,7 @@ pub fn type_text(
         );
     }
     let js = format!(
-        r#"{native}{prelude}
-const text = {text};
-const clear = {clear};
-const enter = {enter};
-el.scrollIntoView({{ block: 'center', behavior: 'instant' }});
-if (el.focus) el.focus();
-const fire = (t) => el.dispatchEvent(new Event(t, {{ bubbles: true }}));
-	const view = el.ownerDocument.defaultView || window;
-	if (el instanceof view.HTMLSelectElement) {{
-  const opt = [...el.options].find(o => o.value === text || o.textContent.trim() === text);
-  if (!opt) throw new Error(`no <option> matching ${{JSON.stringify(text)}} (values: ${{[...el.options].map(o => o.value).slice(0, 20).join(', ')}})`);
-  el.value = opt.value;
-  fire('input'); fire('change');
-	}} else if (el instanceof view.HTMLInputElement || el instanceof view.HTMLTextAreaElement) {{
-  // Use the element's own realm. A target adopted from an iframe can pass the
-  // type check while rejecting a setter borrowed from the top-level realm.
-	  const proto = el instanceof view.HTMLInputElement ? view.HTMLInputElement.prototype : view.HTMLTextAreaElement.prototype;
-  const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
-  setter.call(el, clear ? text : el.value + text);
-  fire('input'); fire('change');
-}} else if (el.isContentEditable) {{
-  if (clear) {{
-    // Select the existing editor contents instead of mutating textContent.
-    // Rich editors such as Google Sheets keep an internal model that only
-    // observes editing commands; direct DOM clearing desynchronizes it and
-    // causes the replacement text to be appended to the old value.
-    const doc = el.ownerDocument;
-    const selection = doc.getSelection();
-    const range = doc.createRange();
-    range.selectNodeContents(el);
-    selection.removeAllRanges();
-    selection.addRange(range);
-  }}
-  el.dispatchEvent(new InputEvent('beforeinput', {{ bubbles: true, cancelable: true, inputType: 'insertText', data: text }}));
-  document.execCommand ? document.execCommand('insertText', false, text) : el.textContent += text;
-  fire('input');
-}} else {{
-  throw new Error(`element <${{el.tagName.toLowerCase()}}> is not typeable (need input, textarea, select, or contenteditable)`);
-}}
-if (enter) {{
-  const key = {{ bubbles: true, cancelable: true, key: 'Enter', code: 'Enter', keyCode: 13, which: 13 }};
-  const handled = !el.dispatchEvent(new KeyboardEvent('keydown', key));
-  el.dispatchEvent(new KeyboardEvent('keypress', key));
-  el.dispatchEvent(new KeyboardEvent('keyup', key));
-  if (!handled && el.form) el.form.requestSubmit ? el.form.requestSubmit() : el.form.submit();
-}}
-await hwatuSleep(0);
-const value = el.value !== undefined ? el.value : el.textContent;
-return {{ typed: matched, value: String(value).slice(0, 200), url: location.href }};"#,
+        "{native}{prelude}\nconst text = {text};\nconst clear = {clear};\nconst enter = {enter};\n{TYPE_JS}",
         native = NATIVE_TIME_JS,
         text = js_string(&text),
         clear = clear,
@@ -3226,177 +2769,11 @@ return {{ typed: matched, value: String(value).slice(0, 200), url: location.href
     eval_with(daemon, id, js, timeout_ms, NavPolicy::Success, reply);
 }
 
-const PRESS_JS: &str = r#"
-const key = __HWATU_KEY__;
-const describe = (el) => {
-  if (!el || el.nodeType !== 1) return null;
-  const out = { tag: el.tagName.toLowerCase() };
-  if (el.id) out.id = el.id;
-  const text = (el.getAttribute('aria-label') || el.textContent || el.value || '')
-    .replace(/\s+/g, ' ').trim().slice(0, 120);
-  if (text) out.text = text;
-  return out;
-};
-const deepActive = () => {
-  let active = document.activeElement;
-  for (;;) {
-    let nested = active && active.shadowRoot && active.shadowRoot.activeElement;
-    if (!nested && active && (active.localName === 'iframe' || active.localName === 'frame')) {
-      try {
-        const child = active.contentDocument;
-        if (child && child.activeElement && child.activeElement !== child.body)
-          nested = child.activeElement;
-      } catch (_) {}
-    }
-    if (!nested) return active;
-    active = nested;
-  }
-};
-const eventTarget = (active) => active || document.body || document.documentElement;
-const dispatchKey = (target, type) => {
-  const view = target.ownerDocument.defaultView || window;
-  const code = key === 'Tab' ? 9
-    : key === 'Escape' ? 27
-    : key === 'ArrowLeft' ? 37
-    : key === 'ArrowRight' ? 39
-    : 13;
-  return target.dispatchEvent(new view.KeyboardEvent(type, {
-    bubbles: true, cancelable: true, composed: true,
-    key, code: key, keyCode: code, which: code
-  }));
-};
-if (key === 'Tab') {
-  let sequence = 0;
-  const stops = [];
-  const tabbable = (el) => {
-    const natural = el.matches(
-      'a[href], area[href], button, input:not([type=hidden]), select, textarea, summary, iframe, frame, audio[controls], video[controls], [contenteditable=""], [contenteditable=true]'
-    );
-    if (!natural && !el.hasAttribute('tabindex')) return false;
-    if (el.tabIndex < 0 || el.matches(':disabled') || el.closest('[inert]')) return false;
-    const view = el.ownerDocument.defaultView || window;
-    const style = view.getComputedStyle(el);
-    return style.display !== 'none' && style.visibility !== 'hidden'
-      && el.getClientRects().length > 0;
-  };
-  const visit = (root) => {
-    const doc = root.nodeType === 9 ? root : root.ownerDocument;
-    const walker = doc.createTreeWalker(root, 1);
-    let el;
-    while ((el = walker.nextNode())) {
-      if (tabbable(el)) stops.push({ el, sequence: sequence++, tabIndex: el.tabIndex });
-      if (el.shadowRoot) visit(el.shadowRoot);
-      if (el.localName === 'iframe' || el.localName === 'frame') {
-        try {
-          if (el.contentDocument) visit(el.contentDocument);
-        } catch (_) {}
-      }
-    }
-  };
-  visit(document);
-  stops.sort((a, b) => {
-    const ap = a.tabIndex > 0, bp = b.tabIndex > 0;
-    if (ap !== bp) return ap ? -1 : 1;
-    if (ap && a.tabIndex !== b.tabIndex) return a.tabIndex - b.tabIndex;
-    return a.sequence - b.sequence;
-  });
-  const active = deepActive();
-  const target = eventTarget(active);
-  const allowed = dispatchKey(target, 'keydown');
-  let focused = active;
-  let wrapped = false;
-  if (allowed && stops.length) {
-    const current = stops.findIndex((stop) => stop.el === active);
-    const next = (current + 1) % stops.length;
-    wrapped = current === stops.length - 1;
-    focused = stops[next].el;
-    focused.focus();
-  }
-  dispatchKey(eventTarget(focused), 'keyup');
-  return { pressed: key, focused: describe(focused), wrapped, canceled: !allowed };
-}
-
-if (key === 'Escape') {
-  const active = deepActive();
-  const target = eventTarget(active);
-  const downAllowed = dispatchKey(target, 'keydown');
-  dispatchKey(target, 'keyup');
-  let dialog = null;
-  let cancelAllowed = null;
-  if (downAllowed) {
-    const openDialogs = [...document.querySelectorAll('dialog[open]')];
-    dialog = openDialogs.at(-1) || null;
-    if (dialog) {
-      const view = dialog.ownerDocument.defaultView || window;
-      cancelAllowed = dialog.dispatchEvent(new view.Event('cancel', { cancelable: true }));
-      if (cancelAllowed && dialog.open) dialog.close();
-    }
-  }
-  await hwatuSleep(0);
-  return {
-    pressed: key,
-    focused: describe(deepActive()),
-    dialogClosed: Boolean(dialog) && !dialog.open,
-    canceled: !downAllowed || cancelAllowed === false,
-    url: location.href
-  };
-}
-
-if (key === 'ArrowLeft' || key === 'ArrowRight') {
-  const active = deepActive();
-  const target = eventTarget(active);
-  const downAllowed = dispatchKey(target, 'keydown');
-  const before = active && active.scrollLeft;
-  let scrolled = false;
-  if (downAllowed && active && active.scrollWidth > active.clientWidth) {
-    const direction = key === 'ArrowLeft' ? -1 : 1;
-    active.scrollBy({ left: direction * 40, behavior: 'instant' });
-    scrolled = active.scrollLeft !== before;
-  }
-  dispatchKey(target, 'keyup');
-  await hwatuSleep(0);
-  return {
-    pressed: key,
-    focused: describe(deepActive()),
-    scrolled,
-    scrollLeft: active && active.scrollLeft,
-    canceled: !downAllowed,
-    url: location.href
-  };
-}
-
-const active = deepActive();
-const target = eventTarget(active);
-const downAllowed = dispatchKey(target, 'keydown');
-if (downAllowed) dispatchKey(target, 'keypress');
-dispatchKey(target, 'keyup');
-let activated = false;
-let submitted = false;
-if (downAllowed && active) {
-  const activatable = active.matches(
-    'a[href], button, summary, input[type=button], input[type=submit], input[type=reset], input[type=checkbox], input[type=radio], [role=button], [role=link], [onclick]'
-  );
-  if (activatable && typeof active.click === 'function') {
-    active.click();
-    activated = true;
-  } else {
-    const view = active.ownerDocument.defaultView || window;
-    if (active instanceof view.HTMLInputElement && active.form) {
-      active.form.requestSubmit();
-      submitted = true;
-    }
-  }
-}
-await hwatuSleep(0);
-return {
-  pressed: key,
-  focused: describe(deepActive()),
-  activated,
-  submitted,
-  canceled: !downAllowed,
-  url: location.href
-};
-"#;
+pub(crate) const PRESS_JS: &str = include_str!("../../../page-scripts/press.js");
+/// Shared with every engine backend: `page-scripts/expect.js`.
+pub(crate) const EXPECT_JS: &str = include_str!("../../../page-scripts/expect.js");
+/// Shared with every engine backend: `page-scripts/scroll.js`.
+pub(crate) const SCROLL_JS: &str = include_str!("../../../page-scripts/scroll.js");
 
 fn press_js(key: PressKey) -> String {
     format!(
@@ -3505,8 +2882,8 @@ pub(crate) fn js_string(s: &str) -> String {
 mod tests {
     use super::{
         challenge_detect_js, challenge_wait_js, expect_watch_js, plan_eval_source, press_js,
-        trusted_input_mode_error, upload_js, validate_inline_check_outputs, ExpectSpec,
-        VIEWPORT_PUMP_JS, VISIBILITY_INSPECTOR_JS,
+        trusted_input_mode_error, upload_js, validate_inline_check_outputs, ExpectSpec, SCROLL_JS,
+        VISIBILITY_INSPECTOR_JS,
     };
     use hwatu_ipc::{OpenMode, PressKey};
 
@@ -3591,7 +2968,16 @@ mod tests {
 
     #[test]
     fn scroll_pumps_headless_viewport_callbacks_after_settling() {
-        assert_eq!(VIEWPORT_PUMP_JS, "__hwatuNative?.pumpViewport?.();");
+        let settle = SCROLL_JS
+            .find("await hwatuSleep(0);")
+            .expect("scroll settles");
+        let pump = SCROLL_JS
+            .find("__hwatuNative?.pumpViewport?.();")
+            .expect("scroll pumps");
+        assert!(
+            pump > settle,
+            "viewport pump must run after the scroll settles"
+        );
     }
 
     #[test]

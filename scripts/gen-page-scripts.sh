@@ -18,5 +18,17 @@ emit() { # emit <swift-name> <file>
   emit loginWallJS login-wall.js
   emit challengeJS challenge.js
   emit motionJS motion.js
+  emit targetJS target.js
+  emit snapshotJS snapshot.js
+  emit contentJS content.js
+  emit clickJS click.js
+  emit typeJS type.js
+  emit nativeTimeJS native-time.js
+  emit pressJS press.js
+  emit visibilityJS visibility.js
+  emit expectJS expect.js
+  emit scrollJS scroll.js
+  emit fillJS fill.js
+  emit authContextJS auth-context.js
 } >"$out"
 echo "wrote $out"

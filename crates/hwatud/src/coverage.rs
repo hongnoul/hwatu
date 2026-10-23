@@ -15,6 +15,9 @@ use std::rc::Rc;
 
 // ---- C2: get_content -------------------------------------------------
 
+/// Shared with every engine backend: `page-scripts/content.js`.
+pub(crate) const CONTENT_JS: &str = include_str!("../../../page-scripts/content.js");
+
 // Args mirror Request::GetContent field-for-field: this is a verb handler
 // unpacking a protocol message, not a general-purpose API to slim down.
 #[allow(clippy::too_many_arguments)]
@@ -41,43 +44,20 @@ pub fn get_content(
         }
         None => "const root = document.documentElement;".to_string(),
     };
-    let body = match format {
-        ContentFormat::Text => {
-            r#"
-const text = (root.innerText || root.textContent || '').replace(/[ \t]+/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
-return { format: 'text', url: location.href, title: document.title,
-         truncated: text.length > MAX, content: text.slice(0, MAX) };"#
-        }
-        ContentFormat::Html => {
-            r#"
-const html = root.outerHTML || '';
-return { format: 'html', url: location.href, title: document.title,
-         truncated: html.length > MAX, content: html.slice(0, MAX) };"#
-        }
-        ContentFormat::Title => {
-            r#"
-return { format: 'title', url: location.href, title: document.title };"#
-        }
-        ContentFormat::Links => {
-            r#"
-const seen = new Set();
-const links = [];
-for (const a of root.querySelectorAll('a[href]')) {
-  if (links.length >= 200) break;
-  const href = a.href;
-  if (!href || href.startsWith('javascript:') || seen.has(href)) continue;
-  const text = (a.innerText || a.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim().slice(0, 120);
-  seen.add(href);
-  links.push({ url: href, text });
-}
-return { format: 'links', url: location.href, title: document.title, links };"#
-        }
+    let format = match format {
+        ContentFormat::Text => "text",
+        ContentFormat::Html => "html",
+        ContentFormat::Title => "title",
+        ContentFormat::Links => "links",
     };
-    let js = format!("const MAX = {max_chars};\n{scope}{body}");
+    let js = format!("const MAX = {max_chars};\nconst FORMAT = '{format}';\n{scope}\n{CONTENT_JS}");
     eval_with(daemon, id, js, timeout_ms, NavPolicy::Error, reply);
 }
 
 // ---- C2: fill_form ---------------------------------------------------
+
+/// Shared with every engine backend: `page-scripts/fill.js`.
+pub(crate) const FILL_JS: &str = include_str!("../../../page-scripts/fill.js");
 
 pub fn fill_form(
     daemon: &Rc<Daemon>,
@@ -129,100 +109,7 @@ pub fn fill_form(
         ));
     }
     let js = format!(
-        r#"
-const FIELDS = [{fields}];
-const SUBMIT = {submit};
-const findTarget = (f) => {{
-  if (f.ref !== null) {{
-    const refs = window.__hwatu_refs;
-    if (!refs) throw new Error('no snapshot taken; run `hwatu snapshot` first or use selectors');
-    const el = refs[f.ref];
-    if (!el) throw new Error(`ref ${{f.ref}} out of range`);
-    if (!el.isConnected) throw new Error(`ref ${{f.ref}} is no longer in the document`);
-    return el;
-  }}
-  const documents = [document];
-  for (let i = 0; i < documents.length; i++) {{
-    for (const frame of documents[i].querySelectorAll('iframe,frame')) {{
-      try {{
-        const child = frame.contentDocument;
-        if (child && !documents.includes(child)) documents.push(child);
-      }} catch (_) {{}}
-    }}
-  }}
-  let els = documents.flatMap(doc => [...doc.querySelectorAll(f.selector)]);
-  if (f.contains !== null)
-    els = els.filter(e => ((e.textContent || '') + ' ' + (e.value || '')).includes(f.contains));
-  const el = els[f.nth];
-  if (!el) throw new Error(`no match for ${{f.selector}} (nth=${{f.nth}})`);
-  return el;
-}};
-const fire = (el, t) => el.dispatchEvent(new Event(t, {{ bubbles: true }}));
-const applied = [];
-let lastEl = null;
-for (let i = 0; i < FIELDS.length; i++) {{
-  const f = FIELDS[i];
-  let el;
-  try {{
-    el = findTarget(f);
-  }} catch (err) {{
-    return {{ filled: applied.length, total: FIELDS.length, applied,
-              failed: {{ index: i, error: String(err.message || err) }} }};
-  }}
-  const view = el.ownerDocument.defaultView || window;
-  try {{
-    if (f.checked !== null) {{
-      if (!(el instanceof view.HTMLInputElement) || (el.type !== 'checkbox' && el.type !== 'radio'))
-        throw new Error(`element <${{el.tagName.toLowerCase()}}> is not a checkbox/radio`);
-      if (el.checked !== f.checked) {{
-        el.click();
-        if (el.checked !== f.checked) {{
-          const setter = Object.getOwnPropertyDescriptor(view.HTMLInputElement.prototype, 'checked').set;
-          setter.call(el, f.checked);
-          fire(el, 'input'); fire(el, 'change');
-        }}
-      }}
-      applied.push({{ index: i, tag: el.tagName.toLowerCase(), checked: el.checked }});
-    }} else if (el instanceof view.HTMLSelectElement) {{
-      const opt = [...el.options].find(o => o.value === f.value || o.textContent.trim() === f.value);
-      if (!opt) throw new Error(`no <option> matching ${{JSON.stringify(f.value)}}`);
-      el.value = opt.value;
-      fire(el, 'input'); fire(el, 'change');
-      applied.push({{ index: i, tag: 'select', value: el.value }});
-    }} else if (el instanceof view.HTMLInputElement || el instanceof view.HTMLTextAreaElement) {{
-      const proto = el instanceof view.HTMLInputElement
-        ? view.HTMLInputElement.prototype : view.HTMLTextAreaElement.prototype;
-      const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
-      el.focus && el.focus();
-      setter.call(el, f.value);
-      fire(el, 'input'); fire(el, 'change');
-      applied.push({{ index: i, tag: el.tagName.toLowerCase(), value: String(el.value).slice(0, 100) }});
-    }} else if (el.isContentEditable) {{
-      const doc = el.ownerDocument;
-      const selection = doc.getSelection();
-      const range = doc.createRange();
-      range.selectNodeContents(el);
-      selection.removeAllRanges();
-      selection.addRange(range);
-      el.dispatchEvent(new InputEvent('beforeinput', {{ bubbles: true, cancelable: true, inputType: 'insertText', data: f.value }}));
-      doc.execCommand ? doc.execCommand('insertText', false, f.value) : el.textContent = f.value;
-      fire(el, 'input');
-      applied.push({{ index: i, tag: el.tagName.toLowerCase(), value: f.value.slice(0, 100) }});
-    }} else {{
-      throw new Error(`element <${{el.tagName.toLowerCase()}}> is not fillable`);
-    }}
-  }} catch (err) {{
-    return {{ filled: applied.length, total: FIELDS.length, applied,
-              failed: {{ index: i, error: String(err.message || err) }} }};
-  }}
-  lastEl = el;
-}}
-let submitted = false;
-if (SUBMIT && lastEl && lastEl.form) {{
-  lastEl.form.requestSubmit ? lastEl.form.requestSubmit() : lastEl.form.submit();
-  submitted = true;
-}}
-return {{ filled: applied.length, total: FIELDS.length, applied, submitted, url: location.href }};"#,
+        "\nconst FIELDS = [{fields}];\nconst SUBMIT = {submit};\n{FILL_JS}",
         fields = specs.join(", "),
         submit = submit,
     );
@@ -371,37 +258,15 @@ fn guess_mime(name: &str) -> &'static str {
 
 // ---- C5: auth_context ------------------------------------------------
 
+/// Shared with every engine backend: `page-scripts/auth-context.js`.
+pub(crate) const AUTH_CONTEXT_JS: &str = include_str!("../../../page-scripts/auth-context.js");
+
 pub fn auth_context(daemon: &Rc<Daemon>, id: Option<u64>, reply: Reply) {
     // Cookie inventory without values: names, session vs persistent,
     // and expiry horizon come from document.cookie's names plus the
     // Cookie Store API when available; localStorage keys likewise.
     // Values never leave the page.
-    const JS: &str = r#"
-const out = { url: location.href, origin: location.origin };
-try {
-  const names = document.cookie ? document.cookie.split('; ').map(c => c.split('=')[0]).filter(Boolean) : [];
-  out.cookie_names = names.slice(0, 50);
-  out.cookie_count = names.length;
-} catch (_) { out.cookie_count = 0; out.cookie_names = []; }
-if (window.cookieStore && cookieStore.getAll) {
-  try {
-    const all = await cookieStore.getAll();
-    out.cookie_count = all.length;
-    out.cookie_names = all.map(c => c.name).slice(0, 50);
-    const now = Date.now();
-    out.persistent_cookies = all.filter(c => c.expires && c.expires > now).length;
-    out.session_cookies = all.filter(c => !c.expires).length;
-  } catch (_) {}
-}
-try {
-  out.local_storage_keys = Object.keys(localStorage).slice(0, 50);
-  out.local_storage_count = localStorage.length;
-} catch (_) { out.local_storage_count = 0; }
-try { out.session_storage_count = sessionStorage.length; } catch (_) { out.session_storage_count = 0; }
-out.likely_authenticated = out.cookie_count > 0
-  && (out.cookie_names || []).some(n => /sess|token|auth|sid|login|jwt|csrf/i.test(n));
-out.login_wall = __LOGIN_WALL__;
-return out;"#;
+    const JS: &str = AUTH_CONTEXT_JS;
     let win = match resolve(daemon, id) {
         Ok(win) => win,
         Err(resp) => return automation::send_once(reply, *resp),

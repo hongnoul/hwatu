@@ -52,6 +52,9 @@ func okResponse(_ extra: JSON = [:]) -> JSON {
     for (k, v) in extra { r[k] = v }
     return r
 }
+/// True when `k` is present and not JSON null (clients send explicit nulls).
+func has(_ d: JSON, _ k: String) -> Bool { if let v = d[k] { return !(v is NSNull) } else { return false } }
+
 func errResponse(_ message: String) -> JSON { ["status": "err", "message": message] }
 
 func encodeFrame(_ obj: JSON) -> Data {
@@ -147,6 +150,8 @@ final class Window: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessag
     var loadState: String = "idle" // idle | loading | committed | settled | failed
     var lastError: String?
     var consoleBuf: [JSON] = []
+    /// Last `snapshot --diff` value; cleared when a new document commits.
+    var snapshotBaseline: Any?
     /// `net` ring buffer (same cap and entry shape as the GTK daemon).
     var netBuf: [JSON] = []
     var netEpoch = Date()
@@ -314,7 +319,10 @@ final class Window: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessag
         loadState = "loading"
         netEpoch = Date()
     }
-    func webView(_ w: WKWebView, didCommit n: WKNavigation!) { loadState = "committed" }
+    func webView(_ w: WKWebView, didCommit n: WKNavigation!) {
+        loadState = "committed"
+        snapshotBaseline = nil
+    }
     func webView(_ w: WKWebView, didFinish n: WKNavigation!) { loadState = "settled" }
     func webView(_ w: WKWebView, didFail n: WKNavigation!, withError e: Error) {
         loadState = "failed"; lastError = e.localizedDescription
@@ -439,16 +447,14 @@ func keyEvent(_ w: Window, _ type: NSEvent.EventType, _ chars: String, _ keyCode
                      charactersIgnoringModifiers: chars, isARepeat: false, keyCode: keyCode)
 }
 
-/// Scroll the target into view and return its centre in CSS pixels.
-func targetCenterJS(_ args: String) -> String {
+/// Resolve the target with the shared target.js, scroll it into view,
+/// and return `matched` plus its centre in CSS pixels.
+func targetCenterJS(_ req: JSON) -> String {
     """
-    \(findElementJS)
-    \(args)
-    const { el, matches } = __hwatuFind(__sel, __nth, __contains, __ref);
-    el.scrollIntoView({block: 'center'});
+    \(targetPreludeJS(req))
+    el.scrollIntoView({ block: 'center', behavior: 'instant' });
     const r = el.getBoundingClientRect();
-    return { matches, tag: el.tagName.toLowerCase(), x: r.x + r.width / 2, y: r.y + r.height / 2,
-             text: ((el.innerText || el.value || '') + '').trim().slice(0, 120) };
+    return { matched, x: r.left + r.width / 2, y: r.top + r.height / 2 };
     """
 }
 
@@ -463,13 +469,20 @@ func nativeClick(_ w: Window, cssX: Double, cssY: Double) {
     }
 }
 
-func trustedClick(_ w: Window, _ args: String, _ req: JSON, _ done: @escaping (JSON) -> Void) {
-    runJS(w, targetCenterJS(args), timeoutMs: jint(req, "timeout_ms") ?? 15000) { r in
-        guard var v = r["value"] as? JSON, let x = v["x"] as? Double, let y = v["y"] as? Double else { done(r); return }
+/// Reply shape shared with the GTK daemon: `{clicked|typed: matched,
+/// trusted: true, url, input: {backend}}`.
+func trustedReply(_ w: Window, _ action: String, _ matched: Any, extra: JSON = [:]) -> JSON {
+    var v: JSON = [action: matched, "trusted": true, "url": w.webView.url?.absoluteString ?? "",
+                   "input": ["backend": "appkit-nsevent"]]
+    for (k, x) in extra { v[k] = x }
+    return okResponse(["value": v])
+}
+
+func trustedClick(_ w: Window, _ req: JSON, _ done: @escaping (JSON) -> Void) {
+    runJS(w, targetCenterJS(req), timeoutMs: jint(req, "timeout_ms") ?? 15000) { r in
+        guard let v = r["value"] as? JSON, let x = v["x"] as? Double, let y = v["y"] as? Double else { done(r); return }
         nativeClick(w, cssX: x, cssY: y)
-        v["trusted"] = true
-        v.removeValue(forKey: "x"); v.removeValue(forKey: "y")
-        done(okResponse(["value": v]))
+        done(trustedReply(w, "clicked", v["matched"] ?? NSNull()))
     }
 }
 
@@ -478,9 +491,9 @@ func trustedType(_ w: Window, _ req: JSON, _ text: String, _ done: @escaping (JS
     let enter = jbool(req, "enter")
     // Click to focus (trusted), optionally clear the old value, then send
     // one key event per character.
-    let js = targetCenterJS(targetArgsJS(req))
+    let js = targetCenterJS(req)
     runJS(w, js, timeoutMs: jint(req, "timeout_ms") ?? 15000) { r in
-        guard var v = r["value"] as? JSON, let x = v["x"] as? Double, let y = v["y"] as? Double else { done(r); return }
+        guard let v = r["value"] as? JSON, let x = v["x"] as? Double, let y = v["y"] as? Double else { done(r); return }
         nativeClick(w, cssX: x, cssY: y)
         let send = {
             for ch in text {
@@ -494,11 +507,9 @@ func trustedType(_ w: Window, _ req: JSON, _ text: String, _ done: @escaping (JS
             }
             // Read back after WebKit has processed the queued key events.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                runJS(w, "const el = document.activeElement; return { tag: el ? el.tagName.toLowerCase() : null, value: el && 'value' in el ? String(el.value).slice(0, 200) : null };", timeoutMs: 5000) { after in
-                    v.removeValue(forKey: "x"); v.removeValue(forKey: "y"); v.removeValue(forKey: "text")
-                    v["trusted"] = true
-                    if let a = after["value"] as? JSON { v["value"] = a["value"] ?? NSNull() }
-                    done(okResponse(["value": v]))
+                runJS(w, "const el = document.activeElement; return { value: el && 'value' in el ? String(el.value).slice(0, 200) : null };", timeoutMs: 5000) { after in
+                    let value = (after["value"] as? JSON)?["value"] ?? NSNull()
+                    done(trustedReply(w, "typed", v["matched"] ?? NSNull(), extra: ["value": value]))
                 }
             }
         }
@@ -516,22 +527,13 @@ func trustedType(_ w: Window, _ req: JSON, _ text: String, _ done: @escaping (JS
 
 /// Dispatch a pointer-event click at the target's center. Called after the
 /// irreversible-action check, or directly when the request carries confirm.
-func clickNow(_ w: Window, _ args: String, _ req: JSON, _ done: @escaping (JSON) -> Void) {
-    if jbool(req, "trusted") { trustedClick(w, args, req, done); return }
+func clickNow(_ w: Window, _ req: JSON, _ done: @escaping (JSON) -> Void) {
+    if jbool(req, "trusted") { trustedClick(w, req, done); return }
+    // Shared page-scripts/target.js + click.js: same events, same reply.
     let js = """
-    \(findElementJS)
-    \(args)
-    const { el, matches } = __hwatuFind(__sel, __nth, __contains, __ref);
-    el.scrollIntoView({block: 'center'});
-    const r = el.getBoundingClientRect();
-    const opts = {bubbles: true, cancelable: true, view: window, clientX: r.x + r.width/2, clientY: r.y + r.height/2, button: 0};
-    el.dispatchEvent(new PointerEvent('pointerdown', opts));
-    el.dispatchEvent(new MouseEvent('mousedown', opts));
-    if (el.focus) el.focus();
-    el.dispatchEvent(new PointerEvent('pointerup', opts));
-    el.dispatchEvent(new MouseEvent('mouseup', opts));
-    el.dispatchEvent(new MouseEvent('click', opts));
-    return { matches, tag: el.tagName.toLowerCase(), text: ((el.innerText || el.value || '')+'').trim().slice(0, 120) };
+    \(nativeTimeJS)
+    \(targetPreludeJS(req))
+    \(clickJS)
     """
     runJS(w, js, timeoutMs: jint(req, "timeout_ms") ?? 15000, done: done)
 }
@@ -645,7 +647,7 @@ func waitLoad(_ w: Window, until: String, timeoutMs: Int, done: @escaping (JSON)
                 w.webView.evaluateJavaScript("document.readyState") { v, _ in
                     let rs = v as? String ?? ""
                     if rs == "interactive" || rs == "complete" {
-                        done(okResponse())
+                        done(okResponse(["window": w.info()]))
                     } else if Date() > deadline {
                         done(errResponse("wait-load timed out after \(timeoutMs) ms (state: \(w.loadState))"))
                     } else {
@@ -671,10 +673,10 @@ func waitLoad(_ w: Window, until: String, timeoutMs: Int, done: @escaping (JSON)
                   setTimeout(tick, 100);
                 });
                 """
-                runJS(w, js, timeoutMs: 7000) { _ in done(okResponse()) }
+                runJS(w, js, timeoutMs: 7000) { _ in done(okResponse(["window": w.info()])) }
                 return
             }
-            done(okResponse())
+            done(okResponse(["window": w.info()]))
             return
         }
         if Date() > deadline {
@@ -687,50 +689,6 @@ func waitLoad(_ w: Window, until: String, timeoutMs: Int, done: @escaping (JSON)
 }
 
 // MARK: - Shared JS snippets (element targeting mirrors the GTK daemon)
-
-let findElementJS = """
-function __hwatuFind(selector, nth, contains, ref) {
-  if (ref !== null && ref !== undefined) {
-    const el = (window.__hwatuRefs || [])[ref];
-    if (!el) throw new Error('ref ' + ref + ' not found; take a snapshot first');
-    return { el, matches: 1 };
-  }
-  let els = Array.from(document.querySelectorAll(selector));
-  if (contains) els = els.filter(e => (e.innerText || e.value || '').includes(contains));
-  if (!els.length) throw new Error('no element matches ' + selector + (contains ? ' containing ' + JSON.stringify(contains) : ''));
-  const el = els[nth || 0];
-  if (!el) throw new Error('nth ' + nth + ' out of range (' + els.length + ' matches)');
-  return { el, matches: els.length };
-}
-"""
-
-let setValueJS = """
-function __hwatuSetValue(el, text, clear) {
-  const tag = el.tagName.toLowerCase();
-  if (tag === 'select') {
-    let opt = Array.from(el.options).find(o => o.value === text) ||
-              Array.from(el.options).find(o => o.label.trim() === text || o.text.trim() === text);
-    if (!opt) throw new Error('no option ' + JSON.stringify(text));
-    el.value = opt.value;
-    el.dispatchEvent(new Event('input', {bubbles: true}));
-    el.dispatchEvent(new Event('change', {bubbles: true}));
-    return;
-  }
-  if (el.isContentEditable) {
-    if (clear) el.textContent = '';
-    el.focus();
-    document.execCommand('insertText', false, text);
-    return;
-  }
-  const proto = tag === 'textarea' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-  const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
-  el.focus();
-  const next = clear ? text : (el.value + text);
-  setter.call(el, next);
-  el.dispatchEvent(new Event('input', {bubbles: true}));
-  el.dispatchEvent(new Event('change', {bubbles: true}));
-}
-"""
 
 // MARK: - Request handling
 
@@ -754,7 +712,11 @@ func handle(_ req: JSON) -> JSON {
         ]])
 
     case "quit":
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { exit(0) }
+        // Remove the socket now so the next client spawns a fresh daemon
+        // instead of connecting to this one during its exit delay (it would
+        // read EOF). The delay only lets this reply reach the client.
+        unlink(socketPath())
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { exit(0) }
         return okResponse()
 
     case "open":
@@ -879,85 +841,64 @@ func handle(_ req: JSON) -> JSON {
         }
 
     case "get_content":
+        // Shared page-scripts/content.js and target.js (same reply shape as
+        // the GTK daemon).
         return onMain { done in
             guard let w = daemon.resolve(jint(req, "id")) else { done(errResponse("no window open")); return }
             let format = jstr(req, "format") ?? "text"
-            let selector = jstr(req, "selector")
-            let maxChars = jint(req, "max_chars") ?? 65536
-            let selJSON = selector.flatMap { try? String(data: JSONSerialization.data(withJSONObject: [$0]), encoding: .utf8) } ?? "[null]"
+            guard ["text", "html", "title", "links"].contains(format) else {
+                done(errResponse("content: unknown format \(format)")); return
+            }
+            let maxChars = min(max(jint(req, "max_chars") ?? 65536, 1), 4 * 1024 * 1024)
+            let scope: String
+            if jstr(req, "selector") != nil {
+                var scoped = req
+                scoped.removeValue(forKey: "ref")
+                scope = targetPreludeJS(scoped) + "\nconst root = el;"
+            } else {
+                scope = "const root = document.documentElement;"
+            }
             let js = """
-            \(findElementJS)
-            const sel = \(selJSON)[0];
-            const nth = \(jint(req, "nth") ?? 0);
-            const contains = \(jstr(req, "contains").flatMap { try? String(data: JSONSerialization.data(withJSONObject: [$0]), encoding: .utf8) } ?? "[null]")[0];
-            const root = sel ? __hwatuFind(sel, nth, contains, null).el : document.documentElement;
-            const format = \((try? String(data: JSONSerialization.data(withJSONObject: [format]), encoding: .utf8)) ?? "[\"text\"]")[0];
-            const budget = \(maxChars);
-            if (format === 'title') return { title: document.title, url: location.href };
-            if (format === 'links') {
-              const seen = new Set(); const links = [];
-              for (const a of root.querySelectorAll('a[href]')) {
-                const url = a.href; if (seen.has(url)) continue; seen.add(url);
-                links.push({ url, text: (a.innerText || '').trim().slice(0, 200) });
-              }
-              return { links: links.slice(0, 500), url: location.href };
-            }
-            if (format === 'html') {
-              const html = root.outerHTML;
-              return { html: html.slice(0, budget), truncated: html.length > budget, url: location.href };
-            }
-            const text = (root.innerText || root.textContent || '').replace(/\\n{3,}/g, '\\n\\n');
-            return { text: text.slice(0, budget), truncated: text.length > budget, title: document.title, url: location.href };
+            const MAX = \(maxChars);
+            const FORMAT = '\(format)';
+            \(scope)
+            \(contentJS)
             """
             runJS(w, js, timeoutMs: jint(req, "timeout_ms") ?? 15000, done: done)
         }
 
     case "snapshot":
+        // Shared page-scripts/snapshot.js. Budgeting, injection quarantine
+        // and --diff run in the client (hwatu-snapshot), as for every engine
+        // whose daemon returns the raw snapshot.
         return onMain { done in
             guard let w = daemon.resolve(jint(req, "id")) else { done(errResponse("no window open")); return }
-            let budget = jint(req, "budget") ?? 0
-            let textBudget = budget > 0 ? max(budget / 2, 1000) : 20000
-            let js = """
-            const refs = [];
-            window.__hwatuRefs = refs;
-            const interactables = [];
-            const selectorList = 'a[href], button, input, textarea, select, [role=button], [onclick], [contenteditable=true], summary';
-            for (const el of document.querySelectorAll(selectorList)) {
-              const r = el.getBoundingClientRect();
-              const style = getComputedStyle(el);
-              if (style.display === 'none' || style.visibility === 'hidden') continue;
-              const ref = refs.length;
-              refs.push(el);
-              const entry = {
-                ref,
-                tag: el.tagName.toLowerCase(),
-                text: ((el.innerText || el.value || el.placeholder || el.getAttribute('aria-label') || '')+'').trim().slice(0, 120),
-              };
-              if (el.type) entry.type = el.type;
-              if (el.name) entry.name = el.name;
-              if (el.href) entry.href = (el.href+'').slice(0, 300);
-              if (el.checked !== undefined && (el.type === 'checkbox' || el.type === 'radio')) entry.checked = el.checked;
-              if (\(jbool(req, "rect") ? "true" : "false")) entry.rect = [r.x, r.y, r.width, r.height].map(Math.round);
-              interactables.push(entry);
-              if (interactables.length >= 400) break;
+            let js = snapshotJS.replacingOccurrences(of: "__HWATU_INCLUDE_RECTS__", with: jbool(req, "rect") ? "true" : "false")
+            let diff = jbool(req, "diff")
+            runJS(w, js, timeoutMs: jint(req, "timeout_ms") ?? 15000) { r in
+                guard let value = r["value"], (r["status"] as? String) == "ok" else { done(r); return }
+                // The client finishes the reply: it reads `raw_snapshot`,
+                // diffs against `previous` when asked, then budgets and
+                // quarantines. `previous` resets on navigation commit.
+                var raw: JSON = ["snapshot": value]
+                if diff {
+                    raw["previous"] = w.snapshotBaseline ?? NSNull()
+                    w.snapshotBaseline = value
+                }
+                done(okResponse(["value": ["hwatu_raw_snapshot": raw]]))
             }
-            const text = (document.body ? document.body.innerText : '').replace(/\\n{3,}/g, '\\n\\n').slice(0, \(textBudget));
-            return { url: location.href, title: document.title, text, interactables };
-            """
-            runJS(w, js, timeoutMs: jint(req, "timeout_ms") ?? 15000, done: done)
         }
 
     case "click":
         return onMain { done in
             guard let w = daemon.resolve(jint(req, "id")) else { done(errResponse("no window open")); return }
-            let args = targetArgsJS(req)
             // Structured stop: unless confirmed, classify the target with the
             // shared page-scripts/irreversible.js before clicking.
             if !jbool(req, "confirm") {
+                // Same targeting as the click itself (target.js), so the
+                // guard classifies exactly the element that would be clicked.
                 let probe = """
-                \(findElementJS)
-                \(args)
-                const { el } = __hwatuFind(__sel, __nth, __contains, __ref);
+                \(targetPreludeJS(req))
                 return { irreversible: \(irreversibleJS) };
                 """
                 runJS(w, probe, timeoutMs: jint(req, "timeout_ms") ?? 15000) { r in
@@ -971,11 +912,11 @@ func handle(_ req: JSON) -> JSON {
                         ])
                         return
                     }
-                    clickNow(w, args, req, done)
+                    clickNow(w, req, done)
                 }
                 return
             }
-            clickNow(w, args, req, done)
+            clickNow(w, req, done)
         }
 
     case "type":
@@ -983,113 +924,79 @@ func handle(_ req: JSON) -> JSON {
             guard let w = daemon.resolve(jint(req, "id")) else { done(errResponse("no window open")); return }
             guard let text = jstr(req, "text") else { done(errResponse("type: missing text")); return }
             if jbool(req, "trusted") { trustedType(w, req, text, done); return }
-            let textJSON = (try? String(data: JSONSerialization.data(withJSONObject: [text]), encoding: .utf8)) ?? "[\"\"]"
-            let clear = jbool(req, "clear", true)
-            let enter = jbool(req, "enter")
+            // Shared page-scripts/target.js + type.js: same setter path and
+            // reply as the GTK daemon.
             let js = """
-            \(findElementJS)
-            \(setValueJS)
-            \(targetArgsJS(req))
-            const { el, matches } = __hwatuFind(__sel, __nth, __contains, __ref);
-            const text = \(textJSON)[0];
-            __hwatuSetValue(el, text, \(clear ? "true" : "false"));
-            if (\(enter ? "true" : "false")) {
-              const kd = new KeyboardEvent('keydown', {key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true, cancelable: true});
-              const handled = !el.dispatchEvent(kd);
-              el.dispatchEvent(new KeyboardEvent('keyup', {key: 'Enter', code: 'Enter', keyCode: 13, bubbles: true}));
-              if (!handled && el.form) el.form.requestSubmit ? el.form.requestSubmit() : el.form.submit();
-            }
-            return { matches, tag: el.tagName.toLowerCase(), value: (el.value || '').slice(0, 200) };
+            \(nativeTimeJS)
+            \(targetPreludeJS(req))
+            const text = \(jsonStringLiteral(text));
+            const clear = \(jbool(req, "clear", true));
+            const enter = \(jbool(req, "enter"));
+            \(typeJS)
             """
             runJS(w, js, timeoutMs: jint(req, "timeout_ms") ?? 15000, done: done)
         }
 
     case "fill_form":
+        // Shared page-scripts/fill.js (same field rules and reply as GTK).
         return onMain { done in
             guard let w = daemon.resolve(jint(req, "id")) else { done(errResponse("no window open")); return }
-            guard let fields = req["fields"] as? [JSON] else { done(errResponse("fill_form: missing fields")); return }
-            let fieldsJSON = (try? String(data: JSONSerialization.data(withJSONObject: fields), encoding: .utf8)) ?? "[]"
+            guard let fields = req["fields"] as? [JSON], !fields.isEmpty else {
+                done(errResponse("fill_form needs at least one field")); return
+            }
+            var specs: [JSON] = []
+            for (i, f) in fields.enumerated() {
+                if has(f, "selector") == has(f, "ref") {
+                    done(errResponse("fill_form field \(i): pass exactly one of selector or ref")); return
+                }
+                if has(f, "value") == has(f, "checked") {
+                    done(errResponse("fill_form field \(i): pass exactly one of value or checked")); return
+                }
+                let nth: Any = has(f, "nth") ? f["nth"]! : 0
+                specs.append(["selector": f["selector"] ?? NSNull(), "nth": nth,
+                              "contains": f["contains"] ?? NSNull(), "ref": f["ref"] ?? NSNull(),
+                              "value": f["value"] ?? NSNull(), "checked": f["checked"] ?? NSNull()])
+            }
+            let fieldsJSON = (try? String(data: JSONSerialization.data(withJSONObject: specs), encoding: .utf8)) ?? "[]"
             let js = """
-            \(findElementJS)
-            \(setValueJS)
-            const fields = \(fieldsJSON);
-            const results = [];
-            let lastEl = null;
-            for (const f of fields) {
-              const { el } = __hwatuFind(f.selector, f.nth || 0, f.contains || null, f.ref === undefined ? null : f.ref);
-              lastEl = el;
-              if (f.checked !== undefined && f.checked !== null) {
-                if (el.checked !== f.checked) { el.click ? el.click() : (el.checked = f.checked); }
-                if (el.checked !== f.checked) { el.checked = f.checked; el.dispatchEvent(new Event('change', {bubbles: true})); }
-                results.push({ selector: f.selector, checked: el.checked });
-              } else {
-                __hwatuSetValue(el, f.value === undefined || f.value === null ? '' : String(f.value), true);
-                results.push({ selector: f.selector, value: (el.value || '').slice(0, 200) });
-              }
-            }
-            if (\(jbool(req, "submit") ? "true" : "false") && lastEl && lastEl.form) {
-              lastEl.form.requestSubmit ? lastEl.form.requestSubmit() : lastEl.form.submit();
-            }
-            return { filled: results.length, results };
+            const FIELDS = \(fieldsJSON);
+            const SUBMIT = \(jbool(req, "submit"));
+            \(fillJS)
             """
-            runJS(w, js, timeoutMs: jint(req, "timeout_ms") ?? 20000, done: done)
+            runJS(w, js, timeoutMs: jint(req, "timeout_ms") ?? 15000, done: done)
         }
 
     case "press":
+        // Shared page-scripts/press.js (focus, activation and dialog
+        // semantics match the GTK daemon).
         return onMain { done in
             guard let w = daemon.resolve(jint(req, "id")) else { done(errResponse("no window open")); return }
-            let key = jstr(req, "key") ?? "enter"
-            let keyName: String
-            let keyCode: Int
-            switch key {
-            case "tab": keyName = "Tab"; keyCode = 9
-            case "escape": keyName = "Escape"; keyCode = 27
-            case "arrow_left", "arrowleft": keyName = "ArrowLeft"; keyCode = 37
-            case "arrow_right", "arrowright": keyName = "ArrowRight"; keyCode = 39
-            default: keyName = "Enter"; keyCode = 13
-            }
-            let js = """
-            const el = document.activeElement || document.body;
-            const opts = {key: '\(keyName)', code: '\(keyName)', keyCode: \(keyCode), bubbles: true, cancelable: true};
-            const handled = !el.dispatchEvent(new KeyboardEvent('keydown', opts));
-            el.dispatchEvent(new KeyboardEvent('keyup', opts));
-            if ('\(keyName)' === 'Enter' && !handled) {
-              if (el.form) { el.form.requestSubmit ? el.form.requestSubmit() : el.form.submit(); }
-              else if (el.click) el.click();
-            }
-            if ('\(keyName)' === 'Tab') {
-              const tabbable = Array.from(document.querySelectorAll('a[href], button, input, textarea, select, [tabindex]'))
-                .filter(e => !e.disabled && e.tabIndex >= 0 && e.offsetParent !== null);
-              const i = tabbable.indexOf(el);
-              const next = tabbable[(i + 1) % tabbable.length];
-              if (next) next.focus();
-            }
-            return { key: '\(keyName)', target: el.tagName.toLowerCase() };
-            """
-            runJS(w, js, timeoutMs: jint(req, "timeout_ms") ?? 10000, done: done)
+            let names = ["tab": "Tab", "enter": "Enter", "escape": "Escape",
+                         "arrowleft": "ArrowLeft", "arrowright": "ArrowRight",
+                         "arrow_left": "ArrowLeft", "arrow_right": "ArrowRight"]
+            let raw = (jstr(req, "key") ?? "enter").lowercased()
+            guard let key = names[raw] else { done(errResponse("press: unsupported key \(raw)")); return }
+            let js = nativeTimeJS + "\n" + pressJS.replacingOccurrences(of: "__HWATU_KEY__", with: jsonStringLiteral(key))
+            runJS(w, js, timeoutMs: jint(req, "timeout_ms") ?? 15000, done: done)
         }
 
     case "scroll":
+        // Shared page-scripts/scroll.js.
         return onMain { done in
             guard let w = daemon.resolve(jint(req, "id")) else { done(errResponse("no window open")); return }
-            var body = "window.scrollBy(0, window.innerHeight);"
-            if let sel = jstr(req, "selector") {
-                let selJSON = (try? String(data: JSONSerialization.data(withJSONObject: [sel]), encoding: .utf8)) ?? "[\"\"]"
-                body = """
-                \(findElementJS)
-                const { el } = __hwatuFind(\(selJSON)[0], \(jint(req, "nth") ?? 0), \(jstr(req, "contains").flatMap { try? String(data: JSONSerialization.data(withJSONObject: [$0]), encoding: .utf8) } ?? "[null]")[0], null);
-                el.scrollIntoView({block: 'center'});
-                """
-            } else if let y = (req["to_y"] as? NSNumber)?.doubleValue {
-                body = "window.scrollTo(0, \(y));"
-            } else if let pages = (req["by_pages"] as? NSNumber)?.doubleValue {
-                body = "window.scrollBy(0, window.innerHeight * \(pages));"
-            }
+            let modes = [has(req, "selector"), has(req, "to_y"), has(req, "by_pages")].filter { $0 }.count
+            if modes > 1 { done(errResponse("scroll takes exactly one of selector, to_y, by_pages")); return }
+            let num: (String) -> String = { k in (req[k] as? NSNumber).map { "\($0.doubleValue)" } ?? "null" }
             let js = """
-            \(body)
-            return { y: window.scrollY, max_y: Math.max(0, document.documentElement.scrollHeight - window.innerHeight), at_bottom: window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 2 };
+            \(nativeTimeJS)
+            const selector = \(jstr(req, "selector").map(jsonStringLiteral) ?? "null");
+            const nth = \(jint(req, "nth") ?? 0);
+            const contains = \(jstr(req, "contains").map(jsonStringLiteral) ?? "null");
+            const toY = \(num("to_y"));
+            const byPages = \(num("by_pages"));
+            \(scrollJS)
             """
-            runJS(w, js, timeoutMs: jint(req, "timeout_ms") ?? 10000, done: done)
+            runJS(w, js, timeoutMs: jint(req, "timeout_ms") ?? 15000, done: done)
         }
 
     case "console":
@@ -1116,52 +1023,42 @@ func handle(_ req: JSON) -> JSON {
         }
 
     case "expect":
-        // Poll in the page until the assertion holds or the deadline passes.
-        // Same semantics as the GTK daemon: contains filters, text asserts,
-        // absent inverts, visible requires a nonzero rendered box.
+        // Shared page-scripts/expect.js + visibility.js. The page loop owns
+        // the deadline; the eval gets a margin so the structured failure,
+        // not a generic timeout, reaches the caller.
+        if jbool(req, "watch") {
+            return errResponse("expect --watch is not supported by the macOS daemon yet (hwatud-mac)")
+        }
         return onMain { done in
             guard let w = daemon.resolve(jint(req, "id")) else { done(errResponse("no window open")); return }
             guard let sel = jstr(req, "selector") else { done(errResponse("expect: missing selector")); return }
-            let enc: (Any?) -> String = { v in
-                guard let v = v, !(v is NSNull) else { return "null" }
-                return (try? String(data: JSONSerialization.data(withJSONObject: [v]), encoding: .utf8)).map { "\($0)[0]" } ?? "null"
-            }
-            let timeout = jint(req, "timeout_ms") ?? 5000
+            let deadline = jint(req, "timeout_ms") ?? 5000
             let js = """
-            const sel = \(enc(sel)), nth = \(jint(req, "nth") ?? 0), contains = \(enc(req["contains"])),
-                  text = \(enc(req["text"])), absent = \(jbool(req, "absent")), visible = \(jbool(req, "visible"));
-            const deadline = Date.now() + \(timeout);
-            const vis = e => { const r = e.getBoundingClientRect(), s = getComputedStyle(e);
-              return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0'; };
-            let last = 'no match';
-            while (true) {
-              let els = Array.from(document.querySelectorAll(sel));
-              if (contains !== null) els = els.filter(e => ((e.textContent || '') + ' ' + (e.value || '')).includes(contains));
-              const el = els[nth];
-              if (absent) { if (!el) return { ok: true, absent: true }; last = 'still present'; }
-              else if (!el) { last = 'no match: ' + els.length + ' element(s)'; }
-              else if (visible && !vis(el)) { last = 'matched but not visible'; }
-              else if (text !== null && !(el.textContent || '').includes(text)) { last = 'text mismatch: ' + JSON.stringify((el.textContent || '').trim().slice(0, 120)); }
-              else return { ok: true, matches: els.length, text: (el.textContent || '').trim().slice(0, 120) };
-              if (Date.now() >= deadline) throw new Error('expect failed after \(timeout) ms: ' + last);
-              await new Promise(r => setTimeout(r, 50));
-            }
+            \(nativeTimeJS)
+            \(visibilityJS)
+            const selector = \(jsonStringLiteral(sel));
+            const nth = \(jint(req, "nth") ?? 0);
+            const contains = \(jstr(req, "contains").map(jsonStringLiteral) ?? "null");
+            const wantText = \(jstr(req, "text").map(jsonStringLiteral) ?? "null");
+            const absent = \(jbool(req, "absent"));
+            const wantVisible = \(jbool(req, "visible"));
+            const deadline = \(deadline);
+            \(expectJS)
             """
-            runJS(w, js, timeoutMs: timeout + 2000, done: done)
+            runJS(w, js, timeoutMs: deadline + 2000, done: done)
         }
 
     case "auth_context":
         // Login-wall structured stop, from the shared page-scripts/login-wall.js.
         return onMain { done in
             guard let w = daemon.resolve(jint(req, "id")) else { done(errResponse("no window open")); return }
-            let js = """
-            const out = { url: location.href, origin: location.origin };
-            out.cookie_count = document.cookie ? document.cookie.split('; ').filter(Boolean).length : 0;
-            out.login_wall = \(loginWallJS);
-            return out;
-            """
+            // Shared page-scripts/auth-context.js (same inventory as GTK).
+            let js = authContextJS.replacingOccurrences(of: "__LOGIN_WALL__", with: loginWallJS.trimmingCharacters(in: .whitespacesAndNewlines))
             runJS(w, js, timeoutMs: 10000) { r in
                 guard var v = r["value"] as? JSON else { done(r); return }
+                // No named profiles on this daemon: every window uses the
+                // default WKWebsiteDataStore.
+                v["profile"] = NSNull()
                 let wall = v.removeValue(forKey: "login_wall")
                 if let wall = wall as? JSON {
                     let needs = ((wall["otp_fields"] as? NSNumber)?.intValue ?? 0) > 0 ? "one_time_code" : "credentials"
@@ -1332,16 +1229,18 @@ func handle(_ req: JSON) -> JSON {
     }
 }
 
-/// Emit JS `__sel/__nth/__contains/__ref` bindings from a request's targeting fields.
-func targetArgsJS(_ req: JSON) -> String {
-    let sel = jstr(req, "selector").flatMap { try? String(data: JSONSerialization.data(withJSONObject: [$0]), encoding: .utf8) } ?? "[null]"
-    let contains = jstr(req, "contains").flatMap { try? String(data: JSONSerialization.data(withJSONObject: [$0]), encoding: .utf8) } ?? "[null]"
+/// The GTK daemon's target prelude: `selector/nth/contains/refIdx` consts
+/// then page-scripts/target.js, leaving `el` and `matched` in scope.
+func targetPreludeJS(_ req: JSON) -> String {
+    let sel = jstr(req, "selector").map(jsonStringLiteral) ?? "null"
+    let contains = jstr(req, "contains").map(jsonStringLiteral) ?? "null"
     let ref = jint(req, "ref").map(String.init) ?? "null"
     return """
-    const __sel = \(sel)[0];
-    const __nth = \(jint(req, "nth") ?? 0);
-    const __contains = \(contains)[0];
-    const __ref = \(ref);
+    const selector = \(sel);
+    const nth = \(jint(req, "nth") ?? 0);
+    const contains = \(contains);
+    const refIdx = \(ref);
+    \(targetJS)
     """
 }
 

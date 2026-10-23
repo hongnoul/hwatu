@@ -30,6 +30,10 @@ stale. `scripts/test-reference-skill.sh` (with `HWATUD=<path>`) passes
 against this daemon. macOS is not yet a supported platform: it lacks a
 signed package and `motion --observe` (see VISION.md support criteria).
 
+Commands run the same `page-scripts/` as the GTK daemon, so replies match
+`tests/conformance/shapes.golden`. `snapshot` returns the raw snapshot and
+the CLI applies quarantine, `--budget` and `--diff` with `hwatu-snapshot`.
+
 `diff` is answered by the CLI: it captures with `screenshot` and diffs
 with `hwatu-pixeldiff`, the scoring code the GTK daemon uses.
 

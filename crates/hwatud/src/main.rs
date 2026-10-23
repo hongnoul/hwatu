@@ -29,8 +29,6 @@ mod private_files;
 mod prompts;
 mod sitedata;
 mod siteua;
-mod snapbudget;
-mod snapdiff;
 mod stops;
 mod trusted_input;
 mod verify;
