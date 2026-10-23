@@ -35,7 +35,10 @@ Commands run the same `page-scripts/` as the GTK daemon, so replies match
 the CLI applies quarantine, `--budget` and `--diff` with `hwatu-snapshot`.
 
 `diff` is answered by the CLI: it captures with `screenshot` and diffs
-with `hwatu-pixeldiff`, the scoring code the GTK daemon uses.
+with `hwatu-pixeldiff`, the scoring code the GTK daemon uses. `check` and
+`render` are also run by the CLI, from `open`, `navigate`, `eval`,
+`screenshot`, `diff`, and `close`. `render` loads the markup as a `data:`
+URL, so `--base` and `--viewports` answer an error.
 
 `net` uses WebKit's private `_WKResourceLoadDelegate`, checked with
 `responds(to:)`. If a WebKit lacks it, `net` answers an error and nothing

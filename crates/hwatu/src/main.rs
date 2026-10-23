@@ -6,6 +6,7 @@
 //! `hana <url>` opens a window in ~1 IPC roundtrip. If no daemon is
 //! running, it spawns one and waits for the socket.
 
+mod client_check;
 mod client_diff;
 mod clone;
 mod mcp;
@@ -1796,6 +1797,15 @@ pub(crate) fn transact_request(request: &Request) -> std::io::Result<Response> {
         // After remote::prepare the request carries inline baseline and
         // heatmap_data, so materialize below still writes the heatmap.
         response = client_diff::run(&request, |r| {
+            let mut c = connect_or_spawn()?;
+            write_request(&mut c, r)?;
+            read_response(&mut c)
+        })?;
+    }
+    if matches!(request, Request::Check { .. }) && client_check::unsupported(&response) {
+        // Engines without a native check/render: compose it from
+        // open, navigate, eval, shot, diff, close.
+        response = client_check::run(&request, |r| {
             let mut c = connect_or_spawn()?;
             write_request(&mut c, r)?;
             read_response(&mut c)

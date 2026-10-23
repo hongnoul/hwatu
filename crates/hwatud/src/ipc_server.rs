@@ -1066,8 +1066,16 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, transport: TransportKind, reply: 
             Response::window(info)
         }
         Request::List => {
+            // Parked check/render windows are the daemon's cache, not
+            // windows an agent opened; macOS has none, so listing them
+            // made the same command sequence list different windows.
+            let parked: Vec<u64> = daemon.check_pool.borrow().iter().map(|e| e.0).collect();
             let windows = daemon.windows.borrow();
-            let mut infos: Vec<_> = windows.values().map(|w| w.info()).collect();
+            let mut infos: Vec<_> = windows
+                .values()
+                .filter(|w| !parked.contains(&w.id))
+                .map(|w| w.info())
+                .collect();
             infos.sort_by_key(|w| w.id);
             Response::windows(infos)
         }

@@ -242,6 +242,26 @@ o="ticks/s after show+hide: $(rate)"
 ck "C53 page timers run at full rate after show and hide (>= 7/s)" '[[ ${o##* } -ge 7 ]]'
 hw close "$t" >/dev/null
 
+# check and render: one-roundtrip verify pass on every engine (native on
+# Linux, composed by the client elsewhere). Repeated renders must never
+# capture a blank frame (Linux pooled windows did, 15 of 600 diffs).
+nwin() { hw list --json | grep -o '"id":' | wc -l | tr -d ' '; }
+w0=$(nwin)
+o=$(hw check "$base/plain.html" --eval 'return document.title')
+ck "C54 check loads, evals, and closes its window" 'grep -q "\"eval\":\"plain\"" <<<"$o" && grep -q "\"title\":\"plain\"" <<<"$o"'
+rf='<!DOCTYPE html><meta charset="utf-8"><title>df</title><body style="margin:0"><div style="width:100%;height:50vh;background:#1a6b3c"></div><div style="width:60%;height:50vh;background:#b03060"></div></body>'
+hw render --stdin --shot="$w/r0.png" <<<"$rf" >/dev/null
+low=0
+for _ in $(seq 100); do
+  hw render --stdin --shot="$w/r1.png" <<<"$rf" >/dev/null
+  m=$(hw render --stdin --baseline "$w/r0.png" <<<"$rf" | grep -o '"match_percent":[0-9.]*' | cut -d: -f2)
+  [[ -n "$m" && ${m%.*} -ge 99 ]] && cmp -s "$w/r0.png" "$w/r1.png" || low=$((low+1))
+done
+o="$low of 100 shot+diff pairs off"
+ck "C55 render shot and --baseline are stable over 100 pairs" '[[ $low -eq 0 ]]'
+o="windows before $w0, after $(nwin)"
+ck "C56 check and render leave no windows behind" '[[ $(nwin) -eq $w0 ]]'
+
 # Window churn: a long-lived daemon must release closed windows. Before
 # the fix, open/close leaked ~0.8 MB per window on macOS and 2 fds per
 # window on Linux (the daemon aborted at ~490 windows on fd exhaustion).
