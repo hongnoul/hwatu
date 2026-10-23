@@ -207,6 +207,8 @@ impl Daemon {
                 Some(&dir.to_string_lossy()),
                 Some(&cache.to_string_lossy()),
             );
+            // No password storage (see persist_cookies).
+            session.set_persistent_credential_storage_enabled(false);
             if let Some(cookies) = session.cookie_manager() {
                 cookies.set_persistent_storage(
                     &dir.join("cookies.sqlite").to_string_lossy(),
@@ -279,6 +281,10 @@ fn persist_cookies(security: &SecurityConfig) {
         eprintln!("hwatud: no default network session; cookies will not persist");
         return;
     };
+    // VISION: no password storage. WebKit otherwise saves HTTP-auth
+    // credentials to the system keyring (libsecret) for persistent
+    // sessions. Cookies persist; passwords do not.
+    session.set_persistent_credential_storage_enabled(false);
     let Some(cookies) = session.cookie_manager() else {
         eprintln!("hwatud: no cookie manager; cookies will not persist");
         return;

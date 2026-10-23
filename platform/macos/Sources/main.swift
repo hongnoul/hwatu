@@ -363,6 +363,21 @@ final class Window: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessag
     func webView(_ w: WKWebView, didFail n: WKNavigation!, withError e: Error) {
         loadState = "failed"; lastError = e.localizedDescription
     }
+    // VISION: no password storage. HTTP auth challenges (Basic/Digest,
+    // NTLM) are not answered from or saved to the keychain: password
+    // challenges are cancelled so the page reports 401 and the agent asks
+    // the user. Server trust and client certificates keep default handling.
+    func webView(_ w: WKWebView, didReceive challenge: URLAuthenticationChallenge,
+                 completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
+        switch challenge.protectionSpace.authenticationMethod {
+        case NSURLAuthenticationMethodHTTPBasic, NSURLAuthenticationMethodHTTPDigest,
+             NSURLAuthenticationMethodNTLM, NSURLAuthenticationMethodDefault:
+            completionHandler(.rejectProtectionSpace, nil)
+        default:
+            completionHandler(.performDefaultHandling, nil)
+        }
+    }
+
     func webView(_ w: WKWebView, didFailProvisionalNavigation n: WKNavigation!, withError e: Error) {
         let ns = e as NSError
         // NSURLErrorCancelled fires on redirects; not a real failure.
