@@ -164,6 +164,15 @@ final class NetLog: NSObject {
     }
 }
 
+/// Forwards script messages without retaining the window.
+final class WeakScriptHandler: NSObject, WKScriptMessageHandler {
+    weak var target: WKScriptMessageHandler?
+    init(_ target: WKScriptMessageHandler) { self.target = target }
+    func userContentController(_ c: WKUserContentController, didReceive message: WKScriptMessage) {
+        target?.userContentController(c, didReceive: message)
+    }
+}
+
 final class Window: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
     let id: UInt64
     let webView: WKWebView
@@ -173,8 +182,13 @@ final class Window: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessag
     var loadState: String = "idle" // idle | loading | committed | settled | failed
     /// One-shot callbacks for the next document commit / load finish
     /// (navigation during an eval; see runJS NavPolicy).
-    var commitHooks: [() -> Void] = []
+    var commitHooks: [(id: Int, run: () -> Void)] = []
     var finishHooks: [() -> Void] = []
+    private var nextHookId = 0
+    func addCommitHook(_ f: @escaping () -> Void) -> Int {
+        nextHookId += 1; commitHooks.append((nextHookId, f)); return nextHookId
+    }
+    func removeCommitHook(_ id: Int) { commitHooks.removeAll { $0.id == id } }
     var lastError: String?
     var consoleBuf: [JSON] = []
     /// Last `snapshot --diff` value; cleared when a new document commits.
@@ -189,6 +203,21 @@ final class Window: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessag
     /// Inline-data uploads staged on disk. The page's File objects read
     /// from these lazily, so they live until the window closes (as on Linux).
     var stagedUploads: [(dir: URL, size: Int)] = []
+
+    /// Release everything that keeps this window alive after close: the
+    /// web view's delegates and script handlers, pending navigation hooks,
+    /// and the page itself.
+    func teardown() {
+        commitHooks.removeAll(); finishHooks.removeAll()
+        webView.stopLoading()
+        webView.configuration.userContentController.removeAllScriptMessageHandlers()
+        webView.navigationDelegate = nil
+        webView.uiDelegate = nil
+        netLog.window = nil
+        webView.removeFromSuperview()
+        host.contentView = nil
+        removeStagedUploads()
+    }
 
     func removeStagedUploads() {
         for s in stagedUploads { try? FileManager.default.removeItem(at: s.dir) }
@@ -307,7 +336,9 @@ final class Window: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessag
         host.isReleasedWhenClosed = false
         host.contentView = webView
         super.init()
-        controller.add(self, name: "hwatuConsole")
+        // WKUserContentController retains its handler; a weak proxy breaks
+        // the window -> webView -> controller -> window cycle.
+        controller.add(WeakScriptHandler(self), name: "hwatuConsole")
         webView.navigationDelegate = self
         webView.uiDelegate = self
         netLog.window = self
@@ -363,7 +394,7 @@ final class Window: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessag
         loadState = "committed"
         snapshotBaseline = nil
         let hooks = commitHooks; commitHooks.removeAll()
-        hooks.forEach { $0() }
+        hooks.forEach { $0.run() }
     }
     func webView(_ w: WKWebView, didFinish n: WKNavigation!) {
         loadState = "settled"
@@ -439,7 +470,7 @@ final class Daemon {
         guard let w = windows.removeValue(forKey: id) else { return false }
         order.removeAll { $0 == id }
         w.host.close()
-        w.removeStagedUploads()
+        w.teardown()
         return true
     }
 }
@@ -628,14 +659,24 @@ func runJS(_ w: Window, _ js: String, timeoutMs: Int, nav: NavPolicy = .error, d
         done(errResponse("eval failed: SyntaxError: \(err.message)"))
         return
     }
-    var finished = false
-    let finish: (JSON) -> Void = { r in
-        if !finished { finished = true; done(r) }
+    // One call's state lives in a box that every path (completion,
+    // navigation, timeout) shares and empties on the first answer, so a
+    // finished call holds no reply, result, or window. The commit hook is
+    // removed by id; a cancelled timeout work item is released at once.
+    final class Call { var done: ((JSON) -> Void)?; var hookId = 0; var timeout: DispatchWorkItem? }
+    let call = Call()
+    call.done = done
+    let finish: (JSON) -> Void = { [weak w] r in
+        guard let d = call.done else { return }
+        call.done = nil
+        call.timeout?.cancel(); call.timeout = nil
+        if let w = w { w.removeCommitHook(call.hookId) }
+        d(r)
     }
     // A committed navigation destroys the script's JS context; its
     // completion never arrives. Answer for it.
-    w.commitHooks.append { [weak w] in
-        guard let w = w, !finished else { return }
+    call.hookId = w.addCommitHook { [weak w] in
+        guard let w = w, call.done != nil else { return }
         let uri = w.webView.url?.absoluteString ?? ""
         switch nav {
         case .error:
@@ -646,9 +687,9 @@ func runJS(_ w: Window, _ js: String, timeoutMs: Int, nav: NavPolicy = .error, d
             }
         }
     }
-    DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(timeoutMs)) {
-        finish(errResponse("eval timed out after \(timeoutMs) ms"))
-    }
+    let timeout = DispatchWorkItem { finish(errResponse("eval timed out after \(timeoutMs) ms")) }
+    call.timeout = timeout
+    DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(timeoutMs), execute: timeout)
     // Serialize in the page with JSON.stringify, as WebKitGTK's
     // jsc_value_to_json does: Dates become ISO strings, cycles and other
     // unserializable objects fall back to String(value), and DOM nodes,
@@ -1487,19 +1528,24 @@ func handleConnection(_ fd: Int32) {
             let frame = buffer.subdata(in: buffer.startIndex..<nl)
             buffer.removeSubrange(buffer.startIndex...nl)
             guard !frame.isEmpty else { continue }
-            let response: JSON
-            if let obj = (try? JSONSerialization.jsonObject(with: frame)) as? JSON {
-                response = handle(obj)
-            } else {
-                response = errResponse("invalid JSON frame")
-            }
-            let out = encodeFrame(response)
-            var sent = 0
-            out.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
-                while sent < raw.count {
-                    let n = write(fd, raw.baseAddress!.advanced(by: sent), raw.count - sent)
-                    if n <= 0 { sent = raw.count; return }
-                    sent += n
+            // Detached threads have no autorelease pool; without one, the
+            // autoreleased Foundation objects behind every request and reply
+            // (JSONSerialization, bridged strings, NSData) are never freed.
+            autoreleasepool {
+                let response: JSON
+                if let obj = (try? JSONSerialization.jsonObject(with: frame)) as? JSON {
+                    response = handle(obj)
+                } else {
+                    response = errResponse("invalid JSON frame")
+                }
+                let out = encodeFrame(response)
+                var sent = 0
+                out.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+                    while sent < raw.count {
+                        let n = write(fd, raw.baseAddress!.advanced(by: sent), raw.count - sent)
+                        if n <= 0 { sent = raw.count; return }
+                        sent += n
+                    }
                 }
             }
         }
