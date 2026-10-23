@@ -2469,12 +2469,29 @@ enum TrustedAction {
     },
 }
 
-fn trusted_input_mode_error(mode: OpenMode) -> Option<&'static str> {
+fn trusted_input_mode_error(
+    mode: OpenMode,
+    supported: bool,
+    headless_capable: bool,
+) -> Option<&'static str> {
+    if !supported {
+        return Some(
+            "trusted input on Linux goes through a Wayland compositor, and this daemon runs \
+             on X11. Start hwatud on a Wayland session, or with no display (it then hosts \
+             its own compositor)",
+        );
+    }
+    // A headless window gets input on a private compositor no person can
+    // see (display-free mode, or one started for input), so nothing
+    // changes on the user's screen.
+    if headless_capable {
+        return None;
+    }
     match mode {
         OpenMode::Normal => None,
         OpenMode::Background | OpenMode::Headless => Some(
-            "trusted input on this engine is delivered through the compositor and needs a \
-             shown window: call `hwatu show <id>` first, or use a standard (untrusted) click",
+            "trusted input to a headless window needs a private Wayland compositor (install \
+             sway, cage, or labwc), or a shown window: call `hwatu show <id>` first",
         ),
     }
 }
@@ -2518,7 +2535,11 @@ fn trusted_input_run(
         Ok(w) => w,
         Err(resp) => return reply.send(*resp),
     };
-    if let Some(message) = trusted_input_mode_error(win.mode()) {
+    if let Some(message) = trusted_input_mode_error(
+        win.mode(),
+        crate::trusted_input::supported(),
+        crate::trusted_input::headless_capable(),
+    ) {
         return reply.send(Response::err(format!("{what} refused: {message}")));
     }
     let view = match live_view(&win) {
@@ -2546,7 +2567,10 @@ fn trusted_input_run(
     };
     arm_timeout(reply.clone(), timeout_ms, what);
 
-    let session = crate::trusted_input::prepare(&win);
+    let session = match crate::trusted_input::prepare(&win) {
+        Ok(session) => session,
+        Err(e) => return reply.send(Response::err(format!("{what} failed: {e}"))),
+    };
     // Any exit past this point must restore the window; wrap the reply
     // so sending it always finishes the session first.
     let reply = {
@@ -2978,10 +3002,19 @@ mod tests {
 
     #[test]
     fn trusted_input_never_promotes_non_normal_windows() {
-        assert_eq!(trusted_input_mode_error(OpenMode::Normal), None);
+        assert_eq!(
+            trusted_input_mode_error(OpenMode::Normal, true, false),
+            None
+        );
+        for mode in [OpenMode::Normal, OpenMode::Background, OpenMode::Headless] {
+            let message = trusted_input_mode_error(mode, false, false).expect("X11 refuses");
+            assert!(message.contains("Wayland"));
+        }
         for mode in [OpenMode::Background, OpenMode::Headless] {
-            let message = trusted_input_mode_error(mode).expect("mode must be refused");
+            let message =
+                trusted_input_mode_error(mode, true, false).expect("mode must be refused");
             assert!(message.contains("hwatu show"));
+            assert_eq!(trusted_input_mode_error(mode, true, true), None);
         }
     }
 

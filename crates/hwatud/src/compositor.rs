@@ -213,19 +213,56 @@ pub struct Compositor {
 }
 
 const CANDIDATES: [&str; 3] = ["cage", "labwc", "sway"];
+const INPUT_CANDIDATES: [&str; 3] = ["sway", "cage", "labwc"];
 const SOCKET_WAIT: Duration = Duration::from_secs(8);
 
 impl Compositor {
     fn spawn() -> Result<Self, String> {
-        let runtime_dir = private_runtime_dir()
+        Self::spawn_tagged("comp", &CANDIDATES, None)
+    }
+
+    /// A private compositor for trusted input to headless windows while
+    /// the daemon runs on the user's display. Nothing on it is shown to
+    /// anyone. GDK exits the process when a display connection breaks,
+    /// so this child's death is fatal like the display-free one.
+    ///
+    /// sway is tried first because its output size can be set: the
+    /// window is fullscreened there, and an output the size of the
+    /// headless viewport keeps the page layout (and any coordinates the
+    /// agent read from a `shot`) unchanged.
+    pub fn spawn_input(output: (i32, i32)) -> Result<Self, String> {
+        Self::spawn_tagged("input", &INPUT_CANDIDATES, Some(output))
+    }
+
+    pub fn socket(&self) -> &Path {
+        &self.socket
+    }
+
+    pub fn runtime_dir(&self) -> &Path {
+        &self.runtime_dir
+    }
+}
+
+/// Can [`Compositor::spawn_input`] start? Any candidate on PATH.
+pub fn input_compositor_available() -> bool {
+    CANDIDATES.iter().any(|name| find_in_path(name).is_some())
+}
+
+impl Compositor {
+    fn spawn_tagged(
+        tag: &str,
+        candidates: &[&'static str],
+        output: Option<(i32, i32)>,
+    ) -> Result<Self, String> {
+        let runtime_dir = private_runtime_dir(tag)
             .map_err(|e| format!("display-free mode: cannot create compositor runtime dir: {e}"))?;
         let mut probed = Vec::new();
-        for name in CANDIDATES {
+        for &name in candidates {
             let Some(bin) = find_in_path(name) else {
                 probed.push(format!("{name} (not installed)"));
                 continue;
             };
-            let mut child = match spawn_candidate(name, &bin, &runtime_dir) {
+            let mut child = match spawn_candidate(name, &bin, &runtime_dir, output) {
                 Ok(c) => c,
                 Err(e) => {
                     probed.push(format!("{name} (spawn failed: {e})"));
@@ -307,7 +344,7 @@ fn monitor(name: &'static str, pid: i32, expected_exit: Arc<AtomicBool>) {
             let reaped = unsafe { libc_waitpid(pid, &mut status, 0) };
             if reaped == pid && !expected_exit.load(Ordering::Relaxed) {
                 eprintln!(
-                    "hwatud: display-free compositor {name} (pid {pid}) exited unexpectedly; \
+                    "hwatud: private compositor {name} (pid {pid}) exited unexpectedly; \
                      the Wayland display is gone and GTK cannot re-attach. Exiting; restart \
                      hwatud to recover."
                 );
@@ -322,7 +359,9 @@ fn monitor(name: &'static str, pid: i32, expected_exit: Arc<AtomicBool>) {
 /// capabilities, and this is that binary.
 const SUPERVISE_SH: &str = r#"
 child=
-trap '[ -n "$child" ] && kill -TERM "$child" 2>/dev/null' TERM INT HUP
+# Signal the whole process group (this shell leads it): cage leaves its
+# client running when it gets SIGTERM, and that client must die too.
+trap 'trap "" TERM INT HUP; kill -TERM 0 2>/dev/null' TERM INT HUP
 "$@" &
 child=$!
 wait "$child"
@@ -333,7 +372,12 @@ wait "$child" 2>/dev/null
 exit "$st"
 "#;
 
-fn spawn_candidate(name: &str, bin: &Path, runtime_dir: &Path) -> std::io::Result<Child> {
+fn spawn_candidate(
+    name: &str,
+    bin: &Path,
+    runtime_dir: &Path,
+    output: Option<(i32, i32)>,
+) -> std::io::Result<Child> {
     let mut cmd = Command::new("/bin/sh");
     cmd.arg("-c").arg(SUPERVISE_SH).arg("hwatud-comp").arg(bin);
     match name {
@@ -345,7 +389,11 @@ fn spawn_candidate(name: &str, bin: &Path, runtime_dir: &Path) -> std::io::Resul
         // keeps the user's real config out of the managed instance.
         "sway" => {
             let conf = runtime_dir.join("sway-headless.conf");
-            std::fs::write(&conf, "# hwatud-managed headless compositor\n")?;
+            let mut body = String::from("# hwatud-managed headless compositor\n");
+            if let Some((w, h)) = output {
+                body.push_str(&format!("output * mode --custom {w}x{h} scale 1\n"));
+            }
+            std::fs::write(&conf, body)?;
             cmd.arg("--config").arg(&conf);
         }
         // labwc starts bare.
@@ -433,12 +481,12 @@ fn find_wayland_socket(dir: &Path) -> Option<PathBuf> {
 /// (`<dir>/sway-ipc.<uid>.<pid>.sock`) does not fit. A deep
 /// `XDG_RUNTIME_DIR` (test sandboxes, containers) would push it over,
 /// so long bases fall back to the system temp dir.
-fn private_runtime_dir() -> std::io::Result<PathBuf> {
+fn private_runtime_dir(tag: &str) -> std::io::Result<PathBuf> {
     let base = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
         .filter(|p| p.as_os_str().len() <= 60)
         .unwrap_or_else(std::env::temp_dir);
-    let dir = base.join(format!("hwatud-comp-{}", std::process::id()));
+    let dir = base.join(format!("hwatud-{tag}-{}", std::process::id()));
     if dir.exists() {
         std::fs::remove_dir_all(&dir)?;
     }

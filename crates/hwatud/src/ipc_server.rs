@@ -1034,10 +1034,10 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, transport: TransportKind, reply: 
             "display_free": crate::compositor::display_free(),
             "capabilities": {
                 "show": !crate::compositor::display_free(),
-                "trusted_input": true,
-                // Compositor input reaches only shown windows; headless
-                // windows answer an error naming `show`.
-                "trusted_input_headless": false,
+                "trusted_input": crate::trusted_input::supported(),
+                // Compositor input needs a mapped surface; headless
+                // windows get one on a private compositor nobody sees.
+                "trusted_input_headless": crate::trusted_input::headless_capable(),
                 "structured_stops": ["irreversible_action", "login_required", "challenge"],
                 "transport": ["unix", "tcp"],
             },

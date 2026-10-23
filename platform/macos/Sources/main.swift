@@ -363,13 +363,29 @@ final class Window: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessag
             // timers to about 1 s (measured: setInterval(100) produced 9
             // ticks in 4 s below desktop, 39 at normal level), which stalls
             // expect and wait-load quiescent.
-            host.alphaValue = 0.0001
-            host.ignoresMouseEvents = true
-            host.collectionBehavior = [.transient, .ignoresCycle, .canJoinAllSpaces]
-            host.hasShadow = false
-            host.setFrameOrigin(NSPoint(x: 0, y: 0))
-            host.orderFrontRegardless()
+            enterHeadless()
         }
+    }
+
+    /// The headless host state described above. Also used by `hide`: an
+    /// `orderOut` window is unmapped, and WebKit then runs its timers at
+    /// 1/s (measured with show then hide).
+    func enterHeadless() {
+        host.alphaValue = 0.0001
+        host.ignoresMouseEvents = true
+        host.collectionBehavior = [.transient, .ignoresCycle, .canJoinAllSpaces]
+        host.hasShadow = false
+        host.setFrameOrigin(NSPoint(x: 0, y: 0))
+        host.orderFrontRegardless()
+    }
+
+    /// The inverse for `show`: an ordinary visible window.
+    func enterShown() {
+        host.alphaValue = 1
+        host.ignoresMouseEvents = false
+        host.collectionBehavior = []
+        host.hasShadow = true
+        host.center()
     }
 
     func webView(_ webView: WKWebView, runOpenPanelWith parameters: WKOpenPanelParameters,
@@ -909,6 +925,7 @@ func handle(_ req: JSON) -> JSON {
             }
             w.mode = "normal"
             NSApp.setActivationPolicy(.regular)
+            w.enterShown()
             w.host.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             done(okResponse())
@@ -920,7 +937,13 @@ func handle(_ req: JSON) -> JSON {
                 done(errResponse("no such window")); return
             }
             w.mode = "headless"
-            w.host.orderOut(nil)
+            w.enterHeadless()
+            if !daemon.windows.values.contains(where: { $0.mode != "headless" }) {
+                // The hidden window must not stay key and take the user's
+                // keystrokes: hand activation back to the previous app.
+                NSApp.deactivate()
+                NSApp.setActivationPolicy(.accessory)
+            }
             done(okResponse())
         }
 

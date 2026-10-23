@@ -113,7 +113,7 @@ jobs:
       - name: Install system deps
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq libwebkitgtk-6.0-dev libgtk-4-dev cage
+          sudo apt-get install -y -qq libwebkitgtk-6.0-dev libgtk-4-dev cage sway wtype
 
       - name: Allow unprivileged user namespaces
         # Ubuntu 24.04 runners restrict userns via AppArmor, which breaks
@@ -138,6 +138,13 @@ jobs:
 
       - name: Run cross-OS conformance fixtures
         run: scripts/test-conformance.sh
+
+      # The same suite with the daemon on a Wayland session (headless sway
+      # standing in for a desktop). Headless trusted input must go to the
+      # daemon's private compositor: the run fails if any window appears
+      # on the session.
+      - name: Run conformance on a session display
+        run: scripts/test-conformance-session.sh
 
   macos-conformance:
     name: macOS daemon conformance

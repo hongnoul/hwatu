@@ -886,7 +886,7 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
              Dispatches JS pointer events by default; trusted=true delivers \
              native input, including into cross-origin frames such as CAPTCHA \
              widgets. ping reports capabilities.trusted_input_headless: where it \
-             is false, trusted input needs a shown window.",
+             is false, the error says what the host lacks.",
             json!({
                 "id": prop("integer", ID_DESC),
                 "selector": prop("string", "CSS selector."),

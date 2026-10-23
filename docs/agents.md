@@ -164,10 +164,13 @@ in child frames, including cross-origin challenge frames
 such as an image region, `click --trusted --at X,Y` clicks a point in
 top-viewport CSS pixels (a `shot` pixel divided by `devicePixelRatio`).
 `challenge` reports `clear` once the widget's response token is set.
-`ping` reports `capabilities.trusted_input_headless`.
-On macOS it is `true`: input goes to the web view without moving the
-user's cursor or focus. On Linux it is `false`: trusted input goes through
-the compositor and a headless window answers an error naming `show`.
+`ping` reports `capabilities.trusted_input_headless`. When it is `true`,
+trusted input reaches headless windows and nothing appears on the user's
+screen. On macOS input goes to the web view. On Linux the daemon moves the
+window to a private Wayland compositor (sway, cage, or labwc) for the call;
+keys need `wtype`. It is `false` on an X11 session, or when no compositor is
+installed; then trusted input answers an error that says what is missing.
+`doctor` reports the same.
 `--trusted` does not bypass the irreversible-action stop.
 
 If the agent cannot clear the challenge, `challenge` returns a structured

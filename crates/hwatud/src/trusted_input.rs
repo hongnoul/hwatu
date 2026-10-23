@@ -47,6 +47,10 @@ use std::time::Duration;
 use wayland_client::globals::{registry_queue_init, GlobalListContents};
 use wayland_client::protocol::{wl_output, wl_pointer, wl_registry, wl_seat};
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
+use wayland_protocols_misc::zwp_virtual_keyboard_v1::client::{
+    zwp_virtual_keyboard_manager_v1::ZwpVirtualKeyboardManagerV1,
+    zwp_virtual_keyboard_v1::ZwpVirtualKeyboardV1,
+};
 use wayland_protocols_wlr::virtual_pointer::v1::client::{
     zwlr_virtual_pointer_manager_v1::ZwlrVirtualPointerManagerV1,
     zwlr_virtual_pointer_v1::ZwlrVirtualPointerV1,
@@ -104,39 +108,161 @@ pub struct InputReport {
 /// the window on `prepare`, restores the previous state and compositor
 /// focus on `finish` (idempotent, shared across the racing callbacks via
 /// `Clone`).
+///
+/// A headless window on the user's display is first moved to a private
+/// compositor (see [`input_display`]), so nothing appears on the user's
+/// screen and the user's focus is untouched. It moves back on `finish`.
 #[derive(Clone)]
 pub struct TrustedSession {
     win: Rc<BrowserWindow>,
     was_fullscreen: bool,
     promoted: bool,
     prior_niri_focus: Option<u64>,
+    home_display: Option<gtk::gdk::Display>,
     finished: Rc<Cell<bool>>,
 }
 
-pub fn prepare(win: &Rc<BrowserWindow>) -> TrustedSession {
-    let was_fullscreen = win.window.is_fullscreen();
+thread_local! {
+    /// Lazily started on the first headless trusted call in a session;
+    /// lives until the daemon exits.
+    static INPUT_DISPLAY: std::cell::RefCell<Option<(crate::compositor::Compositor, gtk::gdk::Display, SeatKeyboard)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// A virtual keyboard held for the private compositor's lifetime. A
+/// fresh headless seat has no keyboard, and sway gives keyboard focus
+/// to a short-lived `wtype` keyboard too late (measured: no key reached
+/// the page). With this one present the seat has a keyboard from the
+/// start and `wtype` keys arrive.
+struct SeatKeyboard {
+    _conn: Connection,
+    _keyboard: ZwpVirtualKeyboardV1,
+}
+
+const SEAT_KEYMAP: &str = "xkb_keymap {\n\
+    xkb_keycodes { include \"evdev+aliases(qwerty)\" };\n\
+    xkb_types { include \"complete\" };\n\
+    xkb_compat { include \"complete\" };\n\
+    xkb_symbols { include \"pc+us+inet(evdev)\" };\n\
+};\n";
+
+fn seat_keyboard(socket: &std::path::Path, dir: &std::path::Path) -> Result<SeatKeyboard, String> {
+    use std::os::fd::AsFd;
+    let stream = std::os::unix::net::UnixStream::connect(socket).map_err(|e| e.to_string())?;
+    let conn = Connection::from_socket(stream).map_err(|e| e.to_string())?;
+    let (globals, mut queue) = registry_queue_init::<WlState>(&conn).map_err(|e| e.to_string())?;
+    let qh = queue.handle();
+    let manager: ZwpVirtualKeyboardManagerV1 = globals
+        .bind(&qh, 1..=1, ())
+        .map_err(|e| format!("compositor lacks zwp_virtual_keyboard_manager_v1: {e}"))?;
+    let seat: wl_seat::WlSeat = globals
+        .bind(&qh, 1..=9, ())
+        .map_err(|e| format!("compositor has no seat: {e}"))?;
+    let keyboard = manager.create_virtual_keyboard(&seat, &qh, ());
+    let path = dir.join("seat-keymap");
+    let mut bytes = SEAT_KEYMAP.as_bytes().to_vec();
+    bytes.push(0);
+    std::fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+    let file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+    let _ = std::fs::remove_file(&path);
+    keyboard.keymap(1, file.as_fd(), bytes.len() as u32);
+    conn.flush().map_err(|e| e.to_string())?;
+    let _ = queue.roundtrip(&mut WlState);
+    Ok(SeatKeyboard {
+        _conn: conn,
+        _keyboard: keyboard,
+    })
+}
+
+/// The private compositor's display, started on first use.
+fn input_display(output: (i32, i32)) -> Result<gtk::gdk::Display, String> {
+    INPUT_DISPLAY.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if let Some((_, display, _)) = slot.as_ref() {
+            if !display.is_closed() {
+                return Ok(display.clone());
+            }
+        }
+        let comp = crate::compositor::Compositor::spawn_input(output)?;
+        let name = comp.socket().to_string_lossy().into_owned();
+        let keyboard = seat_keyboard(comp.socket(), comp.runtime_dir())?;
+        let display = gtk::gdk::Display::open(Some(&name))
+            .ok_or_else(|| format!("could not open the private input display {name}"))?;
+        *slot = Some((comp, display.clone(), keyboard));
+        Ok(display)
+    })
+}
+
+/// The Wayland socket input for `win` must go to: the private input
+/// compositor while the window is on it, else the inherited
+/// `WAYLAND_DISPLAY`.
+fn input_socket(win: &BrowserWindow) -> Option<std::path::PathBuf> {
+    let current = gtk::prelude::WidgetExt::display(&win.window);
+    INPUT_DISPLAY.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .filter(|(_, display, _)| *display == current)
+            .map(|(comp, _, _)| comp.socket().to_path_buf())
+    })
+}
+
+/// Can trusted input reach a window in `mode` without showing it on the
+/// user's display? True for shown windows, in display-free mode, and on
+/// a Wayland session where a private compositor can be started.
+///
+/// GDK runs one backend per process, so the private display needs the
+/// session display to be Wayland too. On X11 (or `HWATU_DPR`, which
+/// forces X11) the second display opened under the X11 backend, input
+/// never reached the page, and the daemon aborted (measured).
+pub fn headless_capable() -> bool {
+    if crate::compositor::display_free() {
+        return true;
+    }
+    supported() && crate::compositor::input_compositor_available()
+}
+
+/// The pointer (wlr virtual pointer) and keys (wtype) are Wayland
+/// protocols, so trusted input needs a Wayland session display.
+pub fn supported() -> bool {
+    gtk::gdk::Display::default().is_some_and(|d| d.is::<gdk_wayland::WaylandDisplay>())
+}
+
+pub fn prepare(win: &Rc<BrowserWindow>) -> Result<TrustedSession, String> {
     let promoted = win.mode() != OpenMode::Normal;
-    // Native trusted input must temporarily focus a mapped compositor
-    // surface. Remember what the user was actually using before doing so;
-    // merely hiding the promoted headless window afterwards lets the WM
-    // choose an arbitrary successor and visibly strands keyboard focus.
-    let prior_niri_focus = focused_niri_window();
+    let mut home_display = None;
+    if promoted && !crate::compositor::display_free() {
+        let target = input_display(win.viewport_size())?;
+        let home = gtk::prelude::WidgetExt::display(&win.window);
+        win.window.set_visible(false);
+        win.window.set_display(&target);
+        home_display = Some(home);
+    }
+    let was_fullscreen = win.window.is_fullscreen();
+    // On the user's display, native trusted input must temporarily focus
+    // a mapped compositor surface. Remember what the user was actually
+    // using before doing so; merely hiding the window afterwards lets the
+    // WM choose an arbitrary successor and visibly strands keyboard focus.
+    let on_user_display = home_display.is_none() && !crate::compositor::display_free();
+    let prior_niri_focus = on_user_display.then(focused_niri_window).flatten();
     // Best-effort compositor-side focus first: on niri this also switches
     // to the window's workspace, which fullscreen alone does not do.
-    if let Ok(id) = find_niri_window(win) {
-        let _ = focus_niri_window(id);
+    if on_user_display {
+        if let Ok(id) = find_niri_window(win) {
+            let _ = focus_niri_window(id);
+        }
     }
     win.present();
     if !was_fullscreen {
         win.window.fullscreen();
     }
-    TrustedSession {
+    Ok(TrustedSession {
         win: win.clone(),
         was_fullscreen,
         promoted,
         prior_niri_focus,
+        home_display,
         finished: Rc::new(Cell::new(false)),
-    }
+    })
 }
 
 impl TrustedSession {
@@ -146,6 +272,10 @@ impl TrustedSession {
         }
         if !self.was_fullscreen {
             self.win.window.unfullscreen();
+        }
+        if let Some(home) = &self.home_display {
+            self.win.window.set_visible(false);
+            self.win.window.set_display(home);
         }
         if self.promoted {
             self.win.unfocus();
@@ -224,15 +354,15 @@ pub async fn inject_type(
     let report = inject_click(win, view, target).await?;
     glib::timeout_future(Duration::from_millis(60)).await;
     if clear {
-        run_wtype(&["-M", "ctrl", "a", "-m", "ctrl", "-k", "BackSpace"])?;
+        run_wtype(win, &["-M", "ctrl", "a", "-m", "ctrl", "-k", "BackSpace"])?;
         glib::timeout_future(Duration::from_millis(30)).await;
     }
     if !text.is_empty() {
-        run_wtype(&["--", text])?;
+        run_wtype(win, &["--", text])?;
     }
     if enter {
         glib::timeout_future(Duration::from_millis(30)).await;
-        run_wtype(&["-k", "Return"])?;
+        run_wtype(win, &["-k", "Return"])?;
     }
     // wtype returns once the events are queued, not once WebKit has
     // delivered them to the page. Settle proportionally to the text
@@ -252,7 +382,7 @@ pub async fn inject_paste(
     // focus to the target's window + element before wtype sends Ctrl+V.
     let report = inject_click(win, view, target).await?;
     glib::timeout_future(Duration::from_millis(60)).await;
-    run_wtype(&["-M", "ctrl", "v", "-m", "ctrl"])?;
+    run_wtype(win, &["-M", "ctrl", "v", "-m", "ctrl"])?;
     glib::timeout_future(Duration::from_millis(180)).await;
     Ok(report)
 }
@@ -300,6 +430,30 @@ impl Dispatch<ZwlrVirtualPointerManagerV1, ()> for WlState {
         _state: &mut Self,
         _proxy: &ZwlrVirtualPointerManagerV1,
         _event: wayland_protocols_wlr::virtual_pointer::v1::client::zwlr_virtual_pointer_manager_v1::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<ZwpVirtualKeyboardManagerV1, ()> for WlState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ZwpVirtualKeyboardManagerV1,
+        _event: wayland_protocols_misc::zwp_virtual_keyboard_v1::client::zwp_virtual_keyboard_manager_v1::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<ZwpVirtualKeyboardV1, ()> for WlState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ZwpVirtualKeyboardV1,
+        _event: wayland_protocols_misc::zwp_virtual_keyboard_v1::client::zwp_virtual_keyboard_v1::Event,
         _data: &(),
         _conn: &Connection,
         _qhandle: &QueueHandle<Self>,
@@ -372,9 +526,18 @@ impl CalibratedPointer {
     }
 }
 
-fn open_pointer(extent_width: u32, extent_height: u32) -> Result<CalibratedPointer, String> {
-    let conn = Connection::connect_to_env()
-        .map_err(|e| format!("failed to connect to Wayland display for trusted pointer: {e}"))?;
+fn open_pointer(
+    socket: Option<&std::path::Path>,
+    extent_width: u32,
+    extent_height: u32,
+) -> Result<CalibratedPointer, String> {
+    let conn = match socket {
+        Some(path) => std::os::unix::net::UnixStream::connect(path)
+            .map_err(|e| e.to_string())
+            .and_then(|stream| Connection::from_socket(stream).map_err(|e| e.to_string())),
+        None => Connection::connect_to_env().map_err(|e| e.to_string()),
+    }
+    .map_err(|e| format!("failed to connect to Wayland display for trusted pointer: {e}"))?;
     let (globals, mut queue) = registry_queue_init::<WlState>(&conn)
         .map_err(|e| format!("failed to read Wayland globals for trusted pointer: {e}"))?;
     let qh = queue.handle();
@@ -466,7 +629,11 @@ async fn calibrate(
     let mut origin_x = 0.0f64;
     let mut origin_y = 0.0f64;
 
-    let mut pointer = open_pointer(mon_w.max(1) as u32, mon_h.max(1) as u32)?;
+    let mut pointer = open_pointer(
+        input_socket(win).as_deref(),
+        mon_w.max(1) as u32,
+        mon_h.max(1) as u32,
+    )?;
 
     let mut last_seq = read_last_move(view).await?.map(|(_, _, s)| s).unwrap_or(0);
     let mut consecutive_hits = 0u32;
@@ -502,7 +669,8 @@ async fn calibrate(
             // previous trusted session's restore was still in flight
             // when this one started). Re-assert it and retry.
             if attempt % 3 == 2 {
-                if let Ok(id) = find_niri_window(win) {
+                if input_socket(win).is_some() {
+                } else if let Ok(id) = find_niri_window(win) {
                     let _ = Command::new("niri")
                         .args(["msg", "action", "focus-window", "--id", &id.to_string()])
                         .status();
@@ -555,8 +723,12 @@ fn monotonic_millis() -> u32 {
         .unwrap_or(0)
 }
 
-fn run_wtype(args: &[&str]) -> Result<(), String> {
-    let status = Command::new("wtype")
+fn run_wtype(win: &BrowserWindow, args: &[&str]) -> Result<(), String> {
+    let mut cmd = Command::new("wtype");
+    if let Some(socket) = input_socket(win) {
+        cmd.env("WAYLAND_DISPLAY", socket);
+    }
+    let status = cmd
         .args(args)
         .status()
         .map_err(|e| format!("failed to run wtype for trusted text input: {e}"))?;

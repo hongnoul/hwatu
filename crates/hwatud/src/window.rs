@@ -424,6 +424,13 @@ const BASELINE_FEATURE_OVERRIDES: &[(&str, bool)] = &[
     ("StorageAPIEstimate", true),
     ("FileSystem", true),
     ("FileSystemWritableStream", true),
+    // Headless windows are never mapped, but an agent drives them like a
+    // visible page. Once a window has been mapped and unmapped (`show`
+    // then `hide`, or a trusted-input call), WebKit treats it as hidden
+    // and runs page timers at 1/s while `visibilityState` still reads
+    // "visible" (measured 10/s -> 1/s on a 100 ms interval). Pages that
+    // poll, animate, or count down then stall.
+    ("HiddenPageDOMTimerThrottling", false),
 ];
 
 /// `HWATU_MEDIA_STREAM=1|on|true` re-enables the MediaStream API
@@ -708,6 +715,11 @@ impl BrowserWindow {
         if self.viewport.take().is_some() && self.mode.get() == OpenMode::Headless {
             self.allocate_viewport();
         }
+    }
+
+    /// The headless viewport in logical px.
+    pub fn viewport_size(&self) -> (i32, i32) {
+        self.viewport.get().unwrap_or_else(headless_size)
     }
 
     /// (Re-)allocate the headless toplevel at the current viewport.
@@ -1696,7 +1708,9 @@ impl BrowserWindow {
                         .map(|t| t.to_string())
                         .filter(|title| !title.is_empty())
                         .unwrap_or_else(|| self.last_title.borrow().clone()),
-                    focused: self.window.is_active(),
+                    // GTK keeps is-active after an unmap; an unmapped
+                    // (headless) window is never the user's focus.
+                    focused: self.window.is_active() && self.window.is_mapped(),
                     suspended: false,
                     app_id: self.app_id.clone(),
                     mode: self.mode.get(),

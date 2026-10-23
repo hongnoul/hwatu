@@ -64,8 +64,10 @@ fn doctor() -> i32 {
     check("webkit", webkit_check());
 
     // 3. Daemon ping (spawns the daemon if needed, like normal use).
+    let mut caps = None;
     let daemon_ok = match send(&Request::Ping) {
         Ok(Response::Ok { value, .. }) => {
+            caps = value.as_ref().and_then(|v| v.get("capabilities")).cloned();
             let field = |k: &str| {
                 value
                     .as_ref()
@@ -103,7 +105,14 @@ fn doctor() -> i32 {
         check("render", Err("skipped: daemon unreachable".into()));
     }
 
-    // 5. Hardware video decode. Informational: software
+    // 5. Trusted input (`click --trusted`, `type --trusted`). Informational:
+    // standard input works without it.
+    match trusted_input_check(caps.as_ref()) {
+        Ok(msg) => println!("ok    trusted-input: {msg}"),
+        Err(msg) => println!("info  trusted-input: {msg}"),
+    }
+
+    // 6. Hardware video decode. Informational: software
     // decode works, it just costs battery and shortform smoothness,
     // so a missing plugin must not fail the doctor.
     match hw_decode_probe() {
@@ -117,6 +126,27 @@ fn doctor() -> i32 {
     } else {
         println!("doctor: {failures} check(s) failed");
         1
+    }
+}
+
+/// What the daemon reports about trusted input, plus `wtype` for
+/// trusted keys on Linux (the daemon runs it; it is not linked).
+fn trusted_input_check(caps: Option<&serde_json::Value>) -> Result<String, String> {
+    let flag = |k: &str| caps.and_then(|c| c.get(k)).and_then(|v| v.as_bool());
+    let (Some(any), Some(headless)) = (flag("trusted_input"), flag("trusted_input_headless"))
+    else {
+        return Err("daemon did not report trusted input capabilities".into());
+    };
+    if !any {
+        return Err("unavailable: start the daemon on a Wayland session or with no display".into());
+    }
+    if cfg!(target_os = "linux") && which("wtype").is_none() {
+        return Err("wtype is not installed: trusted clicks work, trusted typing fails".into());
+    }
+    if headless {
+        Ok("headless windows".into())
+    } else {
+        Err("shown windows only: install sway, cage, or labwc for headless windows".into())
     }
 }
 

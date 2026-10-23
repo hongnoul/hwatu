@@ -18,7 +18,13 @@ if [[ "$(uname)" == Darwin ]]; then
   export PATH="$w/bin:$PATH"
 else
   export WEBKIT_DISABLE_DMABUF_RENDERER=1 LIBGL_ALWAYS_SOFTWARE=1 WLR_RENDERER=pixman
-  unset WAYLAND_DISPLAY DISPLAY
+  # Default: display-free. scripts/test-conformance-session.sh passes a
+  # Wayland display through so the daemon runs as on a desktop.
+  if [[ "${HWATU_CONFORMANCE_SESSION:-}" == 1 && -S "${WAYLAND_DISPLAY:-}" ]]; then
+    unset DISPLAY
+  else
+    unset WAYLAND_DISPLAY DISPLAY
+  fi
 fi
 
 port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
@@ -100,9 +106,9 @@ o=$(hw batch "[{\"cmd\":\"click\",\"id\":$id,\"selector\":\"#add\"},{\"cmd\":\"c
 ck "C20 batch halts at the irreversible stop" 'grep -q irreversible_action <<<"$o" && ! grep -q "\"complete\":true" <<<"$o"'
 o=$(title "$id"); ck "C21 batch did not run the stopped handler" '! grep -q paid <<<"$o"'
 
-# Trusted input. Where the engine supports it headless, the page sees
+# Trusted input. Where it reaches headless windows, the page sees
 # isTrusted events. Elsewhere the daemon must refuse with an error naming
-# show instead of silently sending untrusted events.
+# what is missing instead of silently sending untrusted events.
 o=$(hw goto --id "$id" "$base/trusted.html")
 caps=$(hw ping)
 if grep -q '"trusted_input_headless":true' <<<"$caps"; then
@@ -219,6 +225,22 @@ o=$(hw eval --id "$id" 'return location.search'); ck "C50 type --enter submits t
 hw goto --id "$id" "$base/nav.html" >/dev/null
 hw fill --id "$id" --field '#q=yo' --submit >/dev/null; hw wait-load --id "$id" >/dev/null
 o=$(hw eval --id "$id" 'return location.search'); ck "C51 fill --submit submits the form" 'grep -q "q=yo" <<<"$o"'
+
+# Page timers keep full rate in a headless window, also after it was shown
+# and hidden. Linux ran them at 1/s after an unmap (10/s expected).
+t=$(open_id "$base/timers.html"); hw wait-load --id "$t" >/dev/null
+caps=$(hw ping)
+# HWATU_CONFORMANCE_SHOWING marks the one intended show for the session
+# wrapper's window watcher.
+if grep -q '"show":true' <<<"$caps"; then
+  [[ -n "${HWATU_CONFORMANCE_SHOWING:-}" ]] && touch "$HWATU_CONFORMANCE_SHOWING"
+  hw show "$t" >/dev/null; sleep 0.3; hw hide "$t" >/dev/null; sleep 0.3
+  [[ -n "${HWATU_CONFORMANCE_SHOWING:-}" ]] && rm -f "$HWATU_CONFORMANCE_SHOWING"
+fi
+rate() { a=$(hw eval --id "$t" 'return ticks'); sleep 1; b=$(hw eval --id "$t" 'return ticks'); echo $((b - a)); }
+o="ticks/s after show+hide: $(rate)"
+ck "C53 page timers run at full rate after show and hide (>= 7/s)" '[[ ${o##* } -ge 7 ]]'
+hw close "$t" >/dev/null
 
 # Window churn: a long-lived daemon must release closed windows. Before
 # the fix, open/close leaked ~0.8 MB per window on macOS and 2 fds per
