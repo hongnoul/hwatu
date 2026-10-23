@@ -126,6 +126,7 @@ mod tests {
             ("scrollJS", crate::automation::SCROLL_JS),
             ("fillJS", crate::coverage::FILL_JS),
             ("authContextJS", crate::coverage::AUTH_CONTEXT_JS),
+            ("trustedResolveJS", crate::trusted_input::RESOLVER_JS),
         ] {
             let open = format!("let {name} = #\"\"\"\n");
             let body = swift

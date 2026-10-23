@@ -158,7 +158,13 @@ then `challenge` again to confirm the status is `cleared`. `challenge --wait
 --timeout-ms 60000` polls until the challenge disappears.
 
 `click --trusted` and `type --trusted` deliver events the page sees with
-`isTrusted === true`. `ping` reports `capabilities.trusted_input_headless`.
+`isTrusted === true`. A selector resolves in the top document first, then
+in child frames, including cross-origin challenge frames
+(`click --trusted '#recaptcha-anchor'`). For a target with no selector,
+such as an image region, `click --trusted --at X,Y` clicks a point in
+top-viewport CSS pixels (a `shot` pixel divided by `devicePixelRatio`).
+`challenge` reports `clear` once the widget's response token is set.
+`ping` reports `capabilities.trusted_input_headless`.
 On macOS it is `true`: input goes to the web view without moving the
 user's cursor or focus. On Linux it is `false`: trusted input goes through
 the compositor and a headless window answers an error naming `show`.

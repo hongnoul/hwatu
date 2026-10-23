@@ -1,0 +1,12 @@
+<!DOCTYPE html><meta charset="utf-8"><title>frame host</title>
+<style>body{margin:0} iframe{position:absolute;left:100px;top:100px;width:300px;height:200px;border:0}</style>
+<iframe id="f"></iframe>
+<button id="pay" style="position:absolute;left:500px;top:100px;width:120px;height:40px" onclick="document.title='paid'">Place Order</button>
+<script>
+// The child is served from a second origin (localhost vs 127.0.0.1), so
+// the parent cannot read it. It reports trusted clicks by postMessage.
+const port = location.port;
+document.getElementById('f').src = `http://localhost:${port}/frame-child.html`;
+window.childClicks = [];
+addEventListener('message', e => { if (e.data && e.data.childClick) childClicks.push(e.data.childClick); });
+</script>

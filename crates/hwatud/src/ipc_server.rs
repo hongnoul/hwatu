@@ -907,10 +907,14 @@ fn dispatch(daemon: &Rc<Daemon>, req: Request, transport: TransportKind, reply: 
             nth,
             contains,
             r#ref,
+            at,
             trusted,
             confirm,
             timeout_ms,
         } => {
+            if let Some([x, y]) = at {
+                return automation::click_at(daemon, id, x, y, confirm, timeout_ms, reply);
+            }
             return automation::click(
                 daemon, id, selector, nth, contains, r#ref, trusted, confirm, timeout_ms, reply,
             );
@@ -1696,6 +1700,7 @@ mod tests {
                 nth: None,
                 contains: None,
                 r#ref: None,
+                at: None,
                 trusted: false,
                 confirm: false,
                 timeout_ms: None,

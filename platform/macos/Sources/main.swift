@@ -199,6 +199,9 @@ final class Window: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessag
         })();
         """
         controller.addUserScript(WKUserScript(source: js, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        // Trusted-input target resolver in every frame, including
+        // cross-origin ones (CAPTCHA widgets): shared page-scripts/trusted-resolve.js.
+        controller.addUserScript(WKUserScript(source: trustedResolveJS, injectionTime: .atDocumentStart, forMainFrameOnly: false))
         if mode == "headless" {
             // WKWebView throttles requestAnimationFrame (and suspends CSS
             // animation ticks) when its window is not visible, which stalls
@@ -258,6 +261,16 @@ final class Window: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessag
         }
         cfg.userContentController = controller
         webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 1280, height: 800), configuration: cfg)
+        if mode == "headless" {
+            // A headless window is always "occluded" while the display
+            // sleeps or another app covers it, and WebKit then throttles
+            // page timers to about 2 Hz (measured: 4 ticks of a 100 ms
+            // interval in 2 s with the display asleep, 20 with this off).
+            // WebKit's private switch is guarded so a WebKit without it
+            // keeps working, only slower.
+            let sel = NSSelectorFromString("_setWindowOcclusionDetectionEnabled:")
+            if webView.responds(to: sel) { webView.perform(sel, with: NSNumber(value: false)) }
+        }
         webView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15 hwatu"
         // A real (but never-presented) window keeps WebKit rendering so
         // snapshots are not blank. It is never ordered front for headless.
@@ -447,14 +460,21 @@ func keyEvent(_ w: Window, _ type: NSEvent.EventType, _ chars: String, _ keyCode
                      charactersIgnoringModifiers: chars, isARepeat: false, keyCode: keyCode)
 }
 
-/// Resolve the target with the shared target.js, scroll it into view,
-/// and return `matched` plus its centre in CSS pixels.
+/// Resolve a trusted-input target with the shared resolver: the top
+/// document first, then child frames (cross-origin included) through
+/// postMessage. Returns `matched`, `frame`, `iframe` and the centre in
+/// top-viewport CSS pixels.
 func targetCenterJS(_ req: JSON) -> String {
-    """
-    \(targetPreludeJS(req))
-    el.scrollIntoView({ block: 'center', behavior: 'instant' });
-    const r = el.getBoundingClientRect();
-    return { matched, x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    let sel = jstr(req, "selector").map(jsonStringLiteral) ?? "null"
+    let contains = jstr(req, "contains").map(jsonStringLiteral) ?? "null"
+    let ref = jint(req, "ref").map(String.init) ?? "null"
+    if sel == "null" && ref == "null" {
+        return "throw new Error('pass exactly one of a CSS selector or --ref <n> (from `hwatu snapshot`)');"
+    }
+    return """
+    const resolver = window.__hwatuTrustedResolve;
+    if (!resolver) throw new Error('trusted input resolver is not installed; reload the page');
+    return await resolver(\(sel), \(jint(req, "nth") ?? 0), \(contains), \(ref));
     """
 }
 
@@ -471,8 +491,10 @@ func nativeClick(_ w: Window, cssX: Double, cssY: Double) {
 
 /// Reply shape shared with the GTK daemon: `{clicked|typed: matched,
 /// trusted: true, url, input: {backend}}`.
-func trustedReply(_ w: Window, _ action: String, _ matched: Any, extra: JSON = [:]) -> JSON {
-    var v: JSON = [action: matched, "trusted": true, "url": w.webView.url?.absoluteString ?? "",
+func trustedReply(_ w: Window, _ action: String, _ target: JSON, extra: JSON = [:]) -> JSON {
+    var v: JSON = [action: target["matched"] ?? NSNull(), "trusted": true,
+                   "frame": target["frame"] ?? "top", "iframe": target["iframe"] ?? NSNull(),
+                   "url": w.webView.url?.absoluteString ?? "",
                    "input": ["backend": "appkit-nsevent"]]
     for (k, x) in extra { v[k] = x }
     return okResponse(["value": v])
@@ -482,7 +504,7 @@ func trustedClick(_ w: Window, _ req: JSON, _ done: @escaping (JSON) -> Void) {
     runJS(w, targetCenterJS(req), timeoutMs: jint(req, "timeout_ms") ?? 15000) { r in
         guard let v = r["value"] as? JSON, let x = v["x"] as? Double, let y = v["y"] as? Double else { done(r); return }
         nativeClick(w, cssX: x, cssY: y)
-        done(trustedReply(w, "clicked", v["matched"] ?? NSNull()))
+        done(trustedReply(w, "clicked", v))
     }
 }
 
@@ -509,7 +531,7 @@ func trustedType(_ w: Window, _ req: JSON, _ text: String, _ done: @escaping (JS
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                 runJS(w, "const el = document.activeElement; return { value: el && 'value' in el ? String(el.value).slice(0, 200) : null };", timeoutMs: 5000) { after in
                     let value = (after["value"] as? JSON)?["value"] ?? NSNull()
-                    done(trustedReply(w, "typed", v["matched"] ?? NSNull(), extra: ["value": value]))
+                    done(trustedReply(w, "typed", v, extra: ["value": value]))
                 }
             }
         }
@@ -890,6 +912,37 @@ func handle(_ req: JSON) -> JSON {
         }
 
     case "click":
+        if let at = req["at"] as? [NSNumber], at.count == 2 {
+            // Point click (`click --trusted --at x,y`): top-viewport CSS px.
+            // The guard classifies the element at the point when it is in
+            // the top document; inside a cross-origin frame it is unreadable.
+            let x = at[0].doubleValue, y = at[1].doubleValue
+            guard x.isFinite, y.isFinite, x >= 0, y >= 0 else { return errResponse("click --at needs non-negative x,y") }
+            return onMain { done in
+                guard let w = daemon.resolve(jint(req, "id")) else { done(errResponse("no window open")); return }
+                let probe = """
+                const el = document.elementFromPoint(\(x), \(y));
+                if (!el) throw new Error('no element at \(x),\(y) (outside the viewport?)');
+                const inFrame = el.tagName === 'IFRAME' || el.tagName === 'FRAME';
+                return { irreversible: inFrame ? null : \(irreversibleJS.trimmingCharacters(in: .whitespacesAndNewlines)), tag: el.tagName.toLowerCase() };
+                """
+                runJS(w, probe, timeoutMs: jint(req, "timeout_ms") ?? 15000) { r in
+                    guard let v = r["value"] as? JSON else { done(r); return }
+                    if !jbool(req, "confirm"), let hit = v["irreversible"] as? JSON {
+                        let kind = hit["kind"] as? String ?? "irreversible"
+                        let label = hit["label"] as? String ?? ""
+                        done([
+                            "status": "err",
+                            "message": "confirmation required: \(kind) control \"\(label)\"; ask the user, then retry with confirm",
+                            "stop": ["reason": "irreversible_action", "kind": kind, "label": label, "retry": ["confirm": true]],
+                        ])
+                        return
+                    }
+                    nativeClick(w, cssX: x, cssY: y)
+                    done(trustedReply(w, "clicked", ["matched": ["at": [x, y], "tag": v["tag"] ?? NSNull()], "frame": "point"]))
+                }
+            }
+        }
         return onMain { done in
             guard let w = daemon.resolve(jint(req, "id")) else { done(errResponse("no window open")); return }
             // Structured stop: unless confirmed, classify the target with the

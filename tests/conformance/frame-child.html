@@ -1,0 +1,5 @@
+<!DOCTYPE html><meta charset="utf-8"><style>body{margin:0;background:#eee} #tile{position:absolute;left:150px;top:100px;width:60px;height:60px;background:#c00}</style>
+<div id="tile"></div>
+<script>
+document.addEventListener('click', e => parent.postMessage({ childClick: { x: e.clientX, y: e.clientY, trusted: e.isTrusted, onTile: e.target.id === 'tile' } }, '*'));
+</script>

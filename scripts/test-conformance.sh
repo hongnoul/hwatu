@@ -24,7 +24,11 @@ fi
 port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1])')
 python3 -m http.server "$port" --bind 127.0.0.1 --directory "$root/tests/conformance" >/dev/null 2>&1 &
 srv=$!
-trap 'kill $srv 2>/dev/null; "$b/hwatu" quit >/dev/null 2>&1; rm -rf "$w"' EXIT
+# A second origin for cross-origin frame checks: localhost may resolve to
+# ::1, so serve the same directory there too.
+python3 -m http.server "$port" --bind ::1 --directory "$root/tests/conformance" >/dev/null 2>&1 &
+srv6=$!
+trap 'kill $srv $srv6 2>/dev/null; "$b/hwatu" quit >/dev/null 2>&1; rm -rf "$w"' EXIT
 base="http://127.0.0.1:$port"
 for _ in $(seq 50); do curl -fs "$base/plain.html" >/dev/null && break; sleep 0.1; done
 
@@ -153,6 +157,23 @@ ck "C35 motion reports the running keyframe animation" 'grep -q "\"name\":\"spin
 ck "C36 motion reports the idle declared transition" 'grep -q "\"property\":\"opacity\"" <<<"$o"'
 o=$(hw eval --id "$id" 'return [Infinity, NaN, 1]'); ck "C37 non-finite eval values serialize as null" 'grep -q "\[null,null,1\]" <<<"$o"'
 o=$(hw ping); ck "C38 daemon alive after non-finite values" 'grep -q "\"engine\"" <<<"$o"'
+
+# Point clicks (`click --trusted --at x,y`) reach a cross-origin frame as
+# trusted input at the right spot, and the irreversible guard still applies
+# to the element at the point.
+caps=$(hw ping)
+o=$(hw goto --id "$id" "$base/frame-host.html"); sleep 0.5
+if grep -q '"trusted_input_headless":true' <<<"$caps"; then
+  # tile centre: iframe at (100,100) + tile at (150,100) + 30 = (280, 230)
+  hw click --id "$id" --trusted --at 280,230 >/dev/null
+  o=$(hw eval --id "$id" 'for (let i = 0; i < 20 && !childClicks.length; i++) await new Promise(r => setTimeout(r, 50)); return JSON.stringify(childClicks)')
+  ck "C42 point click lands on the tile inside a cross-origin frame, trusted" 'grep -q "trusted.\{0,3\}:true" <<<"$o" && grep -q "onTile.\{0,3\}:true" <<<"$o"'
+  o=$(hw click --id "$id" --trusted --at 560,120); ck "C43 point click on Place Order returns irreversible_action" 'grep -q "\"reason\":\"irreversible_action\"" <<<"$o"'
+else
+  o=$(hw click --id "$id" --trusted --at 280,230); ck "C42 headless point click refused with show hint" 'grep -q "show" <<<"$o"'
+  o=$(hw click --id "$id" --trusted --at 560,120); ck "C43 point click on Place Order returns irreversible_action" 'grep -q "\"reason\":\"irreversible_action\"" <<<"$o"'
+fi
+o=$(hw click --id "$id" --at 280,230); ck "C44 --at without --trusted is rejected" 'grep -q "needs --trusted" <<<"$o"'
 
 # Irreversible labels in many languages, classified in the real engine on
 # a checkout page. The guard must stop every `stop` label and pass every

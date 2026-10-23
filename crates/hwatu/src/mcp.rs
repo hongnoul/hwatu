@@ -398,8 +398,23 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
         "click" => {
             let selector = opt_str(args, "selector");
             let r#ref = opt_u32(args, "ref");
-            if selector.is_none() && r#ref.is_none() {
-                return Err("click needs `selector` or `ref`".into());
+            let at = match (
+                args.get("x").and_then(Value::as_f64),
+                args.get("y").and_then(Value::as_f64),
+            ) {
+                (Some(x), Some(y)) => Some([x, y]),
+                (None, None) => None,
+                _ => return Err("click at a point needs both `x` and `y`".into()),
+            };
+            let targets = usize::from(selector.is_some())
+                + usize::from(r#ref.is_some())
+                + usize::from(at.is_some());
+            if targets != 1 {
+                return Err("click needs exactly one of `selector`, `ref`, or `x`+`y`".into());
+            }
+            let trusted = opt_bool(args, "trusted").unwrap_or(false);
+            if at.is_some() && !trusted {
+                return Err("click at `x`,`y` needs `trusted: true`".into());
             }
             Ok(Request::Click {
                 id,
@@ -407,6 +422,7 @@ pub(crate) fn build_request(name: &str, args: &Value) -> Result<Request, String>
                 nth: opt_u32(args, "nth"),
                 contains: opt_str(args, "contains"),
                 r#ref,
+                at,
                 trusted: opt_bool(args, "trusted").unwrap_or(false),
                 confirm: opt_bool(args, "confirm").unwrap_or(false),
                 timeout_ms,
@@ -834,17 +850,20 @@ pub(crate) fn tool_definitions() -> Vec<Value> {
         ),
         tool(
             "click",
-            "Click an element by CSS selector (disambiguate with nth/contains) or \
-             by `ref` from the last snapshot. Dispatches JS pointer events by \
-             default; trusted=true requests native trusted input synthesis. \
-             Trusted input is refused for background/headless windows because \
-             compositor delivery would visibly focus them.",
+            "Click an element by CSS selector (disambiguate with nth/contains), \
+             by `ref` from the last snapshot, or at a point x,y (trusted only). \
+             Dispatches JS pointer events by default; trusted=true delivers \
+             native input, including into cross-origin frames such as CAPTCHA \
+             widgets. ping reports capabilities.trusted_input_headless: where it \
+             is false, trusted input needs a shown window.",
             json!({
                 "id": prop("integer", ID_DESC),
                 "selector": prop("string", "CSS selector."),
                 "nth": prop("integer", "0-based index among selector matches."),
                 "contains": prop("string", "Keep only matches whose text contains this."),
                 "ref": prop("integer", "Interactable index from the last snapshot."),
+                "x": prop("number", "Point click: top-viewport CSS x (shot pixel / devicePixelRatio). Needs y and trusted."),
+                "y": prop("number", "Point click: top-viewport CSS y. Needs x and trusted."),
                 "trusted": prop("boolean", "Request native trusted input synthesis instead of JS events."),
                 "confirm": prop("boolean", "The user confirmed this click in the current session. Without it, a click on a payment, send, or delete control returns stop.reason = irreversible_action and is not performed."),
             }),

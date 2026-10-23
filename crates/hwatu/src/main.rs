@@ -316,6 +316,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
     let mut to_y: Option<f64> = None;
     let mut by_pages: Option<f64> = None;
     let mut r#ref: Option<u32> = None;
+    let mut at: Option<[f64; 2]> = None;
     let mut clear = false;
     let mut no_clear = false;
     let mut enter = false;
@@ -416,6 +417,20 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                     .ok_or("usage: --contains <text>")?
                     .clone(),
             );
+        } else if arg == "--at" {
+            // --at X,Y in top-viewport CSS pixels (shot pixels / dpr).
+            let v = it.next().ok_or("usage: --at <x>,<y> (CSS pixels)")?;
+            let (x, y) = v
+                .split_once(',')
+                .ok_or("usage: --at <x>,<y> (CSS pixels)")?;
+            at = Some([
+                x.trim()
+                    .parse()
+                    .map_err(|_| "usage: --at <x>,<y> (CSS pixels)")?,
+                y.trim()
+                    .parse()
+                    .map_err(|_| "usage: --at <x>,<y> (CSS pixels)")?,
+            ]);
         } else if arg == "--ref" {
             r#ref = Some(
                 it.next()
@@ -1083,12 +1098,18 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
         }),
         Some("click") => {
             let selector = rest.get(1).map(|s| s.to_string());
-            if selector.is_none() && r#ref.is_none() {
+            let targets = usize::from(selector.is_some())
+                + usize::from(r#ref.is_some())
+                + usize::from(at.is_some());
+            if targets != 1 {
                 return Err(
                     "usage: hwatu click [--id <id>] [--trusted] [--confirm] <selector> [--nth <n>] [--contains <text>] \
-                     | --ref <n>"
+                     | --ref <n> | --trusted --at <x>,<y>"
                         .into(),
                 );
+            }
+            if at.is_some() && !trusted {
+                return Err("click --at needs --trusted (a point click is delivered as native input)".into());
             }
             Ok(Request::Click {
                 id,
@@ -1096,6 +1117,7 @@ fn parse_with_default_mode(args: &[String], default_mode: OpenMode) -> Result<Re
                 nth: rest.get(2).and_then(|s| s.parse().ok()).or(nth),
                 contains,
                 r#ref,
+                at,
                 trusted,
                 confirm,
                 timeout_ms,
@@ -2663,6 +2685,25 @@ mod tests {
             parse(&args(&["close", "3"])),
             Ok(Request::Close { id: 3 })
         ));
+    }
+
+    #[test]
+    fn click_at_parses_and_requires_trusted() {
+        let Ok(Request::Click {
+            at,
+            trusted,
+            selector,
+            ..
+        }) = parse(&args(&["click", "--trusted", "--at", "280.5,230"]))
+        else {
+            panic!("click --trusted --at should parse");
+        };
+        assert_eq!(at, Some([280.5, 230.0]));
+        assert!(trusted);
+        assert!(selector.is_none());
+        assert!(parse(&args(&["click", "--at", "1,2"])).is_err());
+        assert!(parse(&args(&["click", "--trusted", "--at", "1,2", "button"])).is_err());
+        assert!(parse(&args(&["click", "--trusted", "--at", "12"])).is_err());
     }
 
     #[test]

@@ -2504,6 +2504,7 @@ fn trusted_input_run(
     contains: Option<String>,
     ref_idx: Option<u32>,
     action: TrustedAction,
+    point: Option<(f64, f64)>,
     timeout_ms: Option<u64>,
     reply: Reply,
 ) {
@@ -2524,9 +2525,16 @@ fn trusted_input_run(
         Ok(v) => v,
         Err(resp) => return reply.send(*resp),
     };
-    let js = match trusted_target_source(selector.as_deref(), nth, contains.as_deref(), ref_idx) {
-        Ok(js) => js,
-        Err(resp) => return reply.send(*resp),
+    let js = match point {
+        // A fixed point needs no resolution; return it in the resolver's shape.
+        Some((x, y)) => format!(
+            "return {{ x: {x}, y: {y}, viewportWidth: innerWidth, viewportHeight: innerHeight, \
+             frame: 'point', matched: {{ at: [{x}, {y}], tag: (document.elementFromPoint({x}, {y}) || {{}}).tagName?.toLowerCase() || null }} }};"
+        ),
+        None => match trusted_target_source(selector.as_deref(), nth, contains.as_deref(), ref_idx) {
+            Ok(js) => js,
+            Err(resp) => return reply.send(*resp),
+        },
     };
     let source = match plan_eval_source(&js) {
         Ok(source) => source,
@@ -2689,6 +2697,66 @@ pub fn click(
     );
 }
 
+/// Trusted click at a top-viewport CSS point (`click --trusted --at x,y`).
+/// For targets with no selector, such as image regions inside a
+/// cross-origin challenge frame. The irreversible guard classifies the
+/// element at the point when it is in the top document; inside a
+/// cross-origin frame the element is not readable and the click proceeds.
+pub fn click_at(
+    daemon: &Rc<Daemon>,
+    id: Option<u64>,
+    x: f64,
+    y: f64,
+    confirm: bool,
+    timeout_ms: Option<u64>,
+    reply: Reply,
+) {
+    if !x.is_finite() || !y.is_finite() || x < 0.0 || y < 0.0 {
+        return OnceReply::new(reply).send(Response::err("click --at needs non-negative x,y"));
+    }
+    let probe = format!(
+        "const el = document.elementFromPoint({x}, {y});\n\
+         if (!el) throw new Error('no element at {x},{y} (outside the viewport?)');\n\
+         const inFrame = el.tagName === 'IFRAME' || el.tagName === 'FRAME';\n\
+         return {{ irreversible: inFrame ? null : {classifier} }};",
+        classifier = crate::stops::IRREVERSIBLE_JS.trim()
+    );
+    let daemon2 = daemon.clone();
+    eval_with(
+        daemon,
+        id,
+        probe,
+        timeout_ms,
+        NavPolicy::Error,
+        Box::new(move |resp| {
+            let value = match resp {
+                Response::Ok {
+                    value: Some(value), ..
+                } => value,
+                other => return reply(other),
+            };
+            if !confirm {
+                if let Some(hit) = value.get("irreversible").filter(|v| !v.is_null()) {
+                    let (message, stop) = crate::stops::irreversible_action(hit);
+                    return reply(Response::stop(message, stop));
+                }
+            }
+            trusted_input_run(
+                &daemon2,
+                id,
+                None,
+                None,
+                None,
+                None,
+                TrustedAction::Click,
+                Some((x, y)),
+                timeout_ms,
+                reply,
+            );
+        }),
+    );
+}
+
 #[allow(clippy::too_many_arguments)]
 fn click_unguarded(
     daemon: &Rc<Daemon>,
@@ -2714,6 +2782,7 @@ fn click_unguarded(
             contains,
             ref_idx,
             TrustedAction::Click,
+            None,
             timeout_ms,
             reply,
         );
@@ -2755,6 +2824,7 @@ pub fn type_text(
             contains,
             ref_idx,
             TrustedAction::Type { text, clear, enter },
+            None,
             timeout_ms,
             reply,
         );
@@ -2836,6 +2906,7 @@ pub fn paste(
         contains,
         ref_idx,
         TrustedAction::Paste,
+        None,
         timeout_ms,
         reply,
     );

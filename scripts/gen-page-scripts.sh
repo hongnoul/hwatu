@@ -30,5 +30,6 @@ emit() { # emit <swift-name> <file>
   emit scrollJS scroll.js
   emit fillJS fill.js
   emit authContextJS auth-context.js
+  emit trustedResolveJS trusted-resolve.js
 } >"$out"
 echo "wrote $out"

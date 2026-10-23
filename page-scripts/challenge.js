@@ -27,7 +27,18 @@ function detectHwatuChallenge() {
   const firstStrong = evidence.find(e => e.weight >= 4) || evidence[0];
   const challengeType = firstStrong ? firstStrong.kind : null;
   const confidence = Math.max(0, Math.min(1, weight / 8));
-  const present = evidence.length > 0 && confidence >= 0.35;
+  // A solved widget stays on the page. The widget writes its response
+  // token into a named field on success; a non-empty token means solved.
+  const tokenFields = {
+    recaptcha: 'textarea[name="g-recaptcha-response"], #g-recaptcha-response',
+    hcaptcha: 'textarea[name="h-captcha-response"], textarea[name="g-recaptcha-response"]',
+    turnstile: 'input[name="cf-turnstile-response"]',
+  };
+  const tokenSel = tokenFields[challengeType];
+  const tokenEls = tokenSel ? [...document.querySelectorAll(tokenSel)] : [];
+  const solved = tokenEls.length > 0 && tokenEls.every(t => (t.value || '').length > 0);
+  if (solved) evidence.push({ kind: challengeType, detail: 'response token present (solved)', weight: 0 });
+  const present = evidence.length > 0 && confidence >= 0.35 && !solved;
   return {
     status: present ? 'challenge' : 'clear',
     challenge_type: present ? challengeType : null,

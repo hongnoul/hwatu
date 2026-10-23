@@ -585,6 +585,12 @@ pub enum Request {
         /// Interactable index from the last snapshot of this window.
         #[serde(default)]
         r#ref: Option<u32>,
+        /// Click at a point instead of an element: CSS pixels in the top
+        /// viewport, as measured on a `shot` divided by the device pixel
+        /// ratio. For targets with no selector, such as an image region
+        /// inside a cross-origin challenge frame. Requires `trusted`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        at: Option<[f64; 2]>,
         /// Use trusted native input instead of JS-dispatched events.
         #[serde(default, skip_serializing_if = "is_false")]
         trusted: bool,
@@ -2457,6 +2463,7 @@ mod tests {
                     nth: None,
                     contains: Some("Save".into()),
                     r#ref: None,
+                    at: None,
                     trusted: false,
                     confirm: false,
                     timeout_ms: None,
