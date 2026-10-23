@@ -161,6 +161,15 @@ o=$(hw goto --id "$id" "$base/motion.html")
 o=$(hw motion --id "$id")
 ck "C35 motion reports the running keyframe animation" 'grep -q "\"name\":\"spin\"" <<<"$o" && grep -q "\"duration_ms\":2000" <<<"$o"'
 ck "C36 motion reports the idle declared transition" 'grep -q "\"property\":\"opacity\"" <<<"$o"'
+# Script-driven motion: --observe samples under the virtual clock and fits
+# models (in the daemon on Linux, in the CLI on macOS). The marquee moves
+# -30 px/s and wraps every 600 px (20 s).
+hw goto --id "$id" "$base/marquee.html" >/dev/null
+o=$(hw motion --id "$id" --observe)
+v=$(python3 -c 'import json,sys; d=json.loads(sys.stdin.read()); m=[t for t in d.get("observed",[]) if "m" in str(t.get("target"))]; print(m[0].get("velocity_px_s","none") if m else "none")' <<<"$o" 2>/dev/null)
+p=$(python3 -c 'import json,sys; d=json.loads(sys.stdin.read()); m=[t for t in d.get("observed",[]) if "m" in str(t.get("target"))]; print(m[0].get("period_s","none") if m else "none")' <<<"$o" 2>/dev/null)
+ck "C57 motion --observe fits the rAF marquee velocity (-30 px/s, got $v)" 'python3 -c "import sys; v=float(sys.argv[1]); sys.exit(0 if abs(v + 30) < 1.5 else 1)" "$v" 2>/dev/null'
+ck "C58 motion --observe finds the loop period (20 s, got $p)" 'python3 -c "import sys; v=float(sys.argv[1]); sys.exit(0 if abs(v - 20) < 1 else 1)" "$p" 2>/dev/null'
 o=$(hw eval --id "$id" 'return [Infinity, NaN, 1]'); ck "C37 non-finite eval values serialize as null" 'grep -q "\[null,null,1\]" <<<"$o"'
 o=$(hw ping); ck "C38 daemon alive after non-finite values" 'grep -q "\"engine\"" <<<"$o"'
 
@@ -222,6 +231,25 @@ ck "C49 eval interrupted by navigation names the destination" 'grep -q "eval int
 hw goto --id "$id" "$base/nav.html" >/dev/null
 hw type --id "$id" '#q' hi --enter >/dev/null; hw wait-load --id "$id" >/dev/null
 o=$(hw eval --id "$id" 'return location.search'); ck "C50 type --enter submits the form" 'grep -q "q=hi" <<<"$o"'
+# The reply waits for the submit's navigation: 30 runs, each must report
+# navigated and land on the result (Linux: 1 in 60 answered on the old page).
+miss=0
+for _ in $(seq 30); do
+  hw goto --id "$id" "$base/nav.html" >/dev/null
+  t=$(hw type --id "$id" '#q' hi --enter)
+  q=$(hw eval --id "$id" 'return location.search')
+  grep -q '"navigated":true' <<<"$t" && grep -q "q=hi" <<<"$q" || miss=$((miss+1))
+done
+o="$miss of 30 type --enter replies before the navigation"
+ck "C59 type --enter reports the navigation it caused (30 runs)" '[[ $miss -eq 0 ]]'
+# A JS-handled submit (preventDefault) has no navigation; the reply comes
+# promptly with the page updated.
+hw goto --id "$id" "$base/spa-form.html" >/dev/null
+s0=$(python3 -c 'import time; print(int(time.time()*1000))')
+t=$(hw type --id "$id" '#q' hi --enter)
+s1=$(python3 -c 'import time; print(int(time.time()*1000))')
+o="$(hw eval --id "$id" 'return document.getElementById("out").textContent') in $((s1 - s0)) ms"
+ck "C60 type --enter on a JS-handled form returns under 2 s with the result" 'grep -q "searched hi" <<<"$o" && [[ $((s1 - s0)) -lt 2000 ]]'
 hw goto --id "$id" "$base/nav.html" >/dev/null
 hw fill --id "$id" --field '#q=yo' --submit >/dev/null; hw wait-load --id "$id" >/dev/null
 o=$(hw eval --id "$id" 'return location.search'); ck "C51 fill --submit submits the form" 'grep -q "q=yo" <<<"$o"'

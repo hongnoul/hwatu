@@ -1,0 +1,16 @@
+<!DOCTYPE html><meta charset="utf-8"><title>marquee</title>
+<style>body { margin: 0; overflow: hidden; } #m { position: absolute; top: 20px; left: 0; width: 120px; height: 30px; background: #393; }</style>
+<div id="m"></div>
+<script>
+// Script-driven motion that getAnimations() cannot see: 30 px/s to the
+// left, integrated from rAF timestamps, wrapping every 600 px.
+let x = 400, last = null;
+const m = document.getElementById('m');
+requestAnimationFrame(function tick(t) {
+  if (last !== null) x -= 0.03 * (t - last);
+  if (x < -200) x += 600;
+  last = t;
+  m.style.transform = 'translateX(' + x + 'px)';
+  requestAnimationFrame(tick);
+});
+</script>

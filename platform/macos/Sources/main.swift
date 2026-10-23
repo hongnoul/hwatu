@@ -258,6 +258,10 @@ final class Window: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessag
         // Trusted-input target resolver in every frame, including
         // cross-origin ones (CAPTCHA widgets): shared page-scripts/trusted-resolve.js.
         controller.addUserScript(WKUserScript(source: trustedResolveJS, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        // Virtual clock (shared page-scripts/clock.js): dormant until the
+        // first pause/step/set, so pages run natively unless an agent uses
+        // `clock` or `motion --observe`.
+        controller.addUserScript(WKUserScript(source: clockJS, injectionTime: .atDocumentStart, forMainFrameOnly: false))
         if mode == "headless" {
             // WKWebView throttles requestAnimationFrame (and suspends CSS
             // animation ticks) when its window is not visible, which stalls
@@ -1176,6 +1180,7 @@ func handle(_ req: JSON) -> JSON {
             }
             let fieldsJSON = (try? String(data: JSONSerialization.data(withJSONObject: specs), encoding: .utf8)) ?? "[]"
             let js = """
+            \(nativeTimeJS)
             const FIELDS = \(fieldsJSON);
             const SUBMIT = \(jbool(req, "submit"));
             \(fillJS)
@@ -1334,12 +1339,50 @@ func handle(_ req: JSON) -> JSON {
 
     case "motion":
         // Declared motion inventory from the shared page-scripts/motion.js.
-        if jbool(req, "observe") {
-            return errResponse("motion --observe is not supported by the macOS daemon yet (hwatud-mac). Use motion without --observe for declared CSS/WAAPI motion.")
-        }
+        // --observe also samples positions under the virtual clock with the
+        // shared page-scripts/motion-observe.js and returns the raw samples
+        // as `hwatu_raw_motion`; the CLI fits models with hwatu-motionfit.
+        let observe = jbool(req, "observe")
+        let obsMs = min(max(jint(req, "observe_ms") ?? 2500, 200), 10000)
         return onMain { done in
             guard let w = daemon.resolve(jint(req, "id")) else { done(errResponse("no window open")); return }
-            runJS(w, motionJS, timeoutMs: jint(req, "timeout_ms") ?? 15000, done: done)
+            runJS(w, motionJS, timeoutMs: 5000) { declared in
+                guard observe else { done(declared); return }
+                if declared["status"] as? String == "err" { done(declared); return }
+                let js = motionObserveJS.replacingOccurrences(of: "__OBS_MS__", with: String(obsMs))
+                runJS(w, js, timeoutMs: jint(req, "timeout_ms") ?? (obsMs + 35000)) { sampled in
+                    if sampled["status"] as? String == "err" { done(sampled); return }
+                    var value = (declared["value"] as? JSON) ?? [:]
+                    value["hwatu_raw_motion"] = sampled["value"] ?? NSNull()
+                    done(okResponse(["value": value]))
+                }
+            }
+        }
+
+    case "clock":
+        // Shared page-scripts/clock.js control surface (same calls as the
+        // GTK daemon). `seed` for future loads is not persisted here yet.
+        let action = jstr(req, "action") ?? ""
+        let ms = (req["ms"] as? NSNumber)?.doubleValue
+        var call: String
+        switch action {
+        case "pause": call = "c.pause()"
+        case "resume": call = "c.resume()"
+        case "status": call = "c.status()"
+        case "step", "set":
+            guard let ms = ms, ms.isFinite, ms >= 0 else { return errResponse("usage: hwatu clock \(action) <ms>") }
+            call = "c.\(action)(\(ms))"
+        case "seed":
+            guard let seed = (req["seed"] as? NSNumber)?.uint64Value, seed <= (UInt64(1) << 53) else {
+                return errResponse("usage: hwatu clock seed <u64> (<= 2^53)")
+            }
+            call = "c.seedRandom(\(seed))"
+        default: return errResponse("clock: unknown action \(action)")
+        }
+        let js = "const c = window.__hwatu_clock;\nif (!c) return { error: \"virtual clock not installed in this page (page predates this daemon build; reload it)\" };\nreturn \(call);"
+        return onMain { done in
+            guard let w = daemon.resolve(jint(req, "id")) else { done(errResponse("no window open")); return }
+            runJS(w, js, timeoutMs: jint(req, "timeout_ms") ?? 15000, done: done)
         }
 
     case "upload":
@@ -1442,7 +1485,7 @@ func handle(_ req: JSON) -> JSON {
         return okResponse(["value": ["batch": batch]])
 
     default:
-        return errResponse("command \(cmd) is not supported by the macOS daemon yet (hwatud-mac); supported: ping, open, list, close, show, hide, navigate, eval, wait_load, screenshot, resize, get_content, snapshot, click, type, press, fill_form, scroll, console, net, motion, expect, auth_context, challenge, upload, batch, quit")
+        return errResponse("command \(cmd) is not supported by the macOS daemon yet (hwatud-mac); supported: ping, open, list, close, show, hide, navigate, eval, wait_load, screenshot, resize, get_content, snapshot, click, type, press, fill_form, scroll, console, net, motion, clock, expect, auth_context, challenge, upload, batch, quit")
     }
 }
 

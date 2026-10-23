@@ -90,5 +90,6 @@ let submitted = false;
 if (SUBMIT && lastEl && lastEl.form) {
   lastEl.form.requestSubmit ? lastEl.form.requestSubmit() : lastEl.form.submit();
   submitted = true;
+  await hwatuAwaitUnload(500);
 }
 return { filled: applied.length, total: FIELDS.length, applied, submitted, url: location.href };

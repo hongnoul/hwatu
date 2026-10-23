@@ -1,0 +1,8 @@
+<!DOCTYPE html><meta charset="utf-8"><title>spa</title>
+<form id="f"><input id="q" name="q"></form><p id="out"></p>
+<script>
+document.getElementById('f').addEventListener('submit', (e) => {
+  e.preventDefault();
+  document.getElementById('out').textContent = 'searched ' + document.getElementById('q').value;
+});
+</script>

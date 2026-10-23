@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/ipc", "crates/pixeldiff", "crates/snapshot", "crates/hwatud", "crates/hwatu"]
+members = ["crates/ipc", "crates/pixeldiff", "crates/snapshot", "crates/motionfit", "crates/hwatud", "crates/hwatu"]
 
 [workspace.package]
 version = "0.7.1"

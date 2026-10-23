@@ -127,6 +127,8 @@ mod tests {
             ("fillJS", crate::coverage::FILL_JS),
             ("authContextJS", crate::coverage::AUTH_CONTEXT_JS),
             ("trustedResolveJS", crate::trusted_input::RESOLVER_JS),
+            ("clockJS", crate::clock::CLOCK_JS),
+            ("motionObserveJS", crate::observe::SAMPLE_JS),
         ] {
             let open = format!("let {name} = #\"\"\"\n");
             let body = swift

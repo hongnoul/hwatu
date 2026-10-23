@@ -157,6 +157,7 @@ if (downAllowed && active) {
     if (active instanceof view.HTMLInputElement && active.form) {
       active.form.requestSubmit();
       submitted = true;
+      await hwatuAwaitUnload(500);
     }
   }
 }

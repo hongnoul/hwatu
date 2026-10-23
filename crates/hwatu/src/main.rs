@@ -1754,6 +1754,36 @@ fn finish_raw_snapshot(response: &mut Response, budget: Option<usize>) {
     *value = hwatu_snapshot::finish(snapshot, previous, budget);
 }
 
+/// Daemons that sample `motion --observe` but do not fit (macOS) return
+/// `{...declared, hwatu_raw_motion: <sampler payload>}`. Fit here with the
+/// GTK daemon's code so the reply is the same on every engine.
+fn finish_raw_motion(response: &mut Response) {
+    let Response::Ok {
+        value: Some(value), ..
+    } = response
+    else {
+        return;
+    };
+    let Some(raw) = value
+        .as_object_mut()
+        .and_then(|m| m.remove("hwatu_raw_motion"))
+    else {
+        return;
+    };
+    if let Some(e) = raw.get("error").and_then(|e| e.as_str()) {
+        *response = Response::err(e);
+        return;
+    }
+    let observed = hwatu_motionfit::fit_payload(&raw);
+    value["observed"] = serde_json::Value::Array(observed);
+    value["observed_meta"] = serde_json::json!({
+        "window_ms": raw.get("window_ms"),
+        "frames": raw.get("frames"),
+        "wrap_hunt_ms": raw.get("hunted_ms"),
+        "virtual_time": true,
+    });
+}
+
 /// Same as [`finish_raw_snapshot`] for snapshot steps inside a batch reply.
 fn finish_batch_snapshots(actions: &[Request], value: &mut serde_json::Value) {
     let Some(steps) = value
@@ -1813,6 +1843,9 @@ pub(crate) fn transact_request(request: &Request) -> std::io::Result<Response> {
     }
     if let Request::Snapshot { budget, .. } = &request {
         finish_raw_snapshot(&mut response, *budget);
+    }
+    if matches!(request, Request::Motion { .. }) {
+        finish_raw_motion(&mut response);
     }
     if let (Request::Batch { actions }, Response::Ok { value: Some(v), .. }) =
         (&request, &mut response)

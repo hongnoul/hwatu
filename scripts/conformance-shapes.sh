@@ -7,7 +7,7 @@
 # Usage: scripts/conformance-shapes.sh <hwatu-binary> <fixture-base-url>
 set -u
 H=$1; B=$2
-norm() { sed -E "s#$B#BASE#g; s/after [0-9]+ ms/after N ms/g; s/\"(elapsed_ms|id)\":[0-9]+/\"\1\":N/g; s/^window [0-9]+ -> (.*) \([0-9]+ ms\)$/window N -> \1/"; }
+norm() { sed -E "s#$B#BASE#g; s/after [0-9]+ ms/after N ms/g; s/\"(elapsed_ms|id|virtual_ms|pending_timers|pending_rafs)\":[0-9]+/\"\1\":N/g; s/^window [0-9]+ -> (.*) \([0-9]+ ms\)$/window N -> \1/"; }
 run() { echo "== $*" | sed -E "s/--id [0-9]+/--id N/; s/\\\"id\\\":[0-9]+/\\\"id\\\":N/g"; "$H" "$@" 2>&1 | grep -v "daemon build .* != client build" | norm; }
 id=$("$H" "$B/snap.html" | grep -o 'window [0-9]*' | head -1 | cut -d' ' -f2)
 "$H" wait-load --id "$id" >/dev/null
@@ -41,4 +41,10 @@ run batch "[{\"cmd\":\"eval\",\"id\":$id,\"js\":\"return 1\"},{\"cmd\":\"expect\
 for js in 'document.body' 'return () => 1' 'return Symbol("x")' 'throw new Error("boom")' 'return 1n' 'return new Map([[1,2]])' 'return undefined' 'return new Date(0)' 'const a={}; a.self=a; return a'; do
   run eval --id "$id" "$js"
 done
+# Virtual clock: the same control surface on every engine.
+run clock --id "$id" status
+run clock --id "$id" pause
+run clock --id "$id" step 250
+run clock --id "$id" status
+run clock --id "$id" resume
 "$H" close "$id" >/dev/null

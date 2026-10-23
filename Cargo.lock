@@ -543,6 +543,7 @@ name = "hwatu"
 version = "0.7.1"
 dependencies = [
  "hwatu-ipc",
+ "hwatu-motionfit",
  "hwatu-pixeldiff",
  "hwatu-snapshot",
  "libc",
@@ -556,6 +557,13 @@ version = "0.7.1"
 dependencies = [
  "base64",
  "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "hwatu-motionfit"
+version = "0.7.1"
+dependencies = [
  "serde_json",
 ]
 
@@ -582,6 +590,7 @@ dependencies = [
  "glib",
  "gtk4",
  "hwatu-ipc",
+ "hwatu-motionfit",
  "hwatu-pixeldiff",
  "hwatu-snapshot",
  "libc",

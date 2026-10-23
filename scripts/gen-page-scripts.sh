@@ -31,5 +31,7 @@ emit() { # emit <swift-name> <file>
   emit fillJS fill.js
   emit authContextJS auth-context.js
   emit trustedResolveJS trusted-resolve.js
+  emit clockJS clock.js
+  emit motionObserveJS motion-observe.js
 } >"$out"
 echo "wrote $out"

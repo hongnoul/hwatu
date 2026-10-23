@@ -40,7 +40,10 @@ if (enter) {
   const handled = !el.dispatchEvent(new KeyboardEvent('keydown', key));
   el.dispatchEvent(new KeyboardEvent('keypress', key));
   el.dispatchEvent(new KeyboardEvent('keyup', key));
-  if (!handled && el.form) el.form.requestSubmit ? el.form.requestSubmit() : el.form.submit();
+  if (!handled && el.form) {
+    el.form.requestSubmit ? el.form.requestSubmit() : el.form.submit();
+    await hwatuAwaitUnload(500);
+  }
 }
 await hwatuSleep(0);
 const value = el.value !== undefined ? el.value : el.textContent;

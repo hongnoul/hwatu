@@ -109,7 +109,8 @@ pub fn fill_form(
         ));
     }
     let js = format!(
-        "\nconst FIELDS = [{fields}];\nconst SUBMIT = {submit};\n{FILL_JS}",
+        "{native}\nconst FIELDS = [{fields}];\nconst SUBMIT = {submit};\n{FILL_JS}",
+        native = crate::automation::NATIVE_TIME_JS,
         fields = specs.join(", "),
         submit = submit,
     );
