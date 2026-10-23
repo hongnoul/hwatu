@@ -154,6 +154,26 @@ ck "C36 motion reports the idle declared transition" 'grep -q "\"property\":\"op
 o=$(hw eval --id "$id" 'return [Infinity, NaN, 1]'); ck "C37 non-finite eval values serialize as null" 'grep -q "\[null,null,1\]" <<<"$o"'
 o=$(hw ping); ck "C38 daemon alive after non-finite values" 'grep -q "\"engine\"" <<<"$o"'
 
+# Irreversible labels in many languages, classified in the real engine on
+# a checkout page. The guard must stop every `stop` label and pass every
+# `go` label. A held-out set (never tuned against) is reported only.
+o=$(hw goto --id "$id" "$base/checkout/review.html")
+label_js() { # label_js <stop+go|heldout>: the classify-labels.js eval body
+  python3 - "$root" "$1" <<'PY'
+import json, sys
+root, which = sys.argv[1], sys.argv[2]
+d = json.load(open(f"{root}/tests/conformance/irreversible-labels.json"))
+labels = d["heldout"] if which == "heldout" else {"stop": d["stop"], "go": d["go"]}
+classify = open(f"{root}/page-scripts/irreversible.js").read().strip()
+body = open(f"{root}/scripts/classify-labels.js").read()
+print(body.replace("__HWATU_LABELS__", json.dumps(labels, ensure_ascii=False)).replace("__HWATU_CLASSIFY__", classify))
+PY
+}
+o=$(hw eval --id "$id" "$(label_js gated)")
+ck "C40 irreversible guard stops every multilingual stop label on checkout" 'grep -q "\"stop_missed\":\[\]" <<<"$o"'
+ck "C41 irreversible guard passes every navigation/section label" 'grep -q "\"go_stopped\":\[\]" <<<"$o"'
+echo "   held-out labels (not gated): $(hw eval --id "$id" "$(label_js heldout)")"
+
 # Reply shapes: a fixed command sequence must produce the committed
 # golden output byte for byte (timings and ids normalized), so a skill
 # reads the same JSON on every engine. Regenerate on purpose with

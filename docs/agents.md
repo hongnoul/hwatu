@@ -182,7 +182,16 @@ relays the reason through its harness. In a `batch`, the failing step's
   (pay, place order, buy, send, delete account). The click is not
   performed. `stop.kind` and `stop.label` name the control. The agent asks
   the user, then retries with `--confirm` (CLI) or `confirm: true` (MCP).
-  Page content cannot supply the confirmation.
+  Page content cannot supply the confirmation. The classifier
+  (`page-scripts/irreversible.js`) knows final-action phrases in English,
+  German, French, Spanish, Portuguese, Italian, Dutch, Russian, Japanese,
+  Chinese and Korean. On a checkout page (the URL or title names checkout,
+  or a total with a currency is shown) it also stops short button labels
+  built on a pay, order or buy stem in those languages, and generic
+  Finish/Confirm/Submit. It is a heuristic: on a held-out label set it
+  missed 5 of 27 final actions and stopped 1 of 21 non-final controls
+  (`tests/conformance/irreversible-labels.json`). Do not rely on it as the
+  only safeguard before an irreversible step.
 - `login_required`: reported by `auth-context` as the `login_required`
   field when a visible password or one-time-code field is on the page.
   `needs` is `credentials` or `one_time_code`. The agent asks the user,
