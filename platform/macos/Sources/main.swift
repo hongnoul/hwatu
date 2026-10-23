@@ -620,14 +620,47 @@ func runJS(_ w: Window, _ js: String, timeoutMs: Int, done: @escaping (JSON) -> 
     DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(timeoutMs)) {
         finish(errResponse("eval timed out after \(timeoutMs) ms"))
     }
-    w.webView.callAsyncJavaScript(source, arguments: [:], in: nil, in: .page) { result in
+    // Serialize in the page with JSON.stringify, as WebKitGTK's
+    // jsc_value_to_json does: Dates become ISO strings, cycles and other
+    // unserializable objects fall back to String(value), and DOM nodes,
+    // functions and window are refused. WKWebView's own bridging would
+    // otherwise recurse forever on a cycle and crash the daemon.
+    let wrapped = """
+    const __hwatuValue = await (async () => {
+    \(source)
+    })();
+    if (__hwatuValue === undefined || __hwatuValue === null) return 'null';
+    const __t = typeof __hwatuValue;
+    if (__t === 'function' || __t === 'symbol' || __t === 'bigint' ||
+        (__t === 'object' && (__hwatuValue === window || __hwatuValue instanceof Node)))
+      return __t === 'symbol' || __t === 'bigint' ? 'null' : { __hwatuUnsupported: true };
+    try {
+      const __s = JSON.stringify(__hwatuValue);
+      return __s === undefined ? 'null' : __s;
+    } catch (_) {
+      return JSON.stringify(String(__hwatuValue));
+    }
+    """
+    w.webView.callAsyncJavaScript(wrapped, arguments: [:], in: nil, in: .page) { result in
         switch result {
         case .success(let value):
-            finish(okResponse(["value": jsonValue(from: value)]))
+            if let d = value as? [String: Any], d["__hwatuUnsupported"] != nil {
+                finish(errResponse("eval failed: Unsupported result type; the script's completion value is not JSON-serializable (DOM node, function, symbol, or window). Return plain data instead, e.g. el.textContent rather than el, or end a statement-style body with an explicit `return`"))
+                return
+            }
+            guard let text = value as? String, let data = text.data(using: .utf8),
+                  let parsed = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) else {
+                finish(okResponse(["value": jsonValue(from: value)])); return
+            }
+            finish(okResponse(["value": jsonValue(from: parsed)]))
         case .failure(let error):
             let ns = error as NSError
             let detail = (ns.userInfo["WKJavaScriptExceptionMessage"] as? String) ?? ns.localizedDescription
-            finish(errResponse("eval: \(detail)"))
+            // Same prefix and hint as the GTK daemon so agents match one string.
+            let hint = detail.contains("Unsupported result type")
+                ? "; the script's completion value is not JSON-serializable (DOM node, function, symbol, or window). Return plain data instead, e.g. el.textContent rather than el, or end a statement-style body with an explicit `return`"
+                : ""
+            finish(errResponse("eval failed: \(detail)\(hint)"))
         }
     }
 }

@@ -42,3 +42,25 @@
 {"added":[{"kind":"text","text":"Shop"}],"changed":[],"removed":[{"kind":"text","text":"Store"}],"unchanged_count":11,"url":"BASE/snap.html"}
 == snapshot --id N --budget 300
 {"degraded":"landmarks","interactable_counts":{"a":2,"button":2,"input":1,"select":1},"scroll":{"max_y":0,"y":0},"title":"snap","url":"BASE/snap.html"}
+== batch [{"cmd":"type","id":N,"selector":"#q","text":"b"},{"cmd":"expect","id":N,"selector":"#add1"},{"cmd":"eval","id":N,"js":"return 7"}]
+{"batch":{"complete":true,"executed":3,"steps":[{"action":"type","index":0,"response":{"status":"ok","value":{"typed":{"matches":1,"tag":"input","text":""},"url":"BASE/snap.html","value":"b"}},"status":"ok"},{"action":"expect","index":1,"response":{"status":"ok","value":{"elapsed_ms":N,"matches":1,"ok":true,"tag":"button","text":"Add to cart"}},"status":"ok"},{"action":"eval","index":2,"response":{"status":"ok","value":7},"status":"ok"}]}}
+== batch [{"cmd":"eval","id":N,"js":"return 1"},{"cmd":"expect","id":N,"selector":"#nope","timeout_ms":300},{"cmd":"eval","id":N,"js":"return 2"}]
+{"batch":{"complete":false,"executed":2,"failed_at":1,"steps":[{"action":"eval","index":0,"response":{"status":"ok","value":1},"status":"ok"},{"action":"expect","error":"eval failed: Error: expect failed after N ms: no match: 0 element(s) for selector, nth=0","index":1,"response":{"message":"eval failed: Error: expect failed after N ms: no match: 0 element(s) for selector, nth=0","status":"err"},"status":"error"},{"action":"eval","index":2,"skipped_reason":"not run after step 1 failed","status":"skipped"}]}}
+== eval --id N document.body
+hwatu: eval failed: Unsupported result type; the script's completion value is not JSON-serializable (DOM node, function, symbol, or window). Return plain data instead, e.g. el.textContent rather than el, or end a statement-style body with an explicit `return`
+== eval --id N return () => 1
+hwatu: eval failed: Unsupported result type; the script's completion value is not JSON-serializable (DOM node, function, symbol, or window). Return plain data instead, e.g. el.textContent rather than el, or end a statement-style body with an explicit `return`
+== eval --id N return Symbol("x")
+null
+== eval --id N throw new Error("boom")
+hwatu: eval failed: Error: boom
+== eval --id N return 1n
+null
+== eval --id N return new Map([[1,2]])
+{}
+== eval --id N return undefined
+null
+== eval --id N return new Date(0)
+"1970-01-01T00:00:00.000Z"
+== eval --id N const a={}; a.self=a; return a
+"[object Object]"
