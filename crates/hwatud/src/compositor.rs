@@ -306,12 +306,16 @@ impl Compositor {
 impl Drop for Compositor {
     fn drop(&mut self) {
         self.expected_exit.store(true, Ordering::Relaxed);
-        kill_group(self.pid, SIGTERM);
+        // The supervisor alone: its trap stops the compositor's client
+        // before the compositor (see SUPERVISE_SH). A group-wide SIGTERM
+        // would reach cage directly and make it dump core.
+        unsafe { libc_kill(self.pid, SIGTERM) };
         // Wait briefly for the monitor thread to reap the supervisor,
         // so the runtime-dir removal below doesn't race a live child.
         // kill(pid, 0) failing (ESRCH) means reaped and gone.
         let mut gone = false;
-        for _ in 0..40 {
+        // 3 s: the supervisor waits up to 2 s for the compositor.
+        for _ in 0..120 {
             if unsafe { libc_kill(self.pid, 0) } != 0 {
                 gone = true;
                 break;
@@ -359,9 +363,22 @@ fn monitor(name: &'static str, pid: i32, expected_exit: Arc<AtomicBool>) {
 /// capabilities, and this is that binary.
 const SUPERVISE_SH: &str = r#"
 child=
-# Signal the whole process group (this shell leads it): cage leaves its
-# client running when it gets SIGTERM, and that client must die too.
-trap 'trap "" TERM INT HUP; kill -TERM 0 2>/dev/null' TERM INT HUP
+# Stop the compositor's own children first (cage hosts `sleep`): cage
+# exits cleanly when its client exits, but aborts with a core dump on
+# SIGTERM (wl_display_terminate assertion, cage 0.1.5). Wait up to 2 s for
+# it, then signal the whole process group (this shell leads it) for
+# anything left. Compositors without children get SIGTERM directly.
+stop() {
+  trap "" TERM INT HUP
+  if pkill -TERM -P "$child" 2>/dev/null; then
+    i=0
+    while kill -0 "$child" 2>/dev/null && [ $i -lt 20 ]; do sleep 0.1; i=$((i+1)); done
+  else
+    kill -TERM "$child" 2>/dev/null
+  fi
+  kill -0 "$child" 2>/dev/null && kill -TERM 0 2>/dev/null
+}
+trap stop TERM INT HUP
 "$@" &
 child=$!
 wait "$child"

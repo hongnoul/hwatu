@@ -37,7 +37,9 @@ done
 
 # Record the most windows seen on the session while the suite runs,
 # except while the suite's one intended `show` is in progress.
-[[ "$session" == sway ]] && ( max=0
+watch=
+if [[ "$session" == sway ]]; then
+( max=0
   while kill -0 $sw 2>/dev/null; do
     [[ -e "$u/showing" ]] && { sleep 0.05; continue; }
     n=$(XDG_RUNTIME_DIR="$u" SWAYSOCK="$ipc" swaymsg -t get_tree -r 2>/dev/null | grep -c '"pid"')
@@ -45,11 +47,11 @@ done
     sleep 0.05
   done ) &
 watch=$!
-[[ "$session" == sway ]] || { kill $watch 2>/dev/null; }
+fi
 
 HWATU_CONFORMANCE_SHOWING="$u/showing" HWATU_CONFORMANCE_SESSION=1 WAYLAND_DISPLAY="$u/$sock" "$root/scripts/test-conformance.sh" "$@"
 rc=$?
-kill $watch 2>/dev/null
+[[ -n "$watch" ]] && kill $watch 2>/dev/null
 [[ "$session" == sway ]] || { echo "($session: window appearance not watched)"; exit $rc; }
 max=$(cat "$u/max" 2>/dev/null || echo 0)
 if (( max > 0 )); then

@@ -51,9 +51,17 @@ if [[ "$gpu" == no ]]; then
     export WEBKIT_DISABLE_DMABUF_RENDERER=1 LIBGL_ALWAYS_SOFTWARE=1 WLR_RENDERER=pixman
 fi
 comp_pid=""
+# cage aborts (core dump) on SIGTERM but exits cleanly when its client
+# does, so stop its children first.
+stop_comp() {
+    [[ -n "$comp_pid" ]] || return 0
+    pkill -TERM -P "$comp_pid" 2>/dev/null || true
+    sleep 0.2
+    kill "$comp_pid" 2>/dev/null || true
+}
 cleanup() {
     local rc=$?
-    [[ -n "$comp_pid" ]] && kill "$comp_pid" 2>/dev/null || true
+    stop_comp
     # Any daemon still running on either isolated socket.
     XDG_RUNTIME_DIR="$work/hosted" "$bin/hwatu" quit >/dev/null 2>&1 || true
     XDG_RUNTIME_DIR="$work/free" "$bin/hwatu" quit >/dev/null 2>&1 || true
@@ -131,7 +139,7 @@ ref="$work/ref.png"
 XDG_RUNTIME_DIR="$work/hosted" "$bin/hwatu" render --stdin --shot="$ref" <<<"$fixture" >/dev/null
 check "hosted run produced a reference shot" test -s "$ref"
 XDG_RUNTIME_DIR="$work/hosted" "$bin/hwatu" quit >/dev/null
-kill "$comp_pid" 2>/dev/null || true
+stop_comp
 comp_pid=""
 sleep 0.5
 

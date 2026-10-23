@@ -654,7 +654,7 @@ fn wire_load_settled(
     win: Rc<crate::window::BrowserWindow>,
     done: impl FnOnce(&webkit6::WebView) + 'static,
 ) {
-    let done = RefCell::new(Some(done));
+    let done = Rc::new(RefCell::new(Some(done)));
     let handler: Rc<RefCell<Option<glib::SignalHandlerId>>> = Rc::new(RefCell::new(None));
     let handler2 = handler.clone();
     let id = view.connect_load_changed(move |view, event| {
@@ -664,12 +664,38 @@ fn wire_load_settled(
         if win.nav_pending() || view.is_loading() {
             return; // a stale load finished; the requested one is still coming
         }
-        if let Some(id) = handler2.borrow_mut().take() {
-            view.disconnect(id);
+        if done.borrow().is_none() {
+            return;
         }
-        if let Some(done) = done.borrow_mut().take() {
-            done(view);
-        }
+        // The pool's about:blank blanking load can Finish after the
+        // requested load was issued, with `view.uri()` already showing
+        // the new target, so neither check above catches it. Verify in
+        // the document, as `wire_load_committed` does (measured: about
+        // 1 in 60 pooled renders captured the blank page).
+        let target_is_blank = win.nav_target().is_none_or(|t| t.starts_with("about:"));
+        let done = done.clone();
+        let handler = handler2.clone();
+        let view2 = view.clone();
+        view.evaluate_javascript(
+            "location.href",
+            None,
+            None,
+            gio::Cancellable::NONE,
+            move |result| {
+                let Ok(href) = result.map(|v| v.to_str().to_string()) else {
+                    return; // context replaced by the next commit
+                };
+                if href.starts_with("about:blank") && !target_is_blank {
+                    return; // the stale blank document; keep watching
+                }
+                if let Some(id) = handler.borrow_mut().take() {
+                    view2.disconnect(id);
+                }
+                if let Some(done) = done.borrow_mut().take() {
+                    done(&view2);
+                }
+            },
+        );
     });
     handler.replace(Some(id));
 }
