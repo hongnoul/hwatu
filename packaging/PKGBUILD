@@ -9,7 +9,7 @@ license=('MIT')
 depends=('webkitgtk-6.0' 'gtk4')
 makedepends=('cargo')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/hongnoul/hwatu/archive/v$pkgver.tar.gz")
-sha256sums=('86e273ccc65111258bea70deaee0b0926990859e904078f078a84953c4914551')
+sha256sums=('5d191d7576aa8b029d3e82b333f2751d40c97381d41bdcb090a7c787c9002a4a')
 
 build() {
   cd "$pkgname-$pkgver"
