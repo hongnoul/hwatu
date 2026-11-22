@@ -913,7 +913,7 @@ func handle(_ req: JSON) -> JSON {
         let webkit = Bundle(identifier: "com.apple.WebKit")?.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown"
         return okResponse(["value": [
             "build": "mac-wkwebview",
-            "version": "0.7.1-mac",
+            "version": "0.7.2-mac",
             "platform": "macos",
             "engine": ["name": "wkwebview", "version": webkit],
             "capabilities": [

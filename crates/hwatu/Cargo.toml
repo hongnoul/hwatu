@@ -11,10 +11,10 @@ categories = ["web-programming", "development-tools", "command-line-utilities"]
 readme = "../../README.md"
 
 [dependencies]
-hwatu-ipc = { path = "../ipc", version = "0.7.1" }
-hwatu-pixeldiff = { path = "../pixeldiff", version = "0.7.1" }
-hwatu-snapshot = { path = "../snapshot", version = "0.7.1" }
-hwatu-motionfit = { path = "../motionfit", version = "0.7.1" }
+hwatu-ipc = { path = "../ipc", version = "0.7.2" }
+hwatu-pixeldiff = { path = "../pixeldiff", version = "0.7.2" }
+hwatu-snapshot = { path = "../snapshot", version = "0.7.2" }
+hwatu-motionfit = { path = "../motionfit", version = "0.7.2" }
 serde_json = "1"
 # `hwatu clone` crops engine screenshots for blank WebGL canvases.
 png = "0.17"
