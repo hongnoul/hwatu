@@ -254,14 +254,28 @@ final class Window: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessag
           window.addEventListener('unhandledrejection', e => send('error', 'unhandled rejection: ' + e.reason));
         })();
         """
-        controller.addUserScript(WKUserScript(source: js, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        // Anti-bot frames (Cloudflare Turnstile, hCaptcha, reCAPTCHA) probe
+        // for patched natives (console wrappers, rAF/visibility shims) and
+        // fail closed. Leave those frames pristine.
+        func clean(_ src: String) -> String {
+            "if (!/(^|\\.)(challenges\\.cloudflare\\.com|hcaptcha\\.com|recaptcha\\.net)$|^www\\.google\\.com$/.test(location.hostname)) {\n" + src + "\n}"
+        }
+        controller.addUserScript(WKUserScript(source: clean(js), injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        if ProcessInfo.processInfo.environment["HWATU_DEBUG_FRAMES"] != nil {
+            // Log pointer events and loads in every frame, to see which
+            // frame (e.g. a CAPTCHA widget) a trusted click actually hits.
+            controller.addUserScript(WKUserScript(source: """
+            try { window.webkit.messageHandlers.hwatuConsole.postMessage({level:'debug', text: location.hostname+' frameload '+(window===top)}); } catch(_){}
+            for (const t of ['pointerdown','mousedown','click','pointermove']) addEventListener(t, e => { try { window.webkit.messageHandlers.hwatuConsole.postMessage({level:'debug', text: location.hostname+' '+t+' '+e.isTrusted+' '+e.clientX+','+e.clientY+' '+(e.target&&e.target.tagName)}); } catch(_){} }, true);
+            """, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        }
         // Trusted-input target resolver in every frame, including
         // cross-origin ones (CAPTCHA widgets): shared page-scripts/trusted-resolve.js.
         controller.addUserScript(WKUserScript(source: trustedResolveJS, injectionTime: .atDocumentStart, forMainFrameOnly: false))
         // Virtual clock (shared page-scripts/clock.js): dormant until the
         // first pause/step/set, so pages run natively unless an agent uses
         // `clock` or `motion --observe`.
-        controller.addUserScript(WKUserScript(source: clockJS, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+        controller.addUserScript(WKUserScript(source: clean(clockJS), injectionTime: .atDocumentStart, forMainFrameOnly: false))
         if mode == "headless" {
             // WKWebView throttles requestAnimationFrame (and suspends CSS
             // animation ticks) when its window is not visible, which stalls
@@ -298,7 +312,7 @@ final class Window: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessag
               };
             })();
             """
-            controller.addUserScript(WKUserScript(source: rafShim, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+            controller.addUserScript(WKUserScript(source: clean(rafShim), injectionTime: .atDocumentStart, forMainFrameOnly: false))
             // Headless windows report document.visibilityState === "hidden",
             // and visibility-aware pages (Okta sign-in, lazy loaders, video
             // players) defer work indefinitely. Spoof the Page Visibility
@@ -317,7 +331,7 @@ final class Window: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessag
               spoof(Document.prototype, 'hasFocus', () => true);
             })();
             """
-            controller.addUserScript(WKUserScript(source: visShim, injectionTime: .atDocumentStart, forMainFrameOnly: false))
+            controller.addUserScript(WKUserScript(source: clean(visShim), injectionTime: .atDocumentStart, forMainFrameOnly: false))
         }
         cfg.userContentController = controller
         webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 1280, height: 800), configuration: cfg)
@@ -331,7 +345,10 @@ final class Window: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessag
             let sel = NSSelectorFromString("_setWindowOcclusionDetectionEnabled:")
             if webView.responds(to: sel) { webView.perform(sel, with: NSNumber(value: false)) }
         }
-        webView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15 hwatu"
+        // Match the installed Safari exactly. A stale or tagged UA is a strong
+        // bot signal for Cloudflare Turnstile and similar checks.
+        let safari = (Bundle(path: "/Applications/Safari.app")?.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "18.0"
+        webView.customUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/\(safari) Safari/605.1.15"
         // A real (but never-presented) window keeps WebKit rendering so
         // snapshots are not blank. It is never ordered front for headless.
         host = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1280, height: 800),
@@ -580,12 +597,26 @@ func targetCenterJS(_ req: JSON) -> String {
 func nativeClick(_ w: Window, cssX: Double, cssY: Double) {
     // WKWebView is a flipped view, so its local coordinates match CSS
     // viewport coordinates (top-left origin). Page zoom is 1.
-    let local = NSPoint(x: cssX, y: w.webView.isFlipped ? cssY : Double(w.webView.bounds.height) - cssY)
-    let p = w.webView.convert(local, to: nil)
-    if let down = mouseEvent(w, .leftMouseDown, p), let up = mouseEvent(w, .leftMouseUp, p) {
-        w.webView.mouseDown(with: down)
-        w.webView.mouseUp(with: up)
+    func point(_ x: Double, _ y: Double) -> NSPoint {
+        w.webView.convert(NSPoint(x: x, y: w.webView.isFlipped ? y : Double(w.webView.bounds.height) - y), to: nil)
     }
+    // Anti-bot widgets (Turnstile, hCaptcha) score pointer history: approach
+    // along a curved path with jitter, then hold the button briefly.
+    let sx = cssX + Double.random(in: -180 ... -90), sy = cssY + Double.random(in: 40 ... 120)
+    let cx = (sx + cssX) / 2 + Double.random(in: -40 ... 40), cy = (sy + cssY) / 2 + Double.random(in: -40 ... 40)
+    let steps = Int.random(in: 18 ... 28)
+    for i in 0 ... steps {
+        let t = Double(i) / Double(steps), e = t * t * (3 - 2 * t)
+        let x = (1 - e) * (1 - e) * sx + 2 * (1 - e) * e * cx + e * e * cssX + Double.random(in: -0.6 ... 0.6)
+        let y = (1 - e) * (1 - e) * sy + 2 * (1 - e) * e * cy + e * e * cssY + Double.random(in: -0.6 ... 0.6)
+        if let mv = mouseEvent(w, .mouseMoved, point(x, y)) { w.webView.mouseMoved(with: mv) }
+        RunLoop.current.run(until: Date().addingTimeInterval(Double.random(in: 0.008 ... 0.022)))
+    }
+    let p = point(cssX + Double.random(in: -1.5 ... 1.5), cssY + Double.random(in: -1.5 ... 1.5))
+    RunLoop.current.run(until: Date().addingTimeInterval(Double.random(in: 0.06 ... 0.14)))
+    if let down = mouseEvent(w, .leftMouseDown, p) { w.webView.mouseDown(with: down) }
+    RunLoop.current.run(until: Date().addingTimeInterval(Double.random(in: 0.07 ... 0.13)))
+    if let up = mouseEvent(w, .leftMouseUp, p) { w.webView.mouseUp(with: up) }
 }
 
 /// Reply shape shared with the GTK daemon: `{clicked|typed: matched,
