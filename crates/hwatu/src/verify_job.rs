@@ -1427,7 +1427,9 @@ mod tests {
     fn inline_sources_must_be_regular_files() {
         use std::os::unix::net::UnixListener;
 
-        let root = std::env::temp_dir().join(format!(
+        // /tmp, not temp_dir(): macOS $TMPDIR is long enough to push the
+        // socket path past SUN_LEN (104 bytes) and fail the bind.
+        let root = std::path::PathBuf::from("/tmp").join(format!(
             "hwatu-inline-socket-{}-{}",
             std::process::id(),
             fnv("socket")

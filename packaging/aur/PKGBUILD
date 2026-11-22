@@ -1,6 +1,6 @@
 # Maintainer: hongnoul <namyang@mit.edu>
 pkgname=hwatu
-pkgver=0.7.1
+pkgver=0.7.2
 pkgrel=1
 pkgdesc="Headless browser for agents (CLI and MCP)"
 arch=('x86_64' 'aarch64')
