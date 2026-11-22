@@ -215,6 +215,7 @@ check "confirmed click is performed" grep -q '"clicked"' <<<"$out"
 out="$(hw eval --id "$sid" 'return document.title')"
 check "confirmed click ran the page handler" grep -q '"paid"' <<<"$out"
 out="$(hw auth-context --id "$sid" 2>&1)"
+echo "DEBUG auth-context: $out" | head -c 1500; echo
 check "auth-context reports login_required" grep -q '"reason":"login_required"' <<<"$out"
 hw close "$sid" >/dev/null 2>&1 || true
 
@@ -248,6 +249,7 @@ for size in 360x640 800x600 1920x1080; do
     vshot="$work/vp-$size.png"
     out="$(hw render --stdin --viewports "$size" --shot="$vshot" \
         --eval 'innerWidth + "x" + innerHeight' <<<"$fixture")"
+    echo "DEBUG vp $size: $out" | head -c 1500; echo
     # Parse the fields: the size LABEL is echoed in the reply too, so
     # a bare grep for "360x640" would pass even on a 360x642 page.
     measured="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["viewports"][0]["eval"])' <<<"$out")"
